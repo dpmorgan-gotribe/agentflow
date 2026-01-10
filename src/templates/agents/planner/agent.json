@@ -1,0 +1,11 @@
+{
+  "id": "planner",
+  "name": "Planner",
+  "description": "Creates detailed plans for bug fixes and feature implementations",
+  "model": "opus",
+  "maxTokens": 4096,
+  "skills": [
+    "planning/plan-fix",
+    "planning/plan-feature"
+  ]
+}

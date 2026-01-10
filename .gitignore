@@ -1,0 +1,12 @@
+# AgenticFlow projects (separate repos)
+projects/
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# OS files
+nul
+.DS_Store

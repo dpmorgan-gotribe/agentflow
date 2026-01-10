@@ -1,0 +1,301 @@
+import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
+import { join } from 'path';
+import { loadSystemPrompt, loadSkill } from '../lib/agent.js';
+import { runWorkerSequential } from '../lib/worker.js';
+import { updateProjectContext, extractStyleInfo } from '../lib/context.js';
+import { validateAndCleanHTML, hasRequiredCSSTokens } from '../lib/validation.js';
+
+interface StylesheetOptions {
+  style: string;
+  force?: boolean;
+}
+
+const MAX_RETRIES = 2;
+
+export async function stylesheet(options: StylesheetOptions) {
+  const projectDir = process.cwd();
+  const styleNum = options.style || '1';
+  const forceWrite = options.force || false;
+
+  console.log(`Creating stylesheet for style ${styleNum}`);
+
+  // Load analysis outputs
+  let stylesContent: string;
+  let screensData: {
+    components?: string[];
+    screenComponents?: Record<string, string[]>;
+    icons?: string[];
+    screenIcons?: Record<string, string[]>;
+  } = {};
+  try {
+    stylesContent = await readFile(
+      join(projectDir, 'outputs', 'analysis', 'styles.md'),
+      'utf-8'
+    );
+    // Load screens.json for component and icon lists
+    const screensJson = await readFile(
+      join(projectDir, 'outputs', 'analysis', 'screens.json'),
+      'utf-8'
+    );
+    screensData = JSON.parse(screensJson);
+    if (screensData.components) {
+      console.log(`Loaded ${screensData.components.length} components from screens.json`);
+    }
+    if (screensData.icons) {
+      console.log(`Loaded ${screensData.icons.length} icons from screens.json`);
+    }
+  } catch {
+    console.error('Analysis outputs not found.');
+    console.error('Run `agentflow analyze` first.');
+    process.exit(1);
+  }
+
+  // Scan for user icons
+  let userIcons: string[] = [];
+  try {
+    const iconsDir = join(projectDir, 'assets', 'icons');
+    const iconFiles = await readdir(iconsDir);
+    userIcons = iconFiles.filter(f => /\.(svg|png)$/i.test(f));
+    console.log(`Found ${userIcons.length} user icon(s) in assets/icons`);
+  } catch {
+    // No icons directory - that's ok
+  }
+
+  // Build component requirements section
+  const componentsList = screensData.components || [];
+  const screenComponents = screensData.screenComponents || {};
+
+  // Load selected mockup
+  let mockupContent: string;
+  try {
+    mockupContent = await readFile(
+      join(projectDir, 'outputs', 'mockups', `style-${styleNum}.html`),
+      'utf-8'
+    );
+  } catch {
+    console.error(`Mockup style-${styleNum}.html not found.`);
+    console.error('Run `agentflow mockups` first.');
+    process.exit(1);
+  }
+
+  // Load skill and system prompt
+  const systemPrompt = await loadSystemPrompt(projectDir, 'ui-designer');
+  const skill = await loadSkill(projectDir, 'design/design-stylesheet');
+
+  // Build components section for prompts
+  const componentsSection = componentsList.length > 0
+    ? `## Required Components (${componentsList.length} total)
+Your stylesheet MUST include styles for ALL these components:
+${componentsList.join(', ')}
+
+## Screen-Component Mapping
+This shows which components each screen needs - ensure comprehensive coverage:
+${JSON.stringify(screenComponents, null, 2)}`
+    : '## Components\nNo component mapping found - include common UI components.';
+
+  // Build icon requirements section
+  const iconsList = screensData.icons || [];
+  const screenIcons = screensData.screenIcons || {};
+
+  // Determine icon source based on style
+  const isUserStyle = styleNum === '0';
+  const iconSource = isUserStyle
+    ? { type: 'user', path: '../../assets/icons/', format: '{name}.svg' }
+    : { type: 'lucide', cdn: 'https://unpkg.com/lucide-static@latest/icons/', format: '{name}.svg' };
+
+  // Build icons section for prompt
+  const iconsSection = iconsList.length > 0
+    ? `## Required Icons (${iconsList.length} total)
+Your stylesheet MUST include an Icons Gallery section showing ALL these icons:
+${iconsList.join(', ')}
+
+## Icon Source
+${isUserStyle
+  ? `Type: User Icons (from assets/icons/)
+Path: ${iconSource.path}
+Available user icons: ${userIcons.map(f => f.replace(/\.(svg|png)$/i, '')).join(', ')}
+
+Use: <img src="${iconSource.path}{icon-name}.svg" alt="icon-name" />`
+  : `Type: Library Icons (Lucide)
+CDN: ${iconSource.cdn}
+Include comment: <!-- Icons: https://lucide.dev -->
+
+Use: <img src="${iconSource.cdn}{icon-name}.svg" alt="icon-name" />`}
+
+## Screen-Icon Mapping
+This shows which icons each screen needs:
+${JSON.stringify(screenIcons, null, 2)}
+
+## Icon Gallery Requirements
+Your showcase.html MUST include:
+1. Icon grid showing ALL icons with their names
+2. Icon states (default, active, disabled, inverted)
+3. Icon sizes (16px, 24px, 32px, 48px)
+4. Icons on both light and dark backgrounds`
+    : '## Icons\nNo icon mapping found - include common UI icons.';
+
+  // Retry loop for agent invocation
+  let validOutput: string | null = null;
+  let lastErrors: string[] = [];
+  let wasExtracted = false;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 1) {
+      console.log(`Retry ${attempt}/${MAX_RETRIES}...`);
+    }
+
+    // Build user prompt with retry emphasis if needed
+    let userPrompt = `Create a complete design system based on style ${styleNum}.
+
+## Style Definitions
+${stylesContent}
+
+${componentsSection}
+
+${iconsSection}
+
+## Selected Mockup HTML Reference
+The following HTML is the approved mockup for Style ${styleNum}. Your design system MUST match its styling EXACTLY.
+
+\`\`\`html
+${mockupContent}
+\`\`\`
+
+## CRITICAL STYLING REQUIREMENTS
+You MUST extract and replicate these elements EXACTLY from the mockup above:
+- **Header**: structure, background color (#3D3D3D charcoal), icon colors (white inactive, green active), logo placement
+- **Footer**: structure, background color (#3D3D3D charcoal), icon colors (white inactive, green active), active indicator styling
+- **Icons**: style (outlined vs filled), colors for inactive (#FFFFFF) and active (#6B9B37) states
+- **Logo**: size, position, and color treatment
+- **Notification badges**: red (#E53935) with white text
+
+The header and footer in your showcase.html MUST visually match the mockup.
+
+## COMPONENT COVERAGE CHECK
+Before outputting, verify your stylesheet includes CSS for:
+- All navigation components (header, bottom-nav, side-menu, tab-bar)
+- All form components (form-input, form-select, checkbox, radio, toggle, etc.)
+- All content components (card, list-item, avatar, badge, tag, etc.)
+- All button variants (button-primary, button-secondary, button-icon, fab)
+- All feedback components (modal, toast, empty-state, loading)
+- All layout components (filter-pills, section-header, divider, grid)
+
+## ICON GALLERY CHECK
+Before outputting, verify your showcase.html includes:
+- An Icons section showing ALL required icons in a grid
+- Each icon with its name label below
+- Icon state demos (default, active, disabled, inverted)
+- Icon size demos (16px, 24px, 32px, 48px)
+- CSS for icon styling (.icon-gallery, .icon-grid, .icon-item, etc.)`;
+
+    if (attempt > 1) {
+      userPrompt = `IMPORTANT: Your previous response was invalid. ${lastErrors.join('. ')}.\n\nYou MUST output ONLY raw HTML starting with <!DOCTYPE html> and ending with </html>. No explanations, no summaries, no markdown.\n\n${userPrompt}`;
+    }
+
+    const result = await runWorkerSequential({
+      id: 'stylesheet',
+      systemPrompt: `${systemPrompt}\n\n## Skill\n\n${skill}`,
+      userPrompt
+    });
+
+    if (!result.output) {
+      lastErrors = ['No output received from agent'];
+      continue;
+    }
+
+    // Validate and clean the output
+    const validation = validateAndCleanHTML(result.output);
+
+    if (validation.valid) {
+      // Additional check for stylesheet-specific content
+      if (!hasRequiredCSSTokens(validation.content)) {
+        lastErrors = ['Missing required CSS tokens (:root variables, <style> tag)'];
+        continue;
+      }
+
+      validOutput = validation.content;
+      wasExtracted = validation.extracted;
+      break;
+    } else {
+      lastErrors = validation.errors;
+    }
+  }
+
+  // Write outputs
+  const outputDir = join(projectDir, 'outputs', 'stylesheet');
+  await mkdir(outputDir, { recursive: true });
+  const outputPath = join(outputDir, 'showcase.html');
+
+  if (validOutput) {
+    if (wasExtracted) {
+      console.log('Warning: Had to extract HTML from mixed output');
+    }
+
+    await writeFile(outputPath, validOutput);
+
+    // Update project CLAUDE.md with design context
+    const styleInfo = await extractStyleInfo(validOutput, styleNum);
+    await updateProjectContext(projectDir, {
+      ...styleInfo,
+      selectedStyle: styleNum,
+      stylesheetPath: 'outputs/stylesheet/showcase.html'
+    });
+    console.log('Updated CLAUDE.md with design context');
+
+    console.log(`
+Stylesheet complete!
+
+Outputs written to outputs/stylesheet/
+
+Design context locked in CLAUDE.md. The brief has been consumed.
+
+Next: Review the design system, then run:
+  agentflow screens
+`);
+  } else if (forceWrite) {
+    // Force write invalid output with warning
+    console.warn('\nWarning: Output validation failed but --force flag used.');
+    console.warn('Errors detected:');
+    lastErrors.forEach(e => console.warn(`  - ${e}`));
+
+    // Try to write whatever we have (use same detailed prompt)
+    const forcePrompt = `Create a complete design system based on style ${styleNum}.
+
+## Style Definitions
+${stylesContent}
+
+${componentsSection}
+
+## Selected Mockup HTML Reference
+\`\`\`html
+${mockupContent}
+\`\`\`
+
+Match header/footer/icons from the mockup EXACTLY. Include all required components.`;
+
+    const result = await runWorkerSequential({
+      id: 'stylesheet-force',
+      systemPrompt: `${systemPrompt}\n\n## Skill\n\n${skill}`,
+      userPrompt: forcePrompt
+    });
+
+    if (result.output) {
+      await writeFile(outputPath, result.output);
+      console.warn(`\nForce-wrote output to ${outputPath}`);
+      console.warn('Manual review required - output may be invalid.');
+    }
+  } else {
+    // Validation failed, show error
+    console.error('\nStylesheet generation failed - invalid output detected:');
+    lastErrors.forEach(e => console.error(`  - ${e}`));
+    console.error('\nThe agent did not produce valid HTML. Possible causes:');
+    console.error('  1. Agent output conversational text instead of raw HTML');
+    console.error('  2. Agent requested permission instead of outputting content');
+    console.error('  3. Agent wrapped output in markdown code fences incorrectly');
+    console.error('\nOptions:');
+    console.error('  - Run with --force to save output anyway');
+    console.error('  - Check/update skills/design/design-stylesheet.md');
+    console.error('  - Manually create the stylesheet');
+    process.exit(1);
+  }
+}

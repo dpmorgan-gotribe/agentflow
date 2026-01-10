@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install)",
+      "Bash(npm run build:*)",
+      "Bash(npm link:*)",
+      "Bash(agentflow --help:*)",
+      "Bash(agentflow init:*)",
+      "Bash(agentflow plan-fix:*)",
+      "Bash(taskkill:*)",
+      "Bash(tasklist:*)",
+      "Bash(claude -p)",
+      "Bash(node dist/index.js:*)",
+      "Bash(node:*)",
+      "Bash(grep:*)",
+      "Bash(agentflow stylesheet:*)",
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "Bash(agentflow analyze:*)",
+      "Bash(copy /Y \"C:\\\\Development\\\\ps\\\\claude\\\\claude_\\\\agentflow\\\\agenticflow_BASE-v2\\\\src\\\\templates\\\\skills\\\\analysis\\\\*.md\" \"C:\\\\Development\\\\ps\\\\claude\\\\claude_\\\\agentflow\\\\agenticflow_BASE-v2\\\\projects\\\\gotribe\\\\skills\\\\analysis\"\")",
+      "Bash(xcopy:*)",
+      "Bash(powershell:*)",
+      "Bash(agentflow mockups:*)",
+      "Bash(claude -p --tools \"\")",
+      "Bash(git remote add:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

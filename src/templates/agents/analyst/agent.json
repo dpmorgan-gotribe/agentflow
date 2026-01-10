@@ -1,0 +1,13 @@
+{
+  "id": "analyst",
+  "name": "Analyst",
+  "description": "Analyzes wireframes and extracts design requirements",
+  "model": "sonnet",
+  "maxTokens": 4096,
+  "skills": [
+    "analysis/analyze-styles",
+    "analysis/analyze-flows",
+    "analysis/analyze-assets",
+    "analysis/analyze-components"
+  ]
+}
