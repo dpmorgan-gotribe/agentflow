@@ -25,31 +25,46 @@ program
 program
   .command('analyze [styleCount]')
   .description('Analyze wireframes, research competitors, generate styles')
-  .action((styleCount) => analyze(parseInt(styleCount) || 1));
+  .option('--verify', 'Show detailed coverage report')
+  .option('--useAssets', 'All styles use user assets (variations of user vision)')
+  .action((styleCount, options) => analyze(parseInt(styleCount) || 1, { verify: options.verify, useAssets: options.useAssets }));
 
 program
   .command('flows')
   .option('--style <number>', 'Style to use (0, 1, 2, ...)', '0')
+  .option('--platform <name>', 'Target platform (webapp, backend, ...)')
   .description('Create flow mockups')
-  .action(flows);
+  .action((options) => flows({ style: options.style, platform: options.platform }));
 
 program
   .command('mockups')
   .description('Create style mockups')
-  .action(mockups);
+  .action(() => mockups());
 
 program
   .command('stylesheet')
   .option('--style <number>', 'Style to use (0, 1, 2, ...)', '1')
+  .option('--platform <name>', 'Target platform (webapp, backend, ...)')
+  .option('--skill <type>', 'Layout skill to use (webapp, mobile, desktop)')
   .option('--force', 'Write output even if validation fails')
   .description('Create design system')
-  .action(stylesheet);
+  .action((options) => stylesheet({ style: options.style, platform: options.platform, skill: options.skill, force: options.force }));
 
 program
   .command('screens')
   .option('--limit <number>', 'Limit number of screens to generate')
+  .option('--platform <name>', 'Target platform (webapp, backend, ...)')
+  .option('--skill <type>', 'Layout skill to use (webapp, mobile, desktop)')
+  .option('--force', 'Regenerate all screens (ignore existing valid screens)')
+  .option('--batch <number>', 'Batch size for parallel generation')
   .description('Create all screen designs')
-  .action(screens);
+  .action((options) => screens({
+    limit: options.limit,
+    platform: options.platform,
+    skill: options.skill,
+    force: options.force,
+    batch: options.batch
+  }));
 
 program
   .command('plan-fix <name>')

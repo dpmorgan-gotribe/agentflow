@@ -136,6 +136,13 @@ export async function init(name: string, options: InitOptions = {}) {
   await cp(join(TEMPLATES, 'CLAUDE.md'), join(projectDir, 'CLAUDE.md'));
   await cp(join(TEMPLATES, 'brief.md'), join(projectDir, 'brief.md'));
 
+  // Copy .claude directory (slash commands)
+  try {
+    await cp(join(TEMPLATES, '.claude'), join(projectDir, '.claude'), { recursive: true });
+  } catch {
+    // .claude template may not exist in older versions
+  }
+
   // Copy .gitignore template
   try {
     await cp(join(TEMPLATES, '.gitignore'), join(projectDir, '.gitignore'));

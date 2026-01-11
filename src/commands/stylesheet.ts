@@ -3,11 +3,14 @@ import { join } from 'path';
 import { loadSystemPrompt, loadSkill } from '../lib/agent.js';
 import { runWorkerSequential } from '../lib/worker.js';
 import { updateProjectContext, extractStyleInfo } from '../lib/context.js';
-import { validateAndCleanHTML, hasRequiredCSSTokens } from '../lib/validation.js';
+import { validateAndCleanHTML, hasRequiredCSSTokens, hasRequiredComponents, hasMinimumLength } from '../lib/validation.js';
+import { detectPlatforms, resolvePlatform, getPlatformOutputDir, getSharedAnalysisDir, resolveSkill } from '../lib/platforms.js';
 
 interface StylesheetOptions {
   style: string;
   force?: boolean;
+  platform?: string;
+  skill?: string;
 }
 
 const MAX_RETRIES = 2;
@@ -17,7 +20,28 @@ export async function stylesheet(options: StylesheetOptions) {
   const styleNum = options.style || '1';
   const forceWrite = options.force || false;
 
-  console.log(`Creating stylesheet for style ${styleNum}`);
+  // Detect platforms
+  const platforms = await detectPlatforms(projectDir);
+  const isMultiPlatform = platforms.length > 0;
+  const platform = isMultiPlatform ? await resolvePlatform(projectDir, options.platform) : null;
+
+  // Resolve which layout skill to use
+  const skillType = resolveSkill(platform || 'webapp', options.skill);
+
+  if (isMultiPlatform && platform) {
+    console.log(`Creating stylesheet for platform: ${platform}, style ${styleNum}, skill: ${skillType}`);
+  } else {
+    console.log(`Creating stylesheet for style ${styleNum}, skill: ${skillType}`);
+  }
+
+  // Determine paths
+  const analysisDir = isMultiPlatform
+    ? getSharedAnalysisDir(projectDir)
+    : join(projectDir, 'outputs', 'analysis');
+
+  const platformAnalysisDir = isMultiPlatform && platform
+    ? getPlatformOutputDir(projectDir, 'analysis', platform)
+    : analysisDir;
 
   // Load analysis outputs
   let stylesContent: string;
@@ -27,16 +51,12 @@ export async function stylesheet(options: StylesheetOptions) {
     icons?: string[];
     screenIcons?: Record<string, string[]>;
   } = {};
+
   try {
-    stylesContent = await readFile(
-      join(projectDir, 'outputs', 'analysis', 'styles.md'),
-      'utf-8'
-    );
-    // Load screens.json for component and icon lists
-    const screensJson = await readFile(
-      join(projectDir, 'outputs', 'analysis', 'screens.json'),
-      'utf-8'
-    );
+    stylesContent = await readFile(join(analysisDir, 'styles.md'), 'utf-8');
+
+    // Load screens.json for component and icon lists (platform-specific if multi-platform)
+    const screensJson = await readFile(join(platformAnalysisDir, 'screens.json'), 'utf-8');
     screensData = JSON.parse(screensJson);
     if (screensData.components) {
       console.log(`Loaded ${screensData.components.length} components from screens.json`);
@@ -65,22 +85,30 @@ export async function stylesheet(options: StylesheetOptions) {
   const componentsList = screensData.components || [];
   const screenComponents = screensData.screenComponents || {};
 
+  // Determine mockup path (mockups are always in generic location - they're style previews, not platform-specific)
+  const mockupsDir = join(projectDir, 'outputs', 'mockups');
+
   // Load selected mockup
   let mockupContent: string;
   try {
-    mockupContent = await readFile(
-      join(projectDir, 'outputs', 'mockups', `style-${styleNum}.html`),
-      'utf-8'
-    );
+    mockupContent = await readFile(join(mockupsDir, `style-${styleNum}.html`), 'utf-8');
   } catch {
     console.error(`Mockup style-${styleNum}.html not found.`);
     console.error('Run `agentflow mockups` first.');
     process.exit(1);
   }
 
-  // Load skill and system prompt
+  // Load skill and system prompt (use platform-specific skill)
   const systemPrompt = await loadSystemPrompt(projectDir, 'ui-designer');
-  const skill = await loadSkill(projectDir, 'design/design-stylesheet');
+  const skillName = `design/design-stylesheet-${skillType}`;
+  let skill: string;
+  try {
+    skill = await loadSkill(projectDir, skillName);
+  } catch {
+    // Fallback to generic skill if platform-specific doesn't exist
+    console.log(`Skill ${skillName} not found, falling back to design-stylesheet`);
+    skill = await loadSkill(projectDir, 'design/design-stylesheet');
+  }
 
   // Build components section for prompts
   const componentsSection = componentsList.length > 0
@@ -98,9 +126,11 @@ ${JSON.stringify(screenComponents, null, 2)}`
   const screenIcons = screensData.screenIcons || {};
 
   // Determine icon source based on style
+  // Path depth: outputs/stylesheet/showcase.html = 2 levels, outputs/stylesheet/{platform}/showcase.html = 3 levels
+  const assetPathPrefix = isMultiPlatform && platform ? '../../../' : '../../';
   const isUserStyle = styleNum === '0';
   const iconSource = isUserStyle
-    ? { type: 'user', path: '../../assets/icons/', format: '{name}.svg' }
+    ? { type: 'user', path: `${assetPathPrefix}assets/icons/`, format: '{name}.svg' }
     : { type: 'lucide', cdn: 'https://unpkg.com/lucide-static@latest/icons/', format: '{name}.svg' };
 
   // Build icons section for prompt
@@ -145,7 +175,7 @@ Your showcase.html MUST include:
     }
 
     // Build user prompt with retry emphasis if needed
-    let userPrompt = `Create a complete design system based on style ${styleNum}.
+    let userPrompt = `Create a complete design system based on style ${styleNum}${platform ? ` for the ${platform} platform` : ''}.
 
 ## Style Definitions
 ${stylesContent}
@@ -213,6 +243,20 @@ Before outputting, verify your showcase.html includes:
         continue;
       }
 
+      // Check for required component classes
+      const componentCheck = hasRequiredComponents(validation.content);
+      if (!componentCheck.valid) {
+        lastErrors = [`Missing required components (${componentCheck.coverage}% coverage): ${componentCheck.missing.join(', ')}`];
+        continue;
+      }
+
+      // Check minimum length to catch truncated outputs
+      const lengthCheck = hasMinimumLength(validation.content);
+      if (!lengthCheck.valid) {
+        lastErrors = [`Output too short (${lengthCheck.lines} lines, minimum ${lengthCheck.required}). Stylesheet may be truncated.`];
+        continue;
+      }
+
       validOutput = validation.content;
       wasExtracted = validation.extracted;
       break;
@@ -221,8 +265,11 @@ Before outputting, verify your showcase.html includes:
     }
   }
 
-  // Write outputs
-  const outputDir = join(projectDir, 'outputs', 'stylesheet');
+  // Write outputs (platform-specific if multi-platform)
+  const outputDir = isMultiPlatform && platform
+    ? getPlatformOutputDir(projectDir, 'stylesheet', platform)
+    : join(projectDir, 'outputs', 'stylesheet');
+
   await mkdir(outputDir, { recursive: true });
   const outputPath = join(outputDir, 'showcase.html');
 
@@ -238,19 +285,26 @@ Before outputting, verify your showcase.html includes:
     await updateProjectContext(projectDir, {
       ...styleInfo,
       selectedStyle: styleNum,
-      stylesheetPath: 'outputs/stylesheet/showcase.html'
+      stylesheetPath: isMultiPlatform && platform
+        ? `outputs/stylesheet/${platform}/showcase.html`
+        : 'outputs/stylesheet/showcase.html',
+      platform: platform || undefined
     });
     console.log('Updated CLAUDE.md with design context');
+
+    const outputPathDisplay = isMultiPlatform && platform
+      ? `outputs/stylesheet/${platform}/`
+      : 'outputs/stylesheet/';
 
     console.log(`
 Stylesheet complete!
 
-Outputs written to outputs/stylesheet/
+Outputs written to ${outputPathDisplay}
 
 Design context locked in CLAUDE.md. The brief has been consumed.
 
 Next: Review the design system, then run:
-  agentflow screens
+  agentflow screens${isMultiPlatform && platform ? ` --platform=${platform}` : ''}
 `);
   } else if (forceWrite) {
     // Force write invalid output with warning

@@ -1,5 +1,13 @@
 # Design Screen
 
+> **DEPRECATED**: This skill is maintained for backward compatibility.
+> Use platform-specific skills instead:
+> - `design-screen-webapp.md` - Responsive web (default)
+> - `design-screen-mobile.md` - Native mobile apps
+> - `design-screen-desktop.md` - Desktop applications
+>
+> Specify with: `agentflow screens --skill=webapp|mobile|desktop`
+
 Create a full screen design.
 
 ## Output Requirements

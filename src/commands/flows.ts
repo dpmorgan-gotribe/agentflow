@@ -3,22 +3,42 @@ import { join } from 'path';
 import { loadSystemPrompt, loadSkill } from '../lib/agent.js';
 import { runWorkersParallel } from '../lib/worker.js';
 import { validateAndCleanHTML, isValidHTMLStructure } from '../lib/validation.js';
+import { detectPlatforms, resolvePlatform, getPlatformOutputDir, getSharedAnalysisDir } from '../lib/platforms.js';
 
 interface FlowsOptions {
   style?: string;
+  platform?: string;
 }
 
 export async function flows(options: FlowsOptions = {}) {
   const projectDir = process.cwd();
   const styleNum = options.style || '0';
 
-  // Load flows from analysis
-  const flowsPath = join(projectDir, 'outputs', 'analysis', 'flows.md');
+  // Detect platforms
+  const platforms = await detectPlatforms(projectDir);
+  const isMultiPlatform = platforms.length > 0;
+  const platform = isMultiPlatform ? await resolvePlatform(projectDir, options.platform) : null;
+
+  if (isMultiPlatform && platform) {
+    console.log(`Generating flows for platform: ${platform}`);
+  }
+
+  // Determine paths
+  const analysisDir = isMultiPlatform
+    ? getSharedAnalysisDir(projectDir)
+    : join(projectDir, 'outputs', 'analysis');
+
+  const platformAnalysisDir = isMultiPlatform && platform
+    ? getPlatformOutputDir(projectDir, 'analysis', platform)
+    : analysisDir;
+
+  // Load flows from analysis (platform-specific if multi-platform)
+  const flowsPath = join(platformAnalysisDir, 'flows.md');
   let flowsContent: string;
   try {
     flowsContent = await readFile(flowsPath, 'utf-8');
   } catch {
-    console.error('No outputs/analysis/flows.md found.');
+    console.error(`No ${isMultiPlatform && platform ? `outputs/analysis/${platform}/flows.md` : 'outputs/analysis/flows.md'} found.`);
     console.error('Run `agentflow analyze` first.');
     process.exit(1);
   }
@@ -40,7 +60,7 @@ export async function flows(options: FlowsOptions = {}) {
       console.error('Content error: flows.md contains style analysis instead of user flows');
       console.error('Re-run `agentflow analyze` to regenerate flows.md');
     } else {
-      console.error('No flows found in outputs/analysis/flows.md');
+      console.error('No flows found in flows.md');
       console.error('Expected format: "## Flow N: Flow Name"');
     }
     process.exit(1);
@@ -52,18 +72,15 @@ export async function flows(options: FlowsOptions = {}) {
   // Load skill and system prompt
   const systemPrompt = await loadSystemPrompt(projectDir, 'ui-designer');
   const skill = await loadSkill(projectDir, 'design/design-flow');
-  const stylesContent = await readFile(
-    join(projectDir, 'outputs', 'analysis', 'styles.md'),
-    'utf-8'
-  );
+  const stylesContent = await readFile(join(analysisDir, 'styles.md'), 'utf-8');
+
+  // Determine mockup path (mockups are always in generic location - they're style previews, not platform-specific)
+  const mockupsDir = join(projectDir, 'outputs', 'mockups');
 
   // Load selected mockup HTML (if exists)
   let mockupHtml = '';
   try {
-    mockupHtml = await readFile(
-      join(projectDir, 'outputs', 'mockups', `style-${styleNum}.html`),
-      'utf-8'
-    );
+    mockupHtml = await readFile(join(mockupsDir, `style-${styleNum}.html`), 'utf-8');
     console.log(`Loaded mockup reference: style-${styleNum}.html`);
   } catch {
     // Mockup doesn't exist yet - flows may be run before mockups
@@ -90,7 +107,7 @@ CRITICAL STYLING REQUIREMENTS:
   const workerTasks = flowNames.map((flowName, index) => ({
     id: `flow-${index + 1}`,
     systemPrompt: `${systemPrompt}\n\n## Skill\n\n${skill}`,
-    userPrompt: `Create a flow mockup for: ${flowName}
+    userPrompt: `Create a flow mockup for: ${flowName}${platform ? ` (${platform} platform)` : ''}
 
 CRITICAL: Output ONLY raw HTML. Start with <!DOCTYPE html> and end with </html>.
 No explanations. No descriptions. No markdown. Just complete, valid HTML.
@@ -116,8 +133,11 @@ Remember: Output ONLY the HTML. Nothing else.`
   // Run workers in parallel
   const results = await runWorkersParallel(workerTasks);
 
-  // Write outputs
-  const outputDir = join(projectDir, 'outputs', 'flows');
+  // Write outputs (platform-specific if multi-platform)
+  const outputDir = isMultiPlatform && platform
+    ? getPlatformOutputDir(projectDir, 'flows', platform)
+    : join(projectDir, 'outputs', 'flows');
+
   await mkdir(outputDir, { recursive: true });
 
   let successCount = 0;
@@ -171,12 +191,14 @@ Remember: Output ONLY the HTML. Nothing else.`
     console.warn(`\nWarning: ${failCount} flow(s) may have invalid HTML`);
   }
 
+  const outputPath = isMultiPlatform && platform ? `outputs/flows/${platform}/` : 'outputs/flows/';
+
   console.log(`
 Flow mockups complete!
 
-Outputs written to outputs/flows/
+Outputs written to ${outputPath}
 
 Next: Review the flow mockups, then run:
-  agentflow mockups
+  agentflow mockups${isMultiPlatform && platform ? ` --platform=${platform}` : ''}
 `);
 }

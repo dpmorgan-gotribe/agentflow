@@ -7,7 +7,8 @@ Generate {styleCount} distinct style options based on research and brief.
 OUTPUT ONLY RAW MARKDOWN. No explanations. No descriptions.
 
 Your response must:
-- Start with: `# Style Analysis`
+- Start with the asset mode comment: `<!-- assetMode: standard -->` or `<!-- assetMode: useAssets -->`
+- Then: `# Style Analysis`
 - Be valid Markdown content
 - Follow the output format below exactly
 
@@ -23,8 +24,24 @@ DO NOT:
 - Wireframes (layout patterns)
 - Competitive research (from research.md)
 - Number of styles to generate: {styleCount}
+- Asset mode: standard or useAssets
+
+## Asset Modes
+
+### Standard Mode (assetMode: standard)
+- Style 0: Uses user assets (icons from assets/icons/, colors from brief)
+- Style 1+: Research-inspired with library icons (Lucide, Heroicons, etc.)
+
+### UseAssets Mode (assetMode: useAssets)
+ALL styles use user assets:
+- All styles use icons from assets/icons/
+- All styles use colors from brief
+- Styles vary ONLY in: typography, spacing, component styling, visual characteristics
+- Creates variations of user's vision, not research-inspired alternatives
 
 ## Process
+
+### Standard Mode
 
 1. **Style 0 - User's Vision**:
    - Based on user's brief AND wireframe layouts
@@ -39,6 +56,21 @@ DO NOT:
    - Style 2 takes cues from Competitor 2
    - Each should be meaningfully different
    - These styles use library icons (Lucide, Heroicons, etc.)
+
+### UseAssets Mode
+
+1. **Style 0 - Baseline Vision**:
+   - Based on user's brief AND wireframe layouts
+   - Colors: From brief brand guidelines
+   - Icons: User icons from assets/icons/
+   - Typography and spacing: User's preferred or sensible defaults
+
+2. **Style 1..N - Creative Variations**:
+   - ALL use same user icons and brief colors
+   - Vary typography (different font pairings)
+   - Vary spacing (compact vs airy)
+   - Vary component styling (rounded vs sharp, flat vs elevated)
+   - Each should feel distinctly different while using same assets
 
 3. **For Each Style, Define**:
    - Color palette (primary, secondary, accent, backgrounds, text)

@@ -8,6 +8,7 @@ export interface DesignContext {
   secondaryColor?: string;
   fontFamily?: string;
   stylesheetPath: string;
+  platform?: string;
 }
 
 const DESIGN_CONTEXT_MARKER = '<!-- DESIGN_CONTEXT -->';
@@ -29,6 +30,7 @@ export async function updateProjectContext(
   const contextSection = `
 ## Selected Design System
 
+${context.platform ? `**Platform:** ${context.platform}` : ''}
 **Style:** ${context.selectedStyle}${context.styleName ? ` - ${context.styleName}` : ''}
 ${context.primaryColor ? `**Primary Color:** ${context.primaryColor}` : ''}
 ${context.secondaryColor ? `**Secondary Color:** ${context.secondaryColor}` : ''}

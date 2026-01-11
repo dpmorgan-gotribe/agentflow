@@ -1,5 +1,13 @@
 # Design Stylesheet
 
+> **DEPRECATED**: This skill is maintained for backward compatibility.
+> Use platform-specific skills instead:
+> - `design-stylesheet-webapp.md` - Responsive web (default)
+> - `design-stylesheet-mobile.md` - Native mobile apps
+> - `design-stylesheet-desktop.md` - Desktop applications
+>
+> Specify with: `agentflow stylesheet --skill=webapp|mobile|desktop`
+
 Create a complete design system.
 
 ## CRITICAL OUTPUT REQUIREMENTS

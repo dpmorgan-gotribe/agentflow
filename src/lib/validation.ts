@@ -22,6 +22,73 @@ export function hasRequiredCSSTokens(content: string): boolean {
 }
 
 /**
+ * Required CSS classes that must be present in a stylesheet
+ * Organized by category for clearer error messages
+ */
+const REQUIRED_COMPONENT_CLASSES = {
+  buttons: ['.button-primary', '.btn-primary'],
+  forms: ['.form-input', '.form-select'],
+  cards: ['.card'],
+  lists: ['.list-item'],
+  navigation: ['.header', '.side-menu'],
+  feedback: ['.modal', '.toast'],
+  layout: ['.filter-pill']
+};
+
+/**
+ * Check if stylesheet contains required component classes
+ * Returns object with validation result and missing components
+ */
+export function hasRequiredComponents(content: string): {
+  valid: boolean;
+  missing: string[];
+  coverage: number;
+} {
+  const missing: string[] = [];
+  let found = 0;
+  let total = 0;
+
+  for (const [category, classes] of Object.entries(REQUIRED_COMPONENT_CLASSES)) {
+    total++;
+    // Check if at least one variant of the class exists
+    const hasClass = classes.some(cls => content.includes(cls));
+    if (!hasClass) {
+      missing.push(`${category} (${classes.join(' or ')})`);
+    } else {
+      found++;
+    }
+  }
+
+  return {
+    valid: missing.length === 0,
+    missing,
+    coverage: Math.round((found / total) * 100)
+  };
+}
+
+/**
+ * Minimum expected line count for a complete stylesheet
+ * This helps catch truncated outputs
+ */
+const MIN_STYLESHEET_LINES = 500;
+
+/**
+ * Check if stylesheet meets minimum length requirements
+ */
+export function hasMinimumLength(content: string): {
+  valid: boolean;
+  lines: number;
+  required: number;
+} {
+  const lines = content.split('\n').length;
+  return {
+    valid: lines >= MIN_STYLESHEET_LINES,
+    lines,
+    required: MIN_STYLESHEET_LINES
+  };
+}
+
+/**
  * Extract HTML from mixed content (e.g., content with preamble/postamble text)
  */
 export function extractHTMLFromMixed(content: string): string | null {
