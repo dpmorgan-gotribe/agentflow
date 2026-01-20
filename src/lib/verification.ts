@@ -257,3 +257,209 @@ export function extractNavigationSchema(flowsMarkdown: string): string | null {
   const match = flowsMarkdown.match(/```yaml\s*\n#\s*navigation-schema\n([\s\S]*?)```/);
   return match ? match[1].trim() : null;
 }
+
+/**
+ * Navigation override structure from navigation-schema.md
+ */
+export interface SectionNavigation {
+  header?: {
+    variant?: string;
+    actions?: string[];
+    breadcrumb?: boolean;
+  };
+  footer?: {
+    variant?: string;
+    tabs?: string[];
+  };
+  sidemenu?: {
+    visible?: boolean;
+    items?: string[];
+    variant?: string;
+  };
+}
+
+/**
+ * Parse navigation-schema.md content and build screen->navigation lookup
+ * Returns a map of screenId -> navigation override
+ */
+export function parseNavigationSchema(schemaContent: string): {
+  defaultNavigation: SectionNavigation;
+  screenNavigationMap: Map<string, SectionNavigation>;
+} {
+  const screenNavigationMap = new Map<string, SectionNavigation>();
+  let defaultNavigation: SectionNavigation = {};
+
+  // Parse YAML-like content (simple regex-based parsing)
+  // Extract defaultNavigation block
+  const defaultNavMatch = schemaContent.match(/defaultNavigation:\s*\n([\s\S]*?)(?=\n\s{4}sections:|\n\s{2}-\s)/);
+  if (defaultNavMatch) {
+    defaultNavigation = parseNavigationBlock(defaultNavMatch[1]);
+  }
+
+  // Split content by section markers
+  const sectionBlocks = schemaContent.split(/(?=\n\s*-\s*sectionId:)/);
+
+  for (const block of sectionBlocks) {
+    // Extract sectionId
+    const sectionIdMatch = block.match(/sectionId:\s*(\S+)/);
+    if (!sectionIdMatch) continue;
+
+    const sectionId = sectionIdMatch[1];
+
+    // Extract screens list
+    const screensMatch = block.match(/screens:\s*\[([^\]]+)\]/);
+    if (!screensMatch) continue;
+
+    const screens = screensMatch[1].split(',').map(s => s.trim().replace(/['"]/g, '')).filter(s => s);
+
+    // Extract navigationOverride block
+    const navOverrideMatch = block.match(/navigationOverride:\s*\n([\s\S]*?)(?=\n\s{8}screens:|\n\s*-\s*sectionId:|\n\s*$)/);
+    let navOverride: SectionNavigation = {};
+    if (navOverrideMatch) {
+      navOverride = parseNavigationBlock(navOverrideMatch[1]);
+    }
+
+    // Merge with default navigation
+    const mergedNav = mergeNavigation(defaultNavigation, navOverride);
+
+    // Assign to each screen in this section
+    for (const screenId of screens) {
+      screenNavigationMap.set(screenId, mergedNav);
+    }
+  }
+
+  return { defaultNavigation, screenNavigationMap };
+}
+
+/**
+ * Parse a navigation block from YAML-like content
+ */
+function parseNavigationBlock(block: string): SectionNavigation {
+  const nav: SectionNavigation = {};
+
+  // Parse header - look for header: followed by indented content or inline
+  const headerMatch = block.match(/header:\s*\n([\s\S]*?)(?=\n\s*(?:footer|sidemenu):|$)/);
+  if (headerMatch) {
+    nav.header = {};
+    const variantMatch = headerMatch[1].match(/variant:\s*(\S+)/);
+    if (variantMatch) nav.header.variant = variantMatch[1];
+    const actionsMatch = headerMatch[1].match(/actions:\s*\[([^\]]+)\]/);
+    if (actionsMatch) nav.header.actions = actionsMatch[1].split(',').map(s => s.trim());
+    const breadcrumbMatch = headerMatch[1].match(/breadcrumb:\s*(true|false)/);
+    if (breadcrumbMatch) nav.header.breadcrumb = breadcrumbMatch[1] === 'true';
+  }
+
+  // Parse footer
+  const footerMatch = block.match(/footer:\s*\n([\s\S]*?)(?=\n\s*(?:header|sidemenu):|$)/);
+  if (footerMatch) {
+    nav.footer = {};
+    const variantMatch = footerMatch[1].match(/variant:\s*(\S+)/);
+    if (variantMatch) nav.footer.variant = variantMatch[1];
+    const tabsMatch = footerMatch[1].match(/tabs:\s*\[([^\]]+)\]/);
+    if (tabsMatch) nav.footer.tabs = tabsMatch[1].split(',').map(s => s.trim());
+  }
+
+  // Parse sidemenu
+  const sidemenuMatch = block.match(/sidemenu:\s*\n?([\s\S]*?)(?=\n\s*(?:header|footer):|$)/);
+  if (sidemenuMatch) {
+    nav.sidemenu = {};
+    const visibleMatch = sidemenuMatch[1].match(/visible:\s*(true|false)/);
+    if (visibleMatch) nav.sidemenu.visible = visibleMatch[1] === 'true';
+    // Look for items or sections (both indicate menu items)
+    const itemsMatch = sidemenuMatch[1].match(/(?:items|sections):\s*\[([^\]]+)\]/);
+    if (itemsMatch) nav.sidemenu.items = itemsMatch[1].split(',').map(s => s.trim());
+    const variantMatch = sidemenuMatch[1].match(/variant:\s*(\S+)/);
+    if (variantMatch) nav.sidemenu.variant = variantMatch[1];
+  }
+
+  return nav;
+}
+
+/**
+ * Merge default navigation with section override
+ */
+function mergeNavigation(defaultNav: SectionNavigation, override: SectionNavigation): SectionNavigation {
+  return {
+    header: override.header ? { ...defaultNav.header, ...override.header } : defaultNav.header,
+    footer: override.footer ? { ...defaultNav.footer, ...override.footer } : defaultNav.footer,
+    sidemenu: override.sidemenu ? { ...defaultNav.sidemenu, ...override.sidemenu } : defaultNav.sidemenu
+  };
+}
+
+/**
+ * Apply navigation from schema to screens JSON
+ * Post-processes the screens array to add navigation details
+ */
+export function applyNavigationToScreens(
+  screens: Array<{ id: string; section?: string; navigation?: any; [key: string]: any }>,
+  screenNavigationMap: Map<string, SectionNavigation>,
+  defaultNavigation: SectionNavigation
+): void {
+  for (const screen of screens) {
+    // Look up navigation by screen id
+    let nav = screenNavigationMap.get(screen.id);
+
+    // If not found by id, try to infer from section
+    if (!nav && screen.section) {
+      // Find any screen in the same section that has navigation
+      for (const [screenId, screenNav] of screenNavigationMap.entries()) {
+        if (screenId.startsWith(screen.section + '-') || screenId.includes(screen.section)) {
+          nav = screenNav;
+          break;
+        }
+      }
+    }
+
+    // Apply navigation (use default if not found)
+    const effectiveNav = nav || defaultNavigation;
+
+    if (effectiveNav && Object.keys(effectiveNav).length > 0) {
+      // Build full navigation object with activeTab/activeSection
+      screen.navigation = {
+        header: effectiveNav.header || { variant: 'standard' },
+        footer: effectiveNav.footer ? {
+          ...effectiveNav.footer,
+          activeTab: inferActiveTab(screen.id, effectiveNav.footer.tabs)
+        } : { variant: 'hidden' },
+        sidemenu: effectiveNav.sidemenu ? {
+          ...effectiveNav.sidemenu,
+          activeSection: inferActiveSection(screen.id, effectiveNav.sidemenu.items)
+        } : { visible: false }
+      };
+    }
+  }
+}
+
+/**
+ * Infer which tab should be active based on screen id
+ */
+function inferActiveTab(screenId: string, tabs?: string[]): string | undefined {
+  if (!tabs || tabs.length === 0) return undefined;
+
+  // Check if screen id contains any tab name
+  for (const tab of tabs) {
+    if (screenId.includes(tab)) {
+      return tab;
+    }
+  }
+
+  // Default to first tab
+  return tabs[0];
+}
+
+/**
+ * Infer which section should be active in sidemenu
+ */
+function inferActiveSection(screenId: string, items?: string[]): string | undefined {
+  if (!items || items.length === 0) return undefined;
+
+  // Check if screen id contains any item name
+  for (const item of items) {
+    if (screenId.includes(item)) {
+      return item;
+    }
+  }
+
+  // Default to first item
+  return items[0];
+}

@@ -29,6 +29,7 @@ interface NavigationConfig {
   footer?: {
     variant?: string;
     tabs?: string[];
+    activeTab?: string;
     buttons?: string[];
     button?: string;
   };
@@ -37,6 +38,7 @@ interface NavigationConfig {
     visible?: boolean;
     background?: string;
     items?: string[];
+    activeSection?: string;
     highlight?: string;
   };
 }
@@ -277,13 +279,20 @@ export async function screens(options: ScreensOptions = {}) {
       return `## Navigation Context\nUse default app navigation.\n\n## Default Navigation\n${JSON.stringify(defaultNavigation, null, 2)}`;
     }
 
-    // Merge screen navigation with defaults
+    // Merge screen navigation with defaults (deep merge for nested objects)
     const nav = screenData.navigation || {};
     const effectiveNav = {
-      header: nav.header || defaultNavigation.header,
-      footer: nav.footer || defaultNavigation.footer,
-      sidemenu: nav.sidemenu || defaultNavigation.sidemenu
+      header: { ...defaultNavigation.header, ...nav.header },
+      footer: { ...defaultNavigation.footer, ...nav.footer },
+      sidemenu: { ...defaultNavigation.sidemenu, ...nav.sidemenu }
     };
+
+    // Extract specific navigation items
+    const footerTabs = effectiveNav.footer?.tabs || [];
+    const activeTab = effectiveNav.footer?.activeTab || footerTabs[0] || '';
+    const sidemenuItems = effectiveNav.sidemenu?.items || [];
+    const activeSection = effectiveNav.sidemenu?.activeSection || sidemenuItems[0] || '';
+    const headerActions = effectiveNav.header?.actions || [];
 
     return `## Screen Specification
 ID: ${screenData.id}
@@ -293,45 +302,84 @@ Section: ${screenData.section}
 Components: ${screenData.components?.join(', ') || 'none'}
 Icons needed: ${screenData.icons?.join(', ') || 'none'}
 
-## Navigation Context (MUST IMPLEMENT)
-${JSON.stringify(effectiveNav, null, 2)}
+## NAVIGATION (MUST IMPLEMENT EXACTLY)
 
-### Navigation Instructions:
-- Header variant "${effectiveNav.header?.variant || 'standard'}": ${getHeaderInstructions(effectiveNav.header)}
-- Footer variant "${effectiveNav.footer?.variant || 'hidden'}": ${getFooterInstructions(effectiveNav.footer)}
-- Sidemenu: ${getSidemenuInstructions(effectiveNav.sidemenu)}
+### Header
+- Variant: ${effectiveNav.header?.variant || 'standard'}
+- Actions: ${headerActions.length > 0 ? headerActions.join(', ') : 'none'}
+${getHeaderInstructions(effectiveNav.header, headerActions)}
 
-## Default App Navigation (for reference)
-${JSON.stringify(defaultNavigation, null, 2)}`;
+### Footer / Bottom Navigation
+- Variant: ${effectiveNav.footer?.variant || 'hidden'}
+${effectiveNav.footer?.variant === 'tab-bar' ? `- Tabs: [${footerTabs.join(', ')}]
+- Active Tab: "${activeTab}" (HIGHLIGHT THIS ONE)
+${getFooterInstructions(effectiveNav.footer, footerTabs, activeTab)}` : '- No bottom navigation for this screen'}
+
+### Sidemenu / Side Drawer
+- Visible: ${effectiveNav.sidemenu?.visible ? 'YES' : 'NO'}
+${effectiveNav.sidemenu?.visible && sidemenuItems.length > 0 ? `- Menu Items: [${sidemenuItems.join(', ')}]
+- Active Section: "${activeSection}" (HIGHLIGHT THIS ONE)
+${getSidemenuInstructions(effectiveNav.sidemenu, sidemenuItems, activeSection)}` : '- No sidemenu for this screen'}
+
+## Navigation JSON (for reference)
+${JSON.stringify(effectiveNav, null, 2)}`;
   }
 
-  function getHeaderInstructions(header?: NavigationConfig['header']): string {
-    if (!header) return 'Use standard header with logo and icons';
+  function getHeaderInstructions(header?: NavigationConfig['header'], actions?: string[]): string {
+    if (!header) return '- Use standard header with logo and icons';
+    const actionList = actions || header.actions || [];
     switch (header.variant) {
-      case 'minimal': return 'Logo only, minimal icons';
-      case 'breadcrumb': return `Back arrow + breadcrumbs: ${header.breadcrumbs?.join(' > ') || ''}`;
-      case 'standard': return `Logo centered, action icons: ${header.actions?.join(', ') || ''}`;
-      default: return 'Standard header';
+      case 'minimal':
+        return `- Show logo only, minimal or no action icons`;
+      case 'breadcrumb':
+        return `- Show back arrow on left, breadcrumbs: ${header.breadcrumbs?.join(' > ') || 'parent > current'}`;
+      case 'standard':
+        return `- Show logo centered
+- Right side icons: ${actionList.join(', ') || 'search, notifications'}
+- Left side: hamburger menu icon (if sidemenu visible)`;
+      case 'admin':
+        return `- Admin header with search bar
+- Right side: ${actionList.join(', ') || 'search, notifications, profile'}`;
+      default:
+        return '- Standard header layout';
     }
   }
 
-  function getFooterInstructions(footer?: NavigationConfig['footer']): string {
-    if (!footer) return 'No footer';
+  function getFooterInstructions(footer?: NavigationConfig['footer'], tabs?: string[], activeTab?: string): string {
+    if (!footer) return '';
     switch (footer.variant) {
-      case 'hidden': return 'No footer/bottom nav';
-      case 'tab-bar': return `Bottom tab bar with tabs: ${footer.tabs?.join(', ') || 'home, profile, chat'}`;
-      case 'wizard-buttons': return `Wizard footer with buttons: ${footer.buttons?.join(', ') || 'back, next'}`;
-      case 'payment-button': return `Single action button: ${footer.button || 'Pay'}`;
-      default: return 'No footer';
+      case 'hidden':
+        return '';
+      case 'tab-bar':
+        const tabList = tabs || footer.tabs || ['home', 'profile', 'chat'];
+        const active = activeTab || tabList[0];
+        return `- Create bottom tab bar with ${tabList.length} tabs
+- Each tab shows icon + label
+- Tab "${active}" should be visually highlighted (active state)
+- Other tabs use inactive/muted styling
+- Tabs clickable (can link to # for mockup)`;
+      case 'wizard-buttons':
+        return `- Wizard footer with navigation buttons: ${footer.buttons?.join(', ') || 'Back, Next'}`;
+      case 'payment-button':
+        return `- Single prominent action button: "${footer.button || 'Continue'}"`;
+      default:
+        return '';
     }
   }
 
-  function getSidemenuInstructions(sidemenu?: NavigationConfig['sidemenu']): string {
-    if (!sidemenu || sidemenu.variant === 'hidden') return 'No sidemenu';
-    if (sidemenu.visible || sidemenu.items) {
-      return `Hamburger menu opens drawer with items: ${sidemenu.items?.join(', ') || 'default items'}. Include interactive sidemenu with overlay.`;
+  function getSidemenuInstructions(sidemenu?: NavigationConfig['sidemenu'], items?: string[], activeSection?: string): string {
+    if (!sidemenu || sidemenu.variant === 'hidden' || !sidemenu.visible) return '';
+    const menuItems = items || sidemenu.items || [];
+    const active = activeSection || menuItems[0] || '';
+    if (menuItems.length > 0) {
+      return `- Hamburger icon in header triggers slide-out drawer
+- Drawer contains ${menuItems.length} menu items: ${menuItems.join(', ')}
+- Item "${active}" should be highlighted as active/selected
+- Other items use normal/inactive styling
+- Include semi-transparent overlay behind drawer
+- Close button or tap-outside to dismiss`;
     }
-    return 'Standard sidemenu via hamburger icon';
+    return '- Standard sidemenu via hamburger icon';
   }
 
   // Create worker tasks (one per screen)

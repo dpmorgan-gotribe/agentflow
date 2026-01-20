@@ -58,7 +58,13 @@ DO NOT:
    - **Components**: UI components needed (see list below)
    - **Icons**: Icons needed (see list below)
    - **Flows**: Which user flows include this screen
-   - **Navigation**: Only if different from app default
+   - **Navigation**: FULL navigation state including tabs and menu items
+
+6. **Extract Navigation Details** (CRITICAL):
+   - If a navigation-schema.md file path is provided, READ IT for section navigation
+   - Each section defines navigation overrides (footer tabs, sidemenu items)
+   - Apply section navigation to ALL screens in that section
+   - Include the ACTUAL tabs and items, not just variant names
 
 ## Component Reference
 
@@ -189,24 +195,73 @@ DO NOT:
     },
     "screens": [
       {
-        "id": "screen-id",
-        "file": "screen-id.html",
-        "name": "Screen Display Name",
-        "description": "What this screen shows and does",
-        "section": "section-id",
+        "id": "tribe-feed",
+        "file": "tribe-feed.html",
+        "name": "Tribe Feed",
+        "description": "Activity feed for a specific tribe",
+        "section": "tribe-detail",
         "parentEntity": "tribe",
         "navigation": {
-          "header": { "variant": "minimal" },
-          "footer": { "variant": "hidden" }
+          "header": { "variant": "standard", "actions": ["search", "notifications"] },
+          "footer": {
+            "variant": "tab-bar",
+            "tabs": ["feed", "profile", "messages"],
+            "activeTab": "feed"
+          },
+          "sidemenu": {
+            "visible": true,
+            "items": ["welcome", "events", "groups", "jobs", "wiki", "members", "offerings", "garden"],
+            "activeSection": "welcome"
+          }
         },
-        "components": ["header", "form-input", "button-primary"],
-        "icons": ["arrow_back", "close"],
+        "components": ["header", "side-menu", "post-card", "fab"],
+        "icons": ["menu", "search", "notifications", "add"],
+        "flows": ["tribe-engagement"]
+      },
+      {
+        "id": "auth-splash",
+        "file": "auth-splash.html",
+        "name": "Splash Screen",
+        "description": "App entry point with login options",
+        "section": "auth",
+        "navigation": {
+          "header": { "variant": "minimal" },
+          "footer": { "variant": "hidden" },
+          "sidemenu": { "visible": false }
+        },
+        "components": ["header", "button-primary", "button-secondary"],
+        "icons": ["arrow_back"],
         "flows": ["onboarding", "authentication"]
       }
     ]
   }
 }
 ```
+
+## Navigation Detail Requirements
+
+**CRITICAL: Include FULL navigation details for each screen, not just variants.**
+
+### Footer Navigation
+When `footer.variant` is "tab-bar", you MUST include:
+- `tabs`: Array of tab names (e.g., ["feed", "profile", "messages"])
+- `activeTab`: Which tab is active for this screen (e.g., "feed")
+
+### Sidemenu Navigation
+When `sidemenu.visible` is true, you MUST include:
+- `items`: Array of menu items (e.g., ["welcome", "events", "groups", "jobs"])
+- `activeSection`: Which section is highlighted for this screen (e.g., "events")
+
+### Header Navigation
+Always include:
+- `variant`: "standard", "minimal", "breadcrumb", or "hidden"
+- `actions`: Array of header action icons (e.g., ["search", "notifications"])
+
+### Inheriting Section Navigation
+If a navigation-schema.md is provided:
+1. Find the section this screen belongs to
+2. Copy that section's `navigationOverride` to the screen
+3. Set `activeTab` and `activeSection` appropriately for each screen
 
 **IMPORTANT:**
 - Include `detectedApps` array listing ALL apps/platforms found in the brief
@@ -231,7 +286,10 @@ DO NOT:
 - `description` - What the screen shows (from brief)
 - `section` - Section ID this screen belongs to
 - `parentEntity` - (optional) Entity context like "tribe", "event"
-- `navigation` - (optional) Only include if different from app default
+- `navigation` - REQUIRED: Full navigation state for this screen:
+  - `header`: { variant, actions[] }
+  - `footer`: { variant, tabs[]?, activeTab? }
+  - `sidemenu`: { visible, items[]?, activeSection? }
 - `components` - Array of component names (MINIMUM 2)
 - `icons` - Array of icon names (MINIMUM 1)
 - `flows` - Array of flow IDs this screen appears in (MINIMUM 1, use "miscellaneous" if standalone)
@@ -266,7 +324,9 @@ DO NOT:
 2. Every screen MUST have at least 2 components
 3. Every screen MUST have at least 1 icon
 4. Every screen MUST belong to at least 1 flow (use "miscellaneous" if needed)
-5. Navigation overrides only needed when different from app default
+5. Every screen MUST have full navigation object with header, footer, sidemenu
+6. If footer is tab-bar, MUST include tabs[] and activeTab
+7. If sidemenu is visible, MUST include items[] and activeSection
 
 ## Notes
 
@@ -275,3 +335,6 @@ DO NOT:
 - Use exact icon names from assets/icons/ if provided
 - Complex screens may have 10+ components and 5+ icons
 - Simple screens may have 3-5 components and 1-3 icons
+- **CRITICAL**: If navigation-schema.md is provided, READ IT to get section-level navigation
+- Apply section navigation (footer tabs, sidemenu items) to all screens in that section
+- The user can manually edit the JSON to correct navigation before generating screens

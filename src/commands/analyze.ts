@@ -1,4 +1,4 @@
-import { readdir, writeFile, mkdir } from 'fs/promises';
+import { readdir, writeFile, mkdir, readFile } from 'fs/promises';
 
 // Strip preamble text before the first markdown header
 function stripPreamble(content: string): string {
@@ -34,7 +34,9 @@ import {
   generateDetailedCoverageReport,
   printCoverageReport,
   printDetailedCoverageReport,
-  extractNavigationSchema
+  extractNavigationSchema,
+  parseNavigationSchema,
+  applyNavigationToScreens
 } from '../lib/verification.js';
 import {
   PlatformScreensJson,
@@ -522,14 +524,27 @@ Use these exact icon names when identifying icons for screens.`
           console.log(`  Retry ${attempt}/${MAX_RETRIES} for ${platform}...`);
         }
 
-        const screensResult = await runWorkerSequential({
+        // Check if navigation-schema.md exists for this platform
+          const platformDir = getPlatformOutputDir(projectDir, 'analysis', platform);
+          const navSchemaPath = join(platformDir, 'navigation-schema.md');
+
+          const screensResult = await runWorkerSequential({
           id: `screens-${platform}`,
           systemPrompt: `${systemPrompt}\n\n## Skill\n\n${screensSkill}`,
           timeout: 600000, // 10 minutes for large screen inventories
+          allowRead: true,
+          addDirs: [platformDir, sharedDir, projectDir],
           userPrompt: `Extract all screens for the ${platform} platform in v3.0 single-app format.
 
 ## Platform: ${platform}
 This analysis is specifically for the ${platform} platform.
+
+## CRITICAL: Read Navigation Schema
+**Navigation schema file:** ${navSchemaPath}
+Use the Read tool to examine this file. It contains section-level navigation that MUST be applied to each screen:
+- Footer tabs and which tab is active per section
+- Sidemenu items and which section is active
+- Header variants and actions
 
 ## Platform Screen Inventory
 ${platformBrief.content}
@@ -546,6 +561,7 @@ For each screen, identify:
 1. UI components needed (header, bottom-nav, card, button-primary, modal, form-input, avatar, badge, etc.)
 2. Icons needed (navigation icons, action icons, tab icons, feature icons)
 3. Which flows this screen belongs to
+4. **FULL navigation state** from the navigation-schema.md (footer.tabs, footer.activeTab, sidemenu.items, sidemenu.activeSection)
 
 OUTPUT v3.0 JSON FORMAT (SINGLE APP):
 {
@@ -563,14 +579,19 @@ OUTPUT v3.0 JSON FORMAT (SINGLE APP):
     },
     "screens": [
       {
-        "id": "screen-id",
-        "file": "screen-id.html",
-        "name": "Screen Name",
-        "description": "What this screen shows",
-        "section": "section-id",
-        "components": ["header", "bottom-nav", "card"],
-        "icons": ["menu", "search", "home"],
-        "flows": ["onboarding", "discovery"]
+        "id": "tribe-feed",
+        "file": "tribe-feed.html",
+        "name": "Tribe Feed",
+        "description": "Activity feed for a tribe",
+        "section": "tribe-detail",
+        "navigation": {
+          "header": { "variant": "standard", "actions": ["search", "notifications"] },
+          "footer": { "variant": "tab-bar", "tabs": ["feed", "profile", "messages"], "activeTab": "feed" },
+          "sidemenu": { "visible": true, "items": ["welcome", "events", "groups", "jobs"], "activeSection": "welcome" }
+        },
+        "components": ["header", "side-menu", "post-card", "fab"],
+        "icons": ["menu", "search", "add"],
+        "flows": ["tribe-engagement"]
       }
     ]
   }
@@ -581,7 +602,12 @@ CRITICAL REQUIREMENTS:
 2. Include ALL screens from the platform inventory
 3. EVERY screen MUST have: components (min 2), icons (min 1), flows (min 1)
 4. Use "miscellaneous" flow for screens not in any defined flow
-${attempt > 1 ? '\n5. PREVIOUS ATTEMPT FAILED - ensure valid JSON with all required fields' : ''}
+5. EVERY screen MUST have full navigation object with:
+   - header: { variant, actions[] }
+   - footer: { variant, tabs[]?, activeTab? } - include tabs/activeTab when variant is "tab-bar"
+   - sidemenu: { visible, items[]?, activeSection? } - include items/activeSection when visible is true
+6. Get navigation details from the navigation-schema.md file
+${attempt > 1 ? '\n7. PREVIOUS ATTEMPT FAILED - ensure valid JSON with all required fields' : ''}
 
 No markdown, no explanations, just JSON.`
         });
@@ -743,15 +769,27 @@ Use these exact icon names when identifying icons for screens.`
               console.log(`    Retry ${attempt}/${MAX_RETRIES}...`);
             }
 
+            // Navigation schema path for single-platform
+            const navSchemaPath = join(sharedDir, 'navigation-schema.md');
+
             const screensResult = await runWorkerSequential({
               id: `screens-${platformId}`,
               systemPrompt: `${systemPrompt}\n\n## Skill\n\n${screensSkill}`,
               timeout: 600000,
+              allowRead: true,
+              addDirs: [sharedDir, projectDir],
               userPrompt: `Extract all screens for ${briefApp.appName} in v3.0 single-app format.
 
 ${platformInventory}
 
 **CRITICAL**: Your output MUST include ALL ${screenCount} screens from the inventory above.
+
+## CRITICAL: Read Navigation Schema
+**Navigation schema file:** ${navSchemaPath}
+Use the Read tool to examine this file. It contains section-level navigation that MUST be applied to each screen:
+- Footer tabs and which tab is active per section
+- Sidemenu items and which section is active
+- Header variants and actions
 
 ## Flows Analysis (filter for screens in this app)
 ${stripPreamble(flowsResult.output)}
@@ -765,6 +803,7 @@ For each screen, identify:
 1. UI components needed (header, bottom-nav, card, button-primary, modal, form-input, avatar, badge, etc.)
 2. Icons needed (navigation icons, action icons, tab icons, feature icons)
 3. Which flows this screen belongs to
+4. **FULL navigation state** from the navigation-schema.md (footer.tabs, footer.activeTab, sidemenu.items, sidemenu.activeSection)
 
 OUTPUT v3.0 JSON FORMAT (SINGLE APP):
 {
@@ -782,14 +821,19 @@ OUTPUT v3.0 JSON FORMAT (SINGLE APP):
     },
     "screens": [
       {
-        "id": "screen-id",
-        "file": "screen-id.html",
-        "name": "Screen Name",
-        "description": "What this screen shows",
-        "section": "section-id",
-        "components": ["header", "bottom-nav", "card"],
-        "icons": ["menu", "search", "home"],
-        "flows": ["onboarding", "discovery"]
+        "id": "tribe-feed",
+        "file": "tribe-feed.html",
+        "name": "Tribe Feed",
+        "description": "Activity feed for a tribe",
+        "section": "tribe-detail",
+        "navigation": {
+          "header": { "variant": "standard", "actions": ["search", "notifications"] },
+          "footer": { "variant": "tab-bar", "tabs": ["feed", "profile", "messages"], "activeTab": "feed" },
+          "sidemenu": { "visible": true, "items": ["welcome", "events", "groups", "jobs"], "activeSection": "welcome" }
+        },
+        "components": ["header", "side-menu", "post-card", "fab"],
+        "icons": ["menu", "search", "add"],
+        "flows": ["tribe-engagement"]
       }
     ]
   }
@@ -800,7 +844,12 @@ CRITICAL REQUIREMENTS:
 2. Include ALL ${screenCount} screens from the inventory
 3. EVERY screen MUST have: components (min 2), icons (min 1), flows (min 1)
 4. Use "miscellaneous" flow for screens not in any defined flow
-${attempt > 1 ? '\n5. PREVIOUS ATTEMPT FAILED - ensure valid JSON with all required fields' : ''}
+5. EVERY screen MUST have full navigation object with:
+   - header: { variant, actions[] }
+   - footer: { variant, tabs[]?, activeTab? } - include tabs/activeTab when variant is "tab-bar"
+   - sidemenu: { visible, items[]?, activeSection? } - include items/activeSection when visible is true
+6. Get navigation details from the navigation-schema.md file
+${attempt > 1 ? '\n7. PREVIOUS ATTEMPT FAILED - ensure valid JSON with all required fields' : ''}
 
 No markdown, no explanations, just JSON.`
             });
@@ -871,6 +920,9 @@ No markdown, no explanations, just JSON.`
 
         const expectedHtmlFiles = new Set(allHtmlFiles);
 
+        // Navigation schema path (used for both webapp and admin screens)
+        const navSchemaPath = join(sharedDir, 'navigation-schema.md');
+
         const MAX_RETRIES = 2;
         let validOutput: PlatformScreensJson | null = null;
         let detectedApps: Array<{ appId: string; appType: string; screenCount: number }> = [];
@@ -890,6 +942,7 @@ No markdown, no explanations, just JSON.`
                 return `- ${f} (${name})`;
               }).join('\n');
 
+          // Simplified prompt - navigation will be added via post-processing
           const screensResult = await runWorkerSequential({
             id: 'screens-extraction',
             systemPrompt: `${systemPrompt}\n\n## Skill\n\n${screensSkill}`,
@@ -937,7 +990,7 @@ ${iconInventoryForScreens}
 REQUIREMENTS:
 1. Include ALL ${webappScreens.length} screens from the list above
 2. Every screen needs: components (2+), icons (1+), flows (1+)
-3. Use screen filename to infer section (e.g., "tribe-feed.html" -> section: "tribes")
+3. Use screen filename to infer section (e.g., "tribe-feed.html" -> section: "tribe-detail")
 4. Use reasonable component/icon defaults based on screen name
 ${attempt > 1 ? '5. RETRY: Output ONLY valid JSON, nothing else.' : ''}
 
@@ -979,6 +1032,16 @@ OUTPUT JSON ONLY:`
 
         // Write primary app screens
         if (validOutput) {
+          // Post-process: Apply navigation from navigation-schema.md
+          try {
+            const navSchemaContent = await readFile(navSchemaPath, 'utf-8');
+            const { defaultNavigation, screenNavigationMap } = parseNavigationSchema(navSchemaContent);
+            applyNavigationToScreens(validOutput.app.screens, screenNavigationMap, defaultNavigation);
+            console.log(`  Applied navigation from navigation-schema.md (${screenNavigationMap.size} mappings)`);
+          } catch (e) {
+            console.warn(`  Warning: Could not apply navigation schema: ${e instanceof Error ? e.message : 'error'}`);
+          }
+
           const primaryAppId = validOutput.app.appId || 'webapp';
           const screensFilename = getScreensFilename(primaryAppId);
           const screensPath = join(sharedDir, screensFilename);
@@ -1024,6 +1087,7 @@ OUTPUT JSON ONLY:`
             // Use same pre-extraction approach for admin screens
             const adminScreenList = adminScreens.join(', ');
 
+            // Simplified prompt - navigation will be added via post-processing
             const adminResult = await runWorkerSequential({
               id: 'screens-admin',
               systemPrompt: `${systemPrompt}\n\n## Skill\n\n${screensSkill}`,
@@ -1057,7 +1121,7 @@ ${iconInventoryForScreens}
         "file": "admin-dashboard.html",
         "name": "Admin Dashboard",
         "description": "Main admin overview",
-        "section": "admin-overview",
+        "section": "dashboard",
         "components": ["header", "side-menu", "stat-card", "data-table"],
         "icons": ["dashboard", "trending_up"],
         "flows": ["admin-overview"]
@@ -1086,6 +1150,16 @@ OUTPUT JSON ONLY:`
 
                 if (validation.valid) {
                   const adminOutput = parsed as PlatformScreensJson;
+
+                  // Post-process: Apply navigation from navigation-schema.md
+                  try {
+                    const navSchemaContent = await readFile(navSchemaPath, 'utf-8');
+                    const { defaultNavigation, screenNavigationMap } = parseNavigationSchema(navSchemaContent);
+                    applyNavigationToScreens(adminOutput.app.screens, screenNavigationMap, defaultNavigation);
+                  } catch {
+                    // Navigation schema may not have admin sections - that's ok
+                  }
+
                   const adminFilename = 'admin-screens.json';
                   await writeFile(join(sharedDir, adminFilename), JSON.stringify(adminOutput, null, 2));
 
