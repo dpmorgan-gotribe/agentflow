@@ -109,16 +109,18 @@ export async function stylesheet(options: StylesheetOptions) {
 
   // Determine mockup path (mockups are always in generic location - they're style previews, not platform-specific)
   const mockupsDir = join(projectDir, 'outputs', 'mockups');
+  const mockupPath = join(mockupsDir, `style-${styleNum}.html`);
 
-  // Load selected mockup
-  let mockupContent: string;
+  // Verify mockup exists (but don't load it - agent will read it)
   try {
-    mockupContent = await readFile(join(mockupsDir, `style-${styleNum}.html`), 'utf-8');
+    await readFile(mockupPath, 'utf-8');
   } catch {
     console.error(`Mockup style-${styleNum}.html not found.`);
     console.error('Run `agentflow mockups` first.');
     process.exit(1);
   }
+
+  console.log(`Mockup file: ${mockupPath}`);
 
   // Load skill and system prompt (use platform-specific skill)
   const systemPrompt = await loadSystemPrompt(projectDir, 'ui-designer');
@@ -185,31 +187,48 @@ Your showcase.html MUST include:
     }
 
     // Build user prompt with retry emphasis if needed
-    let userPrompt = `Create a complete design system based on style ${styleNum}${platform ? ` for the ${platform} platform` : ''}.
+    // NOTE: We pass the mockup FILE PATH instead of inline content to prevent truncation
+    let userPrompt = `## YOUR PRIMARY TASK
+Create a complete design system that EXACTLY matches mockup style-${styleNum}.
 
-## Style Definitions
-${stylesContent}
+## STEP 1: READ THE MOCKUP FILE (CRITICAL)
+**Mockup file path:** ${mockupPath}
+
+You MUST use the Read tool to examine this mockup file. This is the SOURCE OF TRUTH.
+Extract these EXACT values from the mockup:
+- All CSS variables from :root { }
+- Font family declarations
+- Spacing/padding values
+- Border radius values
+- Shadow definitions
+- Color values (primary, secondary, header-bg, etc.)
+
+## STEP 2: Apply to Design System
+${platform ? `Platform: ${platform}` : ''}
 
 ${componentsSection}
 
 ${iconsSection}
 
-## Selected Mockup HTML Reference
-The following HTML is the approved mockup for Style ${styleNum}. Your design system MUST match its styling EXACTLY.
+## Style Definitions (for reference)
+${stylesContent}
 
-\`\`\`html
-${mockupContent}
-\`\`\`
+## CRITICAL REQUIREMENTS
+1. **READ the mockup file first** using the Read tool
+2. Extract ALL CSS variables and values from the mockup's :root { } section
+3. Your output MUST use the SAME font families as the mockup
+4. Your output MUST use the SAME spacing values as the mockup
+5. Your output MUST use the SAME border-radius as the mockup
+6. Your output MUST use the SAME colors as the mockup
+7. Do NOT use generic/default values - use what's in the mockup file
 
-## CRITICAL STYLING REQUIREMENTS
-You MUST extract and replicate these elements EXACTLY from the mockup above:
-- **Header**: structure, background color (#3D3D3D charcoal), icon colors (white inactive, green active), logo placement
-- **Footer**: structure, background color (#3D3D3D charcoal), icon colors (white inactive, green active), active indicator styling
-- **Icons**: style (outlined vs filled), colors for inactive (#FFFFFF) and active (#6B9B37) states
-- **Logo**: size, position, and color treatment
-- **Notification badges**: red (#E53935) with white text
-
-The header and footer in your showcase.html MUST visually match the mockup.
+## STYLING TO MATCH FROM MOCKUP
+After reading the mockup, replicate:
+- **Header**: structure, background color, icon colors, logo placement
+- **Footer**: structure, background color, icon colors, active indicator styling
+- **Typography**: font families, sizes, weights from the mockup
+- **Spacing**: padding, margins, gaps from the mockup
+- **Colors**: all color values from the mockup's CSS variables
 
 ## COMPONENT COVERAGE CHECK
 Before outputting, verify your stylesheet includes CSS for:
@@ -220,22 +239,20 @@ Before outputting, verify your stylesheet includes CSS for:
 - All feedback components (modal, toast, empty-state, loading)
 - All layout components (filter-pills, section-header, divider, grid)
 
-## ICON GALLERY CHECK
-Before outputting, verify your showcase.html includes:
-- An Icons section showing ALL required icons in a grid
-- Each icon with its name label below
-- Icon state demos (default, active, disabled, inverted)
-- Icon size demos (16px, 24px, 32px, 48px)
-- CSS for icon styling (.icon-gallery, .icon-grid, .icon-item, etc.)`;
+## OUTPUT FORMAT
+Output ONLY raw HTML starting with <!DOCTYPE html> and ending with </html>.
+No explanations, no summaries, no markdown code fences.`;
 
     if (attempt > 1) {
-      userPrompt = `IMPORTANT: Your previous response was invalid. ${lastErrors.join('. ')}.\n\nYou MUST output ONLY raw HTML starting with <!DOCTYPE html> and ending with </html>. No explanations, no summaries, no markdown.\n\n${userPrompt}`;
+      userPrompt = `IMPORTANT: Your previous response was invalid. ${lastErrors.join('. ')}.\n\nYou MUST output ONLY raw HTML starting with <!DOCTYPE html> and ending with </html>. No explanations, no summaries, no markdown.\n\nREMEMBER: Read the mockup file at ${mockupPath} first!\n\n${userPrompt}`;
     }
 
     const result = await runWorkerSequential({
       id: 'stylesheet',
       systemPrompt: `${systemPrompt}\n\n## Skill\n\n${skill}`,
-      userPrompt
+      userPrompt,
+      allowRead: true,
+      addDirs: [mockupsDir, analysisDir, projectDir]
     });
 
     if (!result.output) {
@@ -322,25 +339,28 @@ Next: Review the design system, then run:
     console.warn('Errors detected:');
     lastErrors.forEach(e => console.warn(`  - ${e}`));
 
-    // Try to write whatever we have (use same detailed prompt)
+    // Try to write whatever we have (use same detailed prompt with file path)
     const forcePrompt = `Create a complete design system based on style ${styleNum}.
+
+## MOCKUP FILE (READ THIS FIRST)
+${mockupPath}
+
+Use the Read tool to examine the mockup file and extract all styling.
 
 ## Style Definitions
 ${stylesContent}
 
 ${componentsSection}
 
-## Selected Mockup HTML Reference
-\`\`\`html
-${mockupContent}
-\`\`\`
-
-Match header/footer/icons from the mockup EXACTLY. Include all required components.`;
+Match header/footer/icons from the mockup EXACTLY. Include all required components.
+Output ONLY raw HTML.`;
 
     const result = await runWorkerSequential({
       id: 'stylesheet-force',
       systemPrompt: `${systemPrompt}\n\n## Skill\n\n${skill}`,
-      userPrompt: forcePrompt
+      userPrompt: forcePrompt,
+      allowRead: true,
+      addDirs: [mockupsDir, analysisDir, projectDir]
     });
 
     if (result.output) {

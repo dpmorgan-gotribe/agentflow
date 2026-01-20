@@ -1,6 +1,19 @@
 # Analyze Screens & Components
 
-Extract all screens and map required UI components and icons for each screen.
+Extract ALL screens from the project brief and map required UI components and icons.
+
+## CRITICAL: Read the Brief File First
+
+**You will be given a file path to the project brief. Use the Read tool to examine it.**
+
+The brief may be in ANY format:
+- **Tree/ASCII**: `├── Section pages:[file.html, file2.html]`
+- **JSON code blocks**: `{ "apps": { ... } }`
+- **Markdown tables**: `| Screen | Description |`
+- **Plain prose**: "The home screen shows..."
+- **Mixed formats**: Any combination above
+
+Your job is to extract ALL screens regardless of format.
 
 ## Output Requirements
 
@@ -19,24 +32,29 @@ DO NOT:
 - Add any text before or after the JSON
 - Say "Now I have..." or "Let me..." or "Here's the..."
 
-## Inputs
-- Project brief with navigation schema (apps, sections, screens)
-- flows.md (user journeys with screen sequences)
-
 ## Process
 
-1. **Parse the Brief Schema**:
-   - Extract apps from the navigation schema JSON
-   - For each app, extract appId, appName, appType, layoutSkill
-   - Extract defaultNavigation for each app
-   - Extract all screens from each section
+1. **Read the Entire Brief File**:
+   - Use the Read tool to examine the brief
+   - Read ALL sections - don't stop early
+   - Look for screens in ANY format mentioned above
 
-2. **Parse User Flows**:
-   - Find each `## Flow N: [Name]` section in flows.md
-   - Extract flow ID from name (lowercase, hyphenated)
+2. **Detect Apps/Platforms**:
+   - Look for "[separate app]" markers
+   - Look for "ADMIN PORTAL", "Mobile App", "Backend" sections
+   - Note ALL apps found (include in detectedApps array)
+
+3. **Extract ALL Screens**:
+   - Find every .html file reference
+   - Find every `pages:[...]` pattern
+   - Find every screen name in navigation trees
+   - Find every screen mentioned in prose
+
+4. **Parse User Flows** (if provided):
+   - Find each `## Flow N: [Name]` section
    - Note which screens belong to which flows
 
-3. **For Each Screen, Identify**:
+5. **For Each Screen, Identify**:
    - **Components**: UI components needed (see list below)
    - **Icons**: Icons needed (see list below)
    - **Flows**: Which user flows include this screen
@@ -158,6 +176,7 @@ DO NOT:
 {
   "version": "3.0",
   "generatedAt": "2026-01-11T12:00:00Z",
+  "detectedApps": ["webapp", "admin"],
   "app": {
     "appId": "gotribe-webapp",
     "appName": "GoTribe Webapp",
@@ -190,9 +209,10 @@ DO NOT:
 ```
 
 **IMPORTANT:**
-- Output SINGLE `app` object, NOT `apps` array
-- The prompt will specify which app you're generating for
+- Include `detectedApps` array listing ALL apps/platforms found in the brief
+- Output SINGLE `app` object for the PRIMARY app being requested
 - Include ALL screens for that specific app only
+- Additional apps will be extracted in follow-up calls
 
 ## Field Requirements
 

@@ -8,6 +8,7 @@ import { stylesheet } from './commands/stylesheet.js';
 import { screens } from './commands/screens.js';
 import { planFix } from './commands/plan-fix.js';
 import { planFeature } from './commands/plan-feature.js';
+import { planLesson, archiveLesson } from './commands/plan-lesson.js';
 import { userflows } from './commands/userflows.js';
 
 const program = new Command();
@@ -84,5 +85,16 @@ program
   .option('--context <text>', 'Additional context for the feature')
   .description('Create a feature plan')
   .action(planFeature);
+
+program
+  .command('plan-lesson <description>')
+  .option('--context <text>', 'Additional context for the lesson')
+  .description('Create a lesson plan for CLAUDE.md')
+  .action(planLesson);
+
+program
+  .command('archive-lesson <file>')
+  .description('Move a lesson plan to archive after adding to CLAUDE.md')
+  .action(archiveLesson);
 
 program.parse();

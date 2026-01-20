@@ -853,43 +853,65 @@ No markdown, no explanations, just JSON.`
           }
         }
       } else {
-        // Single app without brief schema - use default webapp
-        console.log('  No brief schema found, generating single webapp-screens.json');
+        // No rigid JSON schema found - use pre-extraction approach
+        // Extract screen files from brief and ask agent to enrich with components/icons
+        console.log('  Using pre-extraction approach (extracting screen files from brief)');
+
+        const briefPath = join(projectDir, 'brief.md');
+
+        // Pre-extract all .html file names from the brief
+        const briefContent = combinedBrief || '';
+        const allHtmlFiles = [...new Set(briefContent.match(/[a-z0-9-]+\.html/g) || [])];
+
+        // Split into webapp and admin screens
+        const webappScreens = allHtmlFiles.filter(f => !f.startsWith('admin-'));
+        const adminScreens = allHtmlFiles.filter(f => f.startsWith('admin-'));
+
+        console.log(`  Found ${allHtmlFiles.length} total screens: ${webappScreens.length} webapp, ${adminScreens.length} admin`);
+
+        const expectedHtmlFiles = new Set(allHtmlFiles);
 
         const MAX_RETRIES = 2;
         let validOutput: PlatformScreensJson | null = null;
+        let detectedApps: Array<{ appId: string; appType: string; screenCount: number }> = [];
 
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
           if (attempt > 1) {
             console.log(`  Retry ${attempt}/${MAX_RETRIES}...`);
           }
 
+          // Pass pre-extracted screen list - much simpler than asking agent to parse brief
+          // For large lists (>150), just pass file names without descriptions
+          const screenList = webappScreens.length > 150
+            ? webappScreens.join(', ')
+            : webappScreens.map(f => {
+                const id = f.replace('.html', '');
+                const name = id.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                return `- ${f} (${name})`;
+              }).join('\n');
+
           const screensResult = await runWorkerSequential({
-            id: 'screens-webapp',
+            id: 'screens-extraction',
             systemPrompt: `${systemPrompt}\n\n## Skill\n\n${screensSkill}`,
             timeout: 600000,
-            userPrompt: `Extract all screens in v3.0 single-app format.
+            userPrompt: `OUTPUT ONLY RAW JSON. Start with { end with }. No explanations.
 
-## Flows Analysis
-${stripPreamble(flowsResult.output)}
+## TASK: Add components and icons to these ${webappScreens.length} webapp screens
 
-## Project Brief (for component and icon context)
-${combinedBrief || 'No brief provided.'}
+## SCREEN LIST (already extracted from brief)
+${screenList}
+${webappScreens.length > 200 ? `\n... and ${webappScreens.length - 200} more screens` : ''}
 
 ${iconInventoryForScreens}
 
-For each screen, identify:
-1. UI components needed (header, bottom-nav, card, button-primary, modal, form-input, avatar, badge, etc.)
-2. Icons needed (navigation icons, action icons, tab icons, feature icons)
-3. Which flows this screen belongs to
-
-OUTPUT v3.0 JSON FORMAT (SINGLE APP):
+## OUTPUT FORMAT
 {
   "version": "3.0",
   "generatedAt": "${new Date().toISOString()}",
+  "detectedApps": ["webapp"${adminScreens.length > 0 ? ', "admin"' : ''}],
   "app": {
     "appId": "webapp",
-    "appName": "Web Application",
+    "appName": "GoTribe Webapp",
     "appType": "webapp",
     "layoutSkill": "webapp",
     "defaultNavigation": {
@@ -899,27 +921,27 @@ OUTPUT v3.0 JSON FORMAT (SINGLE APP):
     },
     "screens": [
       {
-        "id": "screen-id",
-        "file": "screen-id.html",
-        "name": "Screen Name",
-        "description": "What this screen shows",
-        "section": "section-id",
-        "components": ["header", "bottom-nav", "card"],
-        "icons": ["menu", "search", "home"],
-        "flows": ["onboarding", "discovery"]
+        "id": "filter-tribes",
+        "file": "filter-tribes.html",
+        "name": "Filter Tribes",
+        "description": "Filter and search tribes",
+        "section": "filters",
+        "components": ["header", "search-bar", "filter-pills", "list-item"],
+        "icons": ["filter", "search", "close"],
+        "flows": ["discovery"]
       }
     ]
   }
 }
 
-CRITICAL REQUIREMENTS:
-1. Output SINGLE "app" object (NOT "apps" array)
-2. Include ALL screens from the flows analysis
-3. EVERY screen MUST have: components (min 2), icons (min 1), flows (min 1)
-4. Use "miscellaneous" flow for screens not in any defined flow
-${attempt > 1 ? '\n5. PREVIOUS ATTEMPT FAILED - ensure valid JSON with all required fields' : ''}
+REQUIREMENTS:
+1. Include ALL ${webappScreens.length} screens from the list above
+2. Every screen needs: components (2+), icons (1+), flows (1+)
+3. Use screen filename to infer section (e.g., "tribe-feed.html" -> section: "tribes")
+4. Use reasonable component/icon defaults based on screen name
+${attempt > 1 ? '5. RETRY: Output ONLY valid JSON, nothing else.' : ''}
 
-No markdown, no explanations, just JSON.`
+OUTPUT JSON ONLY:`
           });
 
           if (screensResult.output) {
@@ -930,6 +952,15 @@ No markdown, no explanations, just JSON.`
 
             try {
               const parsed = JSON.parse(jsonContent);
+
+              // Extract detected apps for potential follow-up
+              if (parsed.detectedApps && Array.isArray(parsed.detectedApps)) {
+                detectedApps = parsed.detectedApps.map((appId: string) => ({
+                  appId,
+                  appType: appId.includes('admin') ? 'admin' : 'webapp',
+                  screenCount: 0
+                }));
+              }
 
               // Validate v3.0 schema
               const validation = validateSchema(parsed);
@@ -946,24 +977,130 @@ No markdown, no explanations, just JSON.`
           }
         }
 
-        // Write webapp-screens.json
-        const screensPath = join(sharedDir, 'webapp-screens.json');
-
+        // Write primary app screens
         if (validOutput) {
+          const primaryAppId = validOutput.app.appId || 'webapp';
+          const screensFilename = getScreensFilename(primaryAppId);
+          const screensPath = join(sharedDir, screensFilename);
+
           await writeFile(screensPath, JSON.stringify(validOutput, null, 2));
-          console.log('  Written: webapp-screens.json');
+          console.log(`  Written: ${screensFilename}`);
 
           const screenCount = validOutput.app.screens.length;
           const components = getAllComponents(validOutput);
           const icons = getAllIcons(validOutput);
-          const coverage = getCoverage(validOutput);
+          const flowCoverage = getCoverage(validOutput);
 
           console.log(`  Screens: ${screenCount}`);
           console.log(`  Components: ${components.length}`);
           console.log(`  Icons: ${icons.length}`);
 
-          const status = coverage.percent === 100 ? '✓' : '⚠';
-          console.log(`  ${status} Flow Coverage: ${coverage.inFlows}/${coverage.total} (${coverage.percent}%)`);
+          const status = flowCoverage.percent === 100 ? '✓' : '⚠';
+          console.log(`  ${status} Flow Coverage: ${flowCoverage.inFlows}/${flowCoverage.total} (${flowCoverage.percent}%)`);
+
+          // Coverage validation against webapp screens (not total including admin)
+          const extractedFiles = new Set(validOutput.app.screens.map(s => s.file));
+          const webappExpected = new Set(webappScreens);
+          const missingWebapp = [...webappExpected].filter(f => !extractedFiles.has(f));
+          const webappCoverage = webappExpected.size > 0
+            ? Math.round((extractedFiles.size / webappExpected.size) * 100)
+            : 100;
+
+          if (webappCoverage < 90 && webappExpected.size > 0) {
+            console.warn(`  ⚠ Webapp Coverage: ${webappCoverage}% (${extractedFiles.size}/${webappExpected.size} files)`);
+            if (missingWebapp.length <= 10) {
+              console.warn(`    Missing: ${missingWebapp.slice(0, 10).join(', ')}`);
+            } else {
+              console.warn(`    Missing ${missingWebapp.length} files (showing first 10): ${missingWebapp.slice(0, 10).join(', ')}...`);
+            }
+          } else if (webappExpected.size > 0) {
+            console.log(`  ✓ Webapp Coverage: ${webappCoverage}%`);
+          }
+
+          // Extract admin screens if found in brief
+          if (adminScreens.length > 0) {
+            console.log(`\n  Extracting admin screens (${adminScreens.length} found in brief)...`);
+
+            // Use same pre-extraction approach for admin screens
+            const adminScreenList = adminScreens.join(', ');
+
+            const adminResult = await runWorkerSequential({
+              id: 'screens-admin',
+              systemPrompt: `${systemPrompt}\n\n## Skill\n\n${screensSkill}`,
+              timeout: 600000,
+              userPrompt: `OUTPUT ONLY RAW JSON. Start with { end with }. No explanations.
+
+## TASK: Add components and icons to these ${adminScreens.length} admin screens
+
+## SCREEN LIST
+${adminScreenList}
+
+${iconInventoryForScreens}
+
+## OUTPUT FORMAT
+{
+  "version": "3.0",
+  "generatedAt": "${new Date().toISOString()}",
+  "app": {
+    "appId": "admin",
+    "appName": "Admin Portal",
+    "appType": "admin",
+    "layoutSkill": "desktop",
+    "defaultNavigation": {
+      "header": { "variant": "admin", "actions": ["search", "notifications"] },
+      "footer": { "variant": "hidden" },
+      "sidemenu": { "visible": true, "items": ["dashboard", "users", "content"] }
+    },
+    "screens": [
+      {
+        "id": "admin-dashboard",
+        "file": "admin-dashboard.html",
+        "name": "Admin Dashboard",
+        "description": "Main admin overview",
+        "section": "admin-overview",
+        "components": ["header", "side-menu", "stat-card", "data-table"],
+        "icons": ["dashboard", "trending_up"],
+        "flows": ["admin-overview"]
+      }
+    ]
+  }
+}
+
+REQUIREMENTS:
+1. Include ALL ${adminScreens.length} admin screens
+2. Every screen needs: components (2+), icons (1+), flows (1+)
+3. Admin screens typically use: side-menu, data-table, stat-card, chart, pagination
+
+OUTPUT JSON ONLY:`
+            });
+
+            if (adminResult.output) {
+              let jsonContent = adminResult.output.trim();
+              if (jsonContent.startsWith('```')) {
+                jsonContent = jsonContent.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+              }
+
+              try {
+                const parsed = JSON.parse(jsonContent);
+                const validation = validateSchema(parsed);
+
+                if (validation.valid) {
+                  const adminOutput = parsed as PlatformScreensJson;
+                  const adminFilename = 'admin-screens.json';
+                  await writeFile(join(sharedDir, adminFilename), JSON.stringify(adminOutput, null, 2));
+
+                  const adminCount = adminOutput.app.screens.length;
+                  const adminCoverage = Math.round((adminCount / adminScreens.length) * 100);
+                  console.log(`  Written: ${adminFilename} (${adminCount}/${adminScreens.length} screens, ${adminCoverage}%)`);
+                } else {
+                  console.warn(`  Admin schema validation failed`);
+                  validation.errors.slice(0, 3).forEach(e => console.warn(`    - ${e}`));
+                }
+              } catch (e) {
+                console.warn(`  Failed to parse admin screens: ${e instanceof Error ? e.message : 'error'}`);
+              }
+            }
+          }
         } else {
           console.warn('  Warning: Failed to generate valid v3.0 schema');
         }

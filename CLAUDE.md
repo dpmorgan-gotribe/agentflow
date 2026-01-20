@@ -71,6 +71,8 @@ const fullPrompt = `${systemPrompt}\n\n## Skill\n\n${skill}`;
 | `agentflow screens` | Generate all screen HTMLs |
 | `agentflow plan-fix <name>` | Create bug fix plan |
 | `agentflow plan-feature <name>` | Create feature plan |
+| `agentflow plan-lesson <desc>` | Create lesson plan for CLAUDE.md |
+| `agentflow archive-lesson <file>` | Archive lesson after adding to CLAUDE.md |
 
 ## Adding a New Command
 
@@ -133,3 +135,103 @@ const result = await runWorkerSequential(task);
 - `src/lib/agent.ts:invokeAgent()` - Spawns Claude CLI process
 - `src/lib/worker.ts:runWorkersParallel()` - Parallel execution
 - `src/commands/init.ts` - Project scaffolding logic
+
+---
+
+## Lessons
+
+Principles and patterns discovered during development. These inform all future work on this project.
+
+### Adding New Lessons
+
+When we discover an important principle or pattern:
+1. Add it to this Lessons section
+2. Use the lesson template format below
+3. Include context (which bug/feature led to discovery)
+4. Keep descriptions concise but actionable
+
+---
+
+### Agent Design
+
+#### Lesson: File paths over inline content
+**Added:** 2025-01-20
+**Context:** BUG-010 investigation - stylesheet not matching mockup, screens extraction missing pages
+
+Never embed large files inline in prompts. Instead:
+1. Give the agent the file path
+2. Grant read access to the directory
+3. Let the agent read the file itself
+
+| Approach | Problem |
+|----------|---------|
+| Inline content | Truncation, context overflow, agent skims |
+| File path + read access | Full content, agent reads what it needs, can re-read |
+
+**Applies to:** Brief files (1000+ lines), mockup HTML (500+ lines), any large context files.
+
+**Implementation:**
+```typescript
+// Bad: inline content
+userPrompt = `...\n${largeFileContent}\n...`;
+
+// Good: file path with read access
+const result = await runWorkerSequential({
+  userPrompt: `Read this file: ${filePath}`,
+  allowRead: true,
+  addDirs: [parentDir]
+});
+```
+
+**Real-world impact (BUG-010):**
+- Inline brief → 75% of screens missing from extraction (118 of 483)
+- Inline mockup → Stylesheet CSS variables didn't match selected style
+- Solution: File paths with read access → Complete extraction, accurate styling
+
+---
+
+#### Lesson: Agent-centric parsing
+**Added:** 2025-01-20
+**Context:** BUG-010 investigation - brief format parsing
+
+Don't build rigid TypeScript parsers for brief formats. Briefs can be in ANY format:
+- Tree/ASCII structure
+- JSON blocks
+- Markdown tables
+- Plain prose descriptions
+- Mixed formats
+
+Let the analyst agent decipher any format. Our job is to:
+1. Give clear instructions
+2. Validate outputs
+3. Provide feedback when extraction is incomplete
+
+**Anti-pattern:** Building `extractNavigationSchemaFromTree()` or `extractNavigationSchemaFromJSON()` functions.
+
+**Better:** Pass full brief to agent with instructions: "Extract ALL screens regardless of format."
+
+---
+
+### Validation
+
+#### Lesson: Validate outputs against source
+**Added:** 2025-01-20
+**Context:** BUG-010 investigation - 75% of screens missing
+
+After agent extraction, validate completeness by comparing against source:
+
+```typescript
+// Count .html files in brief vs extracted screens
+const briefHtmlFiles = new Set(briefContent.match(/[a-z0-9-]+\.html/g) || []);
+const extractedFiles = new Set(result.screens.map(s => s.file));
+const coverage = extractedFiles.size / briefHtmlFiles.size;
+
+if (coverage < 0.9) {
+  console.warn(`Warning: Only ${Math.round(coverage*100)}% screen coverage`);
+}
+```
+
+**Applies to:**
+- Screen extraction: Compare extracted count vs .html mentions in brief
+- Stylesheet: Compare CSS variables in mockup vs generated
+- Any extraction task: Validate output completeness
