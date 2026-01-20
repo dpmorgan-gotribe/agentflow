@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
+import { AppType, detectAppType, getLayoutSkill } from './navigation-schema.js';
 
 export interface PlatformBrief {
   platform: string;
@@ -186,18 +187,30 @@ export async function resolvePlatform(
 export type SkillType = 'webapp' | 'mobile' | 'desktop';
 
 /**
- * Default mapping from platform to skill type
- * Platforms without specific skills default to webapp
+ * Resolved app information with type and skill
  */
-const platformToSkillMap: Record<string, SkillType> = {
-  webapp: 'webapp',
-  mobile: 'mobile',
-  desktop: 'desktop',
-  // All other platforms (backend, admin, etc.) default to webapp
-};
+export interface ResolvedApp {
+  platform: string;
+  appType: AppType;
+  layoutSkill: SkillType;
+}
+
+/**
+ * Resolve app information from platform name
+ */
+export function resolveAppInfo(platform: string): ResolvedApp {
+  const appType = detectAppType(platform);
+  const layoutSkill = getLayoutSkill(appType);
+  return { platform, appType, layoutSkill };
+}
 
 /**
  * Resolve which layout skill to use based on platform and optional override
+ *
+ * Uses app-type detection to determine appropriate skill:
+ * - webapp platforms -> webapp skill (responsive layouts)
+ * - mobile platforms -> mobile skill (touch-optimized)
+ * - backend/admin platforms -> desktop skill (dense layouts for power users)
  *
  * @param platform - The target platform (webapp, mobile, backend, etc.)
  * @param skillOverride - Optional skill override (webapp, mobile, desktop)
@@ -206,7 +219,8 @@ const platformToSkillMap: Record<string, SkillType> = {
  * @example
  * resolveSkill('webapp')                    // Returns 'webapp'
  * resolveSkill('mobile')                    // Returns 'mobile'
- * resolveSkill('backend')                   // Returns 'webapp' (default)
+ * resolveSkill('backend')                   // Returns 'desktop' (admin panels)
+ * resolveSkill('admin')                     // Returns 'desktop' (admin panels)
  * resolveSkill('backend', 'mobile')         // Returns 'mobile' (override)
  */
 export function resolveSkill(platform: string, skillOverride?: string): SkillType {
@@ -220,6 +234,7 @@ export function resolveSkill(platform: string, skillOverride?: string): SkillTyp
     console.warn(`Warning: Invalid skill "${skillOverride}". Valid options: ${validSkills.join(', ')}. Using default.`);
   }
 
-  // Use platform-to-skill mapping, default to webapp
-  return platformToSkillMap[platform] || 'webapp';
+  // Use app-type detection to determine skill
+  const appType = detectAppType(platform);
+  return getLayoutSkill(appType);
 }

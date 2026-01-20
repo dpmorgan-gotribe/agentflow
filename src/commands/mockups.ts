@@ -4,6 +4,7 @@ import { validateAndCleanHTML } from '../lib/validation.js';
 import { loadSystemPrompt, loadSkill } from '../lib/agent.js';
 import { runWorkersParallel } from '../lib/worker.js';
 import { detectPlatforms, getSharedAnalysisDir } from '../lib/platforms.js';
+import { getAllComponents, PlatformScreensJson, getScreensFilename, getPlatformId } from '../lib/navigation-schema.js';
 
 // Extract asset mode from styles.md metadata comment
 function extractAssetMode(stylesContent: string): 'useAssets' | 'standard' {
@@ -55,29 +56,25 @@ export async function mockups() {
   try {
     stylesContent = await readFile(join(analysisDir, 'styles.md'), 'utf-8');
 
-    // Load components from first available screens.json (mockups are style previews, not platform-specific)
-    if (isMultiPlatform && platforms.length > 0) {
-      for (const p of platforms) {
-        try {
-          const screensJson = await readFile(join(projectDir, 'outputs', 'analysis', p, 'screens.json'), 'utf-8');
-          const screensData = JSON.parse(screensJson);
-          if (screensData.components) {
-            componentsContent = `## Required Components\n${screensData.components.join(', ')}`;
-            break; // Use first available
-          }
-        } catch {
-          // Try next platform
-        }
-      }
-    } else {
+    // Load components from first available per-platform screens file
+    // Try common platform names: webapp, admin, mobile
+    const platformsToTry = isMultiPlatform && platforms.length > 0
+      ? platforms.map(p => getPlatformId(p))
+      : ['webapp', 'admin', 'mobile'];
+
+    for (const platformId of platformsToTry) {
       try {
-        const screensJson = await readFile(join(analysisDir, 'screens.json'), 'utf-8');
-        const screensData = JSON.parse(screensJson);
-        if (screensData.components) {
-          componentsContent = `## Required Components\n${screensData.components.join(', ')}`;
+        const screensFilename = `${platformId}-screens.json`;
+        const screensJson = await readFile(join(analysisDir, screensFilename), 'utf-8');
+        const screensData = JSON.parse(screensJson) as PlatformScreensJson;
+        const components = getAllComponents(screensData);
+        if (components.length > 0) {
+          componentsContent = `## Required Components\n${components.join(', ')}`;
+          console.log(`Loaded ${components.length} components from ${screensFilename}`);
+          break; // Use first available
         }
       } catch {
-        // No screens.json yet - that's ok for mockups
+        // Try next platform
       }
     }
 

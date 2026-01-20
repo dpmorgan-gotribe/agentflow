@@ -6,7 +6,8 @@
     "agentflow": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run copy-templates",
+    "copy-templates": "node -e \"const fs=require('fs');fs.cpSync('src/templates','dist/templates',{recursive:true})\"",
     "dev": "tsc --watch"
   },
   "dependencies": {

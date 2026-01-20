@@ -5,6 +5,7 @@ import { runWorkerSequential } from '../lib/worker.js';
 import { updateProjectContext, extractStyleInfo } from '../lib/context.js';
 import { validateAndCleanHTML, hasRequiredCSSTokens, hasRequiredComponents, hasMinimumLength } from '../lib/validation.js';
 import { detectPlatforms, resolvePlatform, getPlatformOutputDir, getSharedAnalysisDir, resolveSkill } from '../lib/platforms.js';
+import { getAllComponents, getAllIcons, PlatformScreensJson, getPlatformId } from '../lib/navigation-schema.js';
 
 interface StylesheetOptions {
   style: string;
@@ -45,24 +46,46 @@ export async function stylesheet(options: StylesheetOptions) {
 
   // Load analysis outputs
   let stylesContent: string;
-  let screensData: {
-    components?: string[];
-    screenComponents?: Record<string, string[]>;
-    icons?: string[];
-    screenIcons?: Record<string, string[]>;
-  } = {};
+  let screensJsonData: PlatformScreensJson | null = null;
+  let componentsList: string[] = [];
+  let iconsList: string[] = [];
 
   try {
     stylesContent = await readFile(join(analysisDir, 'styles.md'), 'utf-8');
 
-    // Load screens.json for component and icon lists (platform-specific if multi-platform)
-    const screensJson = await readFile(join(platformAnalysisDir, 'screens.json'), 'utf-8');
-    screensData = JSON.parse(screensJson);
-    if (screensData.components) {
-      console.log(`Loaded ${screensData.components.length} components from screens.json`);
+    // Load per-platform screens file
+    const platformId = platform ? getPlatformId(platform) : 'webapp';
+    const screensFilename = `${platformId}-screens.json`;
+
+    // Try platform-specific file first, then fall back to common names
+    const filesToTry = [
+      join(analysisDir, screensFilename),
+      join(analysisDir, 'webapp-screens.json'),
+      join(analysisDir, 'admin-screens.json')
+    ];
+
+    for (const filePath of filesToTry) {
+      try {
+        const screensJson = await readFile(filePath, 'utf-8');
+        screensJsonData = JSON.parse(screensJson) as PlatformScreensJson;
+
+        // Validate it's v3.0 format
+        if (screensJsonData.version === '3.0' && screensJsonData.app) {
+          componentsList = getAllComponents(screensJsonData);
+          iconsList = getAllIcons(screensJsonData);
+          console.log(`Loaded from ${filePath.split(/[/\\]/).pop()}`);
+          break;
+        }
+      } catch {
+        // Try next file
+      }
     }
-    if (screensData.icons) {
-      console.log(`Loaded ${screensData.icons.length} icons from screens.json`);
+
+    if (componentsList.length > 0) {
+      console.log(`  ${componentsList.length} components`);
+    }
+    if (iconsList.length > 0) {
+      console.log(`  ${iconsList.length} icons`);
     }
   } catch {
     console.error('Analysis outputs not found.');
@@ -81,9 +104,8 @@ export async function stylesheet(options: StylesheetOptions) {
     // No icons directory - that's ok
   }
 
-  // Build component requirements section
-  const componentsList = screensData.components || [];
-  const screenComponents = screensData.screenComponents || {};
+  // Build component requirements section (componentsList already loaded above)
+  // Note: screenComponents mapping not available in v3.0 schema - components are embedded in each screen
 
   // Determine mockup path (mockups are always in generic location - they're style previews, not platform-specific)
   const mockupsDir = join(projectDir, 'outputs', 'mockups');
@@ -114,16 +136,8 @@ export async function stylesheet(options: StylesheetOptions) {
   const componentsSection = componentsList.length > 0
     ? `## Required Components (${componentsList.length} total)
 Your stylesheet MUST include styles for ALL these components:
-${componentsList.join(', ')}
-
-## Screen-Component Mapping
-This shows which components each screen needs - ensure comprehensive coverage:
-${JSON.stringify(screenComponents, null, 2)}`
+${componentsList.join(', ')}`
     : '## Components\nNo component mapping found - include common UI components.';
-
-  // Build icon requirements section
-  const iconsList = screensData.icons || [];
-  const screenIcons = screensData.screenIcons || {};
 
   // Determine icon source based on style
   // Path depth: outputs/stylesheet/showcase.html = 2 levels, outputs/stylesheet/{platform}/showcase.html = 3 levels
@@ -151,10 +165,6 @@ CDN: ${iconSource.cdn}
 Include comment: <!-- Icons: https://lucide.dev -->
 
 Use: <img src="${iconSource.cdn}{icon-name}.svg" alt="icon-name" />`}
-
-## Screen-Icon Mapping
-This shows which icons each screen needs:
-${JSON.stringify(screenIcons, null, 2)}
 
 ## Icon Gallery Requirements
 Your showcase.html MUST include:

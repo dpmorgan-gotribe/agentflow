@@ -2,8 +2,9 @@ import { readFile, readdir, writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { loadSystemPrompt, loadSkill } from '../lib/agent.js';
 import { runWorkersParallel } from '../lib/worker.js';
-import { validateAndCleanHTML, isValidHTMLStructure } from '../lib/validation.js';
+import { validateAndCleanHTML, isValidHTMLStructure, correctAssetPaths, getScreensOutputInfo } from '../lib/validation.js';
 import { detectPlatforms, resolvePlatform, getPlatformOutputDir, getSharedAnalysisDir, resolveSkill } from '../lib/platforms.js';
+import { getAllScreenFiles, PlatformScreensJson, getPlatformId } from '../lib/navigation-schema.js';
 
 interface ScreenInfo {
   id: string;
@@ -17,9 +18,39 @@ interface Userflow {
   screens: ScreenInfo[];
 }
 
-interface ScreensJson {
-  screens: string[];
-  userflows: Userflow[];
+interface NavigationConfig {
+  header?: {
+    variant?: string;
+    actions?: string[];
+    logo?: string;
+    background?: string;
+    breadcrumbs?: string[];
+  };
+  footer?: {
+    variant?: string;
+    tabs?: string[];
+    buttons?: string[];
+    button?: string;
+  };
+  sidemenu?: {
+    variant?: string;
+    visible?: boolean;
+    background?: string;
+    items?: string[];
+    highlight?: string;
+  };
+}
+
+interface FullScreenData {
+  id: string;
+  file: string;
+  name: string;
+  description: string;
+  section: string;
+  navigation?: NavigationConfig;
+  components: string[];
+  icons: string[];
+  flows: string[];
 }
 
 interface ScreensOptions {
@@ -33,24 +64,30 @@ interface ScreensOptions {
 export async function screens(options: ScreensOptions = {}) {
   const projectDir = process.cwd();
 
-  // Detect platforms
+  // Detect platforms from brief files
   const platforms = await detectPlatforms(projectDir);
   const isMultiPlatform = platforms.length > 0;
-  const platform = isMultiPlatform ? await resolvePlatform(projectDir, options.platform) : null;
+
+  // Allow --platform to work even without brief files
+  let platform: string | null = null;
+  if (options.platform) {
+    // User explicitly specified a platform - use it directly
+    platform = options.platform;
+  } else if (isMultiPlatform) {
+    platform = await resolvePlatform(projectDir, options.platform);
+  }
 
   // Resolve which layout skill to use
   const skillType = resolveSkill(platform || 'webapp', options.skill);
 
-  if (isMultiPlatform && platform) {
+  if (platform) {
     console.log(`Generating screens for platform: ${platform}, skill: ${skillType}`);
   } else {
     console.log(`Generating screens with skill: ${skillType}`);
   }
 
   // Determine paths
-  const analysisDir = isMultiPlatform
-    ? getSharedAnalysisDir(projectDir)
-    : join(projectDir, 'outputs', 'analysis');
+  const analysisDir = join(projectDir, 'outputs', 'analysis');
 
   const platformAnalysisDir = isMultiPlatform && platform
     ? getPlatformOutputDir(projectDir, 'analysis', platform)
@@ -59,21 +96,50 @@ export async function screens(options: ScreensOptions = {}) {
   let uniqueScreens: string[] = [];
   let userflows: Userflow[] = [];
 
-  // Try to load screens.json first (preferred source, platform-specific if multi-platform)
-  const screensJsonPath = join(platformAnalysisDir, 'screens.json');
-  try {
-    const screensJsonContent = await readFile(screensJsonPath, 'utf-8');
-    const screensData: ScreensJson = JSON.parse(screensJsonContent);
+  // Store full screen data and default navigation for passing to LLM
+  const screenDataMap: Map<string, FullScreenData> = new Map();
+  let defaultNavigation: NavigationConfig = {};
 
-    // Use the flat screens array directly
-    uniqueScreens = screensData.screens.map(s => s.replace('.html', ''));
-    userflows = screensData.userflows || [];
+  // Load per-platform screens file (v3.0 format)
+  const platformId = options.platform ? getPlatformId(options.platform) : 'webapp';
+  const screensFilename = `${platformId}-screens.json`;
 
-    console.log(`Loaded ${uniqueScreens.length} screen(s) from screens.json`);
-    if (userflows.length > 0) {
-      console.log(`Found ${userflows.length} userflow(s): ${userflows.map(u => u.name).join(', ')}`);
+  // Try platform-specific file first, then fall back to common names
+  const filesToTry = [
+    join(analysisDir, screensFilename),
+    join(analysisDir, 'webapp-screens.json'),
+    join(analysisDir, 'admin-screens.json')
+  ];
+
+  let loadedFromFile = '';
+  for (const filePath of filesToTry) {
+    try {
+      const screensJsonContent = await readFile(filePath, 'utf-8');
+      const screensData = JSON.parse(screensJsonContent) as PlatformScreensJson;
+
+      // Validate v3.0 format
+      if (screensData.version === '3.0' && screensData.app) {
+        const screenFiles = getAllScreenFiles(screensData);
+        uniqueScreens = screenFiles.map(s => s.replace('.html', ''));
+        loadedFromFile = filePath.split(/[/\\]/).pop() || '';
+        console.log(`Loaded ${uniqueScreens.length} screen(s) from ${loadedFromFile}`);
+
+        // Store default navigation from app config
+        defaultNavigation = screensData.app.defaultNavigation || {};
+
+        // Store full screen data for each screen
+        for (const screen of screensData.app.screens) {
+          screenDataMap.set(screen.id, screen as FullScreenData);
+        }
+
+        break;
+      }
+    } catch {
+      // Try next file
     }
-  } catch {
+  }
+
+  if (uniqueScreens.length === 0) {
     // Fall back to extracting from flow HTML files
     console.log('screens.json not found, extracting from flow HTMLs...');
 
@@ -111,7 +177,7 @@ export async function screens(options: ScreensOptions = {}) {
   if (uniqueScreens.length === 0) {
     console.error('No screens found.');
     console.error('Either:');
-    console.error('  1. Run `agentflow analyze` to generate screens.json');
+    console.error('  1. Run `agentflow analyze` to generate {platform}-screens.json (v3.0)');
     console.error('  2. Run `agentflow flows` with id="screen-[name]" elements');
     process.exit(1);
   }
@@ -123,10 +189,13 @@ export async function screens(options: ScreensOptions = {}) {
     uniqueScreens = uniqueScreens.slice(0, limit);
   }
 
-  // Determine output directory
-  const outputDir = isMultiPlatform && platform
-    ? getPlatformOutputDir(projectDir, 'screens', platform)
+  // Determine output directory based on platform and skill
+  const outputInfo = getScreensOutputInfo(platform, skillType);
+  const outputDir = outputInfo.folderName
+    ? join(projectDir, 'outputs', 'screens', outputInfo.folderName)
     : join(projectDir, 'outputs', 'screens');
+  const assetDepth = outputInfo.depth;
+  console.log(`Output directory: ${outputInfo.folderName || "screens"}`);
 
   await mkdir(outputDir, { recursive: true });
 
@@ -168,7 +237,7 @@ export async function screens(options: ScreensOptions = {}) {
   console.log(`Generating ${screensToGenerate.length} screen(s)${options.force ? ' (forced)' : ''}`);
 
   // Load stylesheet (platform-specific if multi-platform)
-  const stylesheetDir = isMultiPlatform && platform
+  const stylesheetDir = platform
     ? getPlatformOutputDir(projectDir, 'stylesheet', platform)
     : join(projectDir, 'outputs', 'stylesheet');
 
@@ -176,9 +245,14 @@ export async function screens(options: ScreensOptions = {}) {
   try {
     stylesheetContent = await readFile(join(stylesheetDir, 'showcase.html'), 'utf-8');
   } catch {
-    console.error('No stylesheet found.');
-    console.error('Run `agentflow stylesheet` first.');
-    process.exit(1);
+    // Try shared stylesheet if platform-specific does not exist
+    try {
+      stylesheetContent = await readFile(join(projectDir, 'outputs', 'stylesheet', 'showcase.html'), 'utf-8');
+    } catch {
+      console.error('No stylesheet found.');
+      console.error('Run `agentflow stylesheet` first.');
+      process.exit(1);
+    }
   }
 
   // Load skill and system prompt (use platform-specific skill)
@@ -196,11 +270,80 @@ export async function screens(options: ScreensOptions = {}) {
   // Get indices for screen naming (maintain original numbering)
   const screenIndices = screensToGenerate.map(name => uniqueScreens.indexOf(name));
 
+  // Helper to build navigation context for a screen
+  function buildNavigationContext(screenName: string): string {
+    const screenData = screenDataMap.get(screenName);
+    if (!screenData) {
+      return `## Navigation Context\nUse default app navigation.\n\n## Default Navigation\n${JSON.stringify(defaultNavigation, null, 2)}`;
+    }
+
+    // Merge screen navigation with defaults
+    const nav = screenData.navigation || {};
+    const effectiveNav = {
+      header: nav.header || defaultNavigation.header,
+      footer: nav.footer || defaultNavigation.footer,
+      sidemenu: nav.sidemenu || defaultNavigation.sidemenu
+    };
+
+    return `## Screen Specification
+ID: ${screenData.id}
+Name: ${screenData.name}
+Description: ${screenData.description}
+Section: ${screenData.section}
+Components: ${screenData.components?.join(', ') || 'none'}
+Icons needed: ${screenData.icons?.join(', ') || 'none'}
+
+## Navigation Context (MUST IMPLEMENT)
+${JSON.stringify(effectiveNav, null, 2)}
+
+### Navigation Instructions:
+- Header variant "${effectiveNav.header?.variant || 'standard'}": ${getHeaderInstructions(effectiveNav.header)}
+- Footer variant "${effectiveNav.footer?.variant || 'hidden'}": ${getFooterInstructions(effectiveNav.footer)}
+- Sidemenu: ${getSidemenuInstructions(effectiveNav.sidemenu)}
+
+## Default App Navigation (for reference)
+${JSON.stringify(defaultNavigation, null, 2)}`;
+  }
+
+  function getHeaderInstructions(header?: NavigationConfig['header']): string {
+    if (!header) return 'Use standard header with logo and icons';
+    switch (header.variant) {
+      case 'minimal': return 'Logo only, minimal icons';
+      case 'breadcrumb': return `Back arrow + breadcrumbs: ${header.breadcrumbs?.join(' > ') || ''}`;
+      case 'standard': return `Logo centered, action icons: ${header.actions?.join(', ') || ''}`;
+      default: return 'Standard header';
+    }
+  }
+
+  function getFooterInstructions(footer?: NavigationConfig['footer']): string {
+    if (!footer) return 'No footer';
+    switch (footer.variant) {
+      case 'hidden': return 'No footer/bottom nav';
+      case 'tab-bar': return `Bottom tab bar with tabs: ${footer.tabs?.join(', ') || 'home, profile, chat'}`;
+      case 'wizard-buttons': return `Wizard footer with buttons: ${footer.buttons?.join(', ') || 'back, next'}`;
+      case 'payment-button': return `Single action button: ${footer.button || 'Pay'}`;
+      default: return 'No footer';
+    }
+  }
+
+  function getSidemenuInstructions(sidemenu?: NavigationConfig['sidemenu']): string {
+    if (!sidemenu || sidemenu.variant === 'hidden') return 'No sidemenu';
+    if (sidemenu.visible || sidemenu.items) {
+      return `Hamburger menu opens drawer with items: ${sidemenu.items?.join(', ') || 'default items'}. Include interactive sidemenu with overlay.`;
+    }
+    return 'Standard sidemenu via hamburger icon';
+  }
+
   // Create worker tasks (one per screen)
   const workerTasks = screensToGenerate.map((screenName, i) => ({
     id: `screen-${String(screenIndices[i] + 1).padStart(2, '0')}`,
     systemPrompt: `${systemPrompt}\n\n## Skill\n\n${skill}`,
-    userPrompt: `Create the full design for screen: ${screenName}${platform ? ` (${platform} platform)` : ''}\n\nUse the stylesheet:\n${stylesheetContent}`
+    userPrompt: `Create the full design for screen: ${screenName}${platform ? ` (${platform} platform)` : ''}
+
+${buildNavigationContext(screenName)}
+
+Use the stylesheet:
+${stylesheetContent}`
   }));
 
   // Run workers in parallel
@@ -220,7 +363,9 @@ export async function screens(options: ScreensOptions = {}) {
       // Validate the output
       const validation = validateAndCleanHTML(result.output);
 
-      await writeFile(outputPath, validation.content);
+      // Correct asset paths based on output directory depth
+      const correctedHtml = correctAssetPaths(validation.content, assetDepth);
+      await writeFile(outputPath, correctedHtml);
 
       if (validation.valid) {
         successCount++;
@@ -239,8 +384,8 @@ export async function screens(options: ScreensOptions = {}) {
   }
 
   const totalGenerated = successCount + skippedCount;
-  const outputPathDisplay = isMultiPlatform && platform
-    ? `outputs/screens/${platform}/`
+  const outputPathDisplay = outputInfo.folderName
+    ? `outputs/screens/${outputInfo.folderName}/`
     : 'outputs/screens/';
 
   console.log(`

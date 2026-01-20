@@ -142,14 +142,18 @@ Use these icons for Style 0 mockups:
 
 ---
 
+## Style 1+ Format (DEPENDS ON ASSET MODE)
+
+### If assetMode: standard (research-inspired)
+```markdown
 ## Style 1: [Creative Name]
 **Inspired by**: [Competitor 1 name from research]
 **Personality**: [2-3 word description]
 
 ### Colors
-- Primary: #XXXXXX - [color name]
-- Secondary: #XXXXXX - [color name]
-- Accent: #XXXXXX - [color name]
+- Primary: #XXXXXX - [competitor-inspired color]
+- Secondary: #XXXXXX - [competitor-inspired color]
+- Accent: #XXXXXX - [competitor-inspired color]
 - Background: #XXXXXX
 - Surface: #XXXXXX
 - Text Primary: #XXXXXX
@@ -158,17 +162,51 @@ Use these icons for Style 0 mockups:
 - Success: #16A34A
 
 ### Typography
-- Headings: [Font Name] - https://fonts.google.com/specimen/[FontName]
-- Body: [Font Name] - https://fonts.google.com/specimen/[FontName]
-- Scale: [sizes]
-
-### Spacing
-- Base unit: [4px or 8px]
-- Scale: [values]
+- Headings: [Font from research] - https://fonts.google.com/specimen/[FontName]
+- Body: [Font from research] - https://fonts.google.com/specimen/[FontName]
 
 ### Characteristics
 - [Characteristic from competitor]
 - [Characteristic from competitor]
+```
+
+### If assetMode: useAssets (variations of user vision)
+```markdown
+## Style 1: [Variation Name - e.g., "Compact & Dense"]
+**Variation**: [Description - e.g., "Compact density with geometric fonts"]
+**Personality**: [2-3 word description]
+
+### Colors
+COPY EXACTLY FROM STYLE 0 - same colors, different presentation:
+- Primary: [SAME as Style 0]
+- Secondary: [SAME as Style 0]
+- Accent: [SAME as Style 0]
+- Background: [SAME as Style 0]
+- Surface: [SAME as Style 0]
+- Text Primary: [SAME as Style 0]
+- Text Secondary: [SAME as Style 0]
+- Error: #DC2626
+- Success: #16A34A
+
+### Typography (DIFFERENT from Style 0)
+- Headings: [Different font pairing] - https://fonts.google.com/specimen/[FontName]
+- Body: [Different font pairing] - https://fonts.google.com/specimen/[FontName]
+- Scale: [Different scale - e.g., more compact or more spacious]
+
+### Spacing (DIFFERENT from Style 0)
+- Base unit: [4px for compact, 8px for airy]
+- Scale: [Different values]
+
+### Characteristics (DIFFERENT visual treatment)
+- [e.g., Sharp corners vs rounded, flat vs shadowed, dense vs spacious]
+- [e.g., Different button styles, card treatments, spacing density]
+```
+
+**CRITICAL for useAssets mode:**
+- ALL styles MUST use the SAME color palette from the brief (copy exactly from Style 0)
+- Styles vary ONLY in: Typography, Spacing, Corner radius, Shadow depth, Density
+- Do NOT use competitor colors for ANY style
+- Each style should feel distinctly different through layout and typography, not through color
 
 ---
 
@@ -179,7 +217,11 @@ Use these icons for Style 0 mockups:
 ## Notes
 
 - Style 0 is ALWAYS the user's vision based on their brief
-- Style 1+ are research-inspired alternatives
+- Check the ASSET MODE instruction in the user prompt to determine behavior:
+  - **assetMode: standard** → Style 1+ are research-inspired with different colors
+  - **assetMode: useAssets** → Style 1+ are variations with SAME colors, different typography/spacing
+- Your output MUST start with the correct metadata comment: `<!-- assetMode: standard -->` or `<!-- assetMode: useAssets -->`
 - Each style must have complete, usable color/font/spacing values
 - Google Fonts links should be real, valid URLs
 - Colors must be valid hex codes
+- For useAssets mode: Think of styles as "themes" with same brand colors but different visual density and typography

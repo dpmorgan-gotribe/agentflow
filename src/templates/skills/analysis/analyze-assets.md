@@ -26,6 +26,20 @@ Do NOT output colors, typography definitions, or spacing systems - those belong 
 - Assets folder (existing files)
 - Competitive research (asset patterns)
 - Number of styles: {styleCount}
+- Asset mode: standard or useAssets
+
+## Asset Modes
+
+### Standard Mode (assetMode: standard)
+- Style 0: Uses user assets (icons from assets/icons/, colors from brief)
+- Style 1+: Research-inspired with library icons and competitor colors
+
+### UseAssets Mode (assetMode: useAssets)
+ALL styles use user assets:
+- All styles use the SAME colors from the brief (copy exactly)
+- All styles use icons from assets/icons/
+- Styles vary ONLY in: font choices, icon library aesthetic
+- Do NOT use competitor colors for ANY style
 
 ## Process
 
@@ -106,7 +120,11 @@ Do NOT output colors, typography definitions, or spacing systems - those belong 
 
 ---
 
-## Style 1 Assets ([Style Name])
+## Style 1+ Assets (DEPENDS ON ASSET MODE)
+
+### If assetMode: standard (research-inspired)
+```markdown
+## Style 1 Assets ([Competitor-Inspired Name])
 
 ### Fonts
 | Usage | Font | Download |
@@ -121,13 +139,47 @@ Do NOT output colors, typography definitions, or spacing systems - those belong 
 ### Color Palette
 ```json
 {
-  "primary": "#XXXXXX",
+  "primary": "#XXXXXX",  // Competitor-inspired color
   "secondary": "#XXXXXX",
   "accent": "#XXXXXX",
   "background": "#XXXXXX",
   "surface": "#XXXXXX"
 }
 ```
+```
+
+### If assetMode: useAssets (variations of user vision)
+```markdown
+## Style 1 Assets ([Variation Name - e.g., "Compact Variation"])
+
+### Fonts
+| Usage | Font | Download |
+|-------|------|----------|
+| Headings | [DIFFERENT from Style 0] | https://fonts.google.com/specimen/[Font] |
+| Body | [DIFFERENT from Style 0] | https://fonts.google.com/specimen/[Font] |
+
+### Icons
+**Source**: User icons from assets/icons/ (SAME as Style 0)
+**Supplementary Library**: [If gaps exist] - https://lucide.dev
+
+### Color Palette
+COPY EXACTLY FROM STYLE 0:
+```json
+{
+  "primary": "#6B9B37",  // SAME as Style 0 - from brief
+  "secondary": "#XXXXXX",  // SAME as Style 0
+  "accent": "#XXXXXX",  // SAME as Style 0
+  "background": "#XXXXXX",  // SAME as Style 0
+  "surface": "#XXXXXX"  // SAME as Style 0
+}
+```
+```
+
+**CRITICAL for useAssets mode:**
+- ALL styles use the SAME color palette (copy from Style 0)
+- ALL styles use the SAME icons (from assets/icons/)
+- Styles vary ONLY in font choices and icon library aesthetic
+- Do NOT use competitor colors for ANY style
 
 ---
 
@@ -153,8 +205,10 @@ Do NOT output colors, typography definitions, or spacing systems - those belong 
 ## Notes
 
 - Each style gets its own asset recommendations section
-- Style 0 uses user's existing assets + recommendations to fill gaps
-- Style 1+ uses research-inspired assets with download links
+- Check the ASSET MODE instruction in the user prompt to determine behavior:
+  - **assetMode: standard** → Style 0 uses user assets, Style 1+ uses competitor-inspired assets
+  - **assetMode: useAssets** → ALL styles use user assets with SAME colors, different fonts only
+- Style 0 ALWAYS uses user's existing assets + recommendations to fill gaps
 - All font links should be valid Google Fonts URLs
-- Do NOT include JSON color palettes - those belong in styles.md
-- Focus on actionable asset links and file paths
+- Color palettes MUST match styles.md - copy the same hex values
+- For useAssets mode: ALL style color palettes are IDENTICAL (copy from Style 0)

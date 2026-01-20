@@ -1,6 +1,6 @@
 # Analyze Screens & Components
 
-Extract all screens from flows and map required UI components for each screen.
+Extract all screens and map required UI components and icons for each screen.
 
 ## Output Requirements
 
@@ -10,7 +10,7 @@ Your response must:
 - Start with `{`
 - End with `}`
 - Be valid JSON
-- Follow the output format below exactly
+- Follow the v3.0 output format below exactly
 
 DO NOT:
 - Explain what you're creating
@@ -20,232 +20,238 @@ DO NOT:
 - Say "Now I have..." or "Let me..." or "Here's the..."
 
 ## Inputs
+- Project brief with navigation schema (apps, sections, screens)
 - flows.md (user journeys with screen sequences)
-- Project brief (for understanding feature complexity)
 
 ## Process
 
-1. **Parse Each Flow**:
-   - Find each `## Flow N: [Name]` section
+1. **Parse the Brief Schema**:
+   - Extract apps from the navigation schema JSON
+   - For each app, extract appId, appName, appType, layoutSkill
+   - Extract defaultNavigation for each app
+   - Extract all screens from each section
+
+2. **Parse User Flows**:
+   - Find each `## Flow N: [Name]` section in flows.md
    - Extract flow ID from name (lowercase, hyphenated)
-   - Extract screen names from `**Screens**:` line
-   - Parse the numbered sequence: `1. [Welcome] → 2. [Sign Up] → ...`
+   - Note which screens belong to which flows
 
-2. **Generate Screen Files**:
-   - Convert screen names to filenames (lowercase, hyphenated, .html)
-   - Example: "Profile Setup" → "profile-setup.html"
+3. **For Each Screen, Identify**:
+   - **Components**: UI components needed (see list below)
+   - **Icons**: Icons needed (see list below)
+   - **Flows**: Which user flows include this screen
+   - **Navigation**: Only if different from app default
 
-3. **Identify Components Per Screen**:
-   For each screen, determine what UI components it needs:
+## Component Reference
 
-   **Navigation Components:**
-   - `header` - Top navigation bar with logo, icons
-   - `bottom-nav` - Bottom tab navigation
-   - `side-menu` - Slide-out navigation drawer
-   - `tab-bar` - Horizontal tabs within content
-   - `breadcrumb` - Navigation breadcrumbs
+**Navigation Components:**
+- `header` - Top navigation bar with logo, icons
+- `bottom-nav` - Bottom tab navigation
+- `side-menu` - Slide-out navigation drawer
+- `tab-bar` - Horizontal tabs within content
+- `breadcrumb` - Navigation breadcrumbs
 
-   **Content Components:**
-   - `card` - Content container (variants: event-card, tribe-card, job-card, etc.)
-   - `list-item` - Row in a list
-   - `avatar` - User/entity profile image
-   - `badge` - Status indicator, notification count
-   - `tag` - Category/label pill
-   - `stat-card` - Metric display box
-   - `progress-bar` - Progress indicator
-   - `story-circle` - Circular story/avatar preview
+**Content Components:**
+- `card` - Content container (variants: event-card, tribe-card, job-card, etc.)
+- `list-item` - Row in a list
+- `avatar` - User/entity profile image
+- `badge` - Status indicator, notification count
+- `tag` - Category/label pill
+- `stat-card` - Metric display box
+- `progress-bar` - Progress indicator
+- `story-circle` - Circular story/avatar preview
+- `post-card` - Social post content
+- `announcement-card` - Announcement content
 
-   **Form Components:**
-   - `form-input` - Text input field
-   - `form-textarea` - Multi-line text input
-   - `form-select` - Dropdown select
-   - `checkbox` - Checkbox input
-   - `radio` - Radio button group
-   - `toggle` - On/off switch
-   - `date-picker` - Date selection
-   - `time-picker` - Time selection
-   - `file-upload` - File upload input
-   - `search-bar` - Search input with icon
+**Form Components:**
+- `form-input` - Text input field
+- `form-textarea` - Multi-line text input
+- `form-select` - Dropdown select
+- `checkbox` - Checkbox input
+- `radio` - Radio button group
+- `toggle` - On/off switch
+- `date-picker` - Date selection
+- `time-picker` - Time selection
+- `file-upload` - File upload input
+- `search-bar` - Search input with icon
 
-   **Button Components:**
-   - `button-primary` - Primary action button
-   - `button-secondary` - Secondary action button
-   - `button-icon` - Icon-only button
-   - `fab` - Floating action button
+**Button Components:**
+- `button-primary` - Primary action button
+- `button-secondary` - Secondary action button
+- `button-icon` - Icon-only button
+- `fab` - Floating action button
 
-   **Feedback Components:**
-   - `modal` - Overlay dialog
-   - `toast` - Notification popup
-   - `empty-state` - No content placeholder
-   - `loading` - Loading spinner/skeleton
-   - `error-state` - Error message display
+**Feedback Components:**
+- `modal` - Overlay dialog
+- `toast` - Notification popup
+- `empty-state` - No content placeholder
+- `loading` - Loading spinner/skeleton
+- `error-state` - Error message display
 
-   **Layout Components:**
-   - `filter-pills` - Horizontal filter buttons
-   - `section-header` - Section title with optional action
-   - `divider` - Content separator
-   - `grid` - Card grid layout
-   - `carousel` - Swipeable content
+**Layout Components:**
+- `filter-pills` - Horizontal filter buttons
+- `section-header` - Section title with optional action
+- `divider` - Content separator
+- `grid` - Card grid layout
+- `carousel` - Swipeable content
 
-   **Rich Content:**
-   - `image-gallery` - Multiple images
-   - `video-player` - Video embed
-   - `map` - Location map
-   - `calendar` - Calendar view
-   - `chart` - Data visualization
+**Rich Content:**
+- `image-gallery` - Multiple images
+- `video-player` - Video embed
+- `map` - Location map
+- `calendar` - Calendar view
+- `chart` - Data visualization
 
-4. **Build Component List**:
-   - Collect all unique components across all screens
-   - Deduplicate the list
+**Admin Components:**
+- `data-table` - Sortable data table
+- `pagination` - Page navigation
+- `bulk-actions` - Multi-select actions
+- `alert-card` - System alert display
 
-5. **Build Screen-Component Mapping**:
-   - For each screen, list its required components
+## Icon Reference
 
-6. **Identify Icons Per Screen**:
-   For each screen, determine what icons it needs:
+**Navigation Icons:**
+- `home` - Home/feed navigation
+- `search` - Search functionality
+- `menu` - Hamburger menu
+- `arrow_back` - Back navigation
+- `close` - Close/dismiss
+- `expand_content` - Expand/fullscreen
 
-   **Navigation Icons:**
-   - `home` - Home/feed navigation
-   - `search` - Search functionality
-   - `menu` - Hamburger menu
-   - `arrow_back` - Back navigation
-   - `close` - Close/dismiss
-   - `expand_content` - Expand/fullscreen
+**Tab/Section Icons:**
+- `camping` - Tribes/communities (tent icon)
+- `event` - Events/calendar
+- `chat` - Messages/chat
+- `account` - Profile/account
+- `notifications` - Notifications bell
+- `settings` - Settings gear
 
-   **Tab/Section Icons:**
-   - `camping` - Tribes/communities (tent icon)
-   - `event` - Events/calendar
-   - `chat` - Messages/chat
-   - `account` - Profile/account
-   - `notifications` - Notifications bell
-   - `settings` - Settings gear
+**Feature Icons:**
+- `following` - Following/favorites (heart)
+- `donars` - Donors/fundraising
+- `offerings` - Offerings/services
+- `shops` - Marketplace/shops
+- `jobs` - Jobs board
+- `kitchen` - Kitchen/community features
+- `card` - Discovery/cards view
+- `lists` - Lists/menu items
 
-   **Feature Icons:**
-   - `following` - Following/favorites (heart)
-   - `donars` - Donors/fundraising
-   - `offerings` - Offerings/services
-   - `shops` - Marketplace/shops
-   - `jobs` - Jobs board
-   - `kitchen` - Kitchen/community features
-   - `card` - Discovery/cards view
-   - `lists` - Lists/menu items
+**Action Icons:**
+- `add` - Add/create new
+- `filter` - Filter/sort
+- `edit` - Edit item
+- `delete` - Delete item
+- `share` - Share content
+- `more_vert` - More options menu
 
-   **Action Icons:**
-   - `add` - Add/create new
-   - `filter` - Filter/sort
+**Admin Icons:**
+- `dashboard` - Dashboard view
+- `trending_up` - Analytics/trends
+- `warning` - Warning/alert
+- `block` - Block/ban action
 
-7. **Build Icon List**:
-   - Collect all unique icons across all screens
-   - Deduplicate the list
+## Output Format (v3.0 REQUIRED - SINGLE APP)
 
-8. **Build Screen-Icon Mapping**:
-   - For each screen, list its required icons
-
-## Output Format
+**CRITICAL: Output the v3.0 single-app schema. This agent is called ONCE per platform/app.**
 
 ```json
 {
-  "screens": [
-    "welcome.html",
-    "sign-up.html",
-    "profile-setup.html",
-    "home.html",
-    "discover.html",
-    "tribe-profile.html"
-  ],
-  "userflows": [
-    {
-      "id": "onboarding",
-      "name": "Onboarding",
-      "screens": [
-        { "id": "welcome", "name": "Welcome", "file": "welcome.html" },
-        { "id": "sign-up", "name": "Sign Up", "file": "sign-up.html" },
-        { "id": "profile-setup", "name": "Profile Setup", "file": "profile-setup.html" },
-        { "id": "home", "name": "Home", "file": "home.html" }
-      ]
-    }
-  ],
-  "components": [
-    "header",
-    "bottom-nav",
-    "button-primary",
-    "button-secondary",
-    "form-input",
-    "card",
-    "avatar",
-    "badge",
-    "modal",
-    "empty-state",
-    "filter-pills",
-    "search-bar",
-    "tab-bar",
-    "list-item",
-    "progress-bar",
-    "stat-card",
-    "story-circle",
-    "checkbox",
-    "radio",
-    "toggle",
-    "form-select",
-    "form-textarea",
-    "date-picker",
-    "toast",
-    "loading",
-    "section-header",
-    "tag",
-    "image-gallery",
-    "fab"
-  ],
-  "screenComponents": {
-    "welcome": ["header", "button-primary", "image-gallery"],
-    "sign-up": ["header", "form-input", "button-primary", "checkbox"],
-    "profile-setup": ["header", "bottom-nav", "form-input", "form-select", "avatar", "button-primary", "progress-bar"],
-    "home": ["header", "bottom-nav", "search-bar", "filter-pills", "story-circle", "card", "section-header"],
-    "discover": ["header", "bottom-nav", "search-bar", "filter-pills", "card", "map", "tab-bar"],
-    "tribe-profile": ["header", "modal", "avatar", "badge", "stat-card", "tab-bar", "button-primary", "button-secondary"]
-  },
-  "icons": [
-    "home", "search", "menu", "arrow_back", "close",
-    "camping", "event", "chat", "account", "notifications", "settings",
-    "following", "donars", "offerings", "shops", "jobs", "filter", "add"
-  ],
-  "screenIcons": {
-    "welcome": ["menu"],
-    "sign-up": ["arrow_back"],
-    "profile-setup": ["arrow_back", "home", "camping", "event", "chat", "account"],
-    "home": ["menu", "search", "notifications", "account", "home", "camping", "event", "chat"],
-    "discover": ["menu", "search", "filter", "notifications", "account"],
-    "tribe-profile": ["arrow_back", "notifications", "chat", "camping"]
+  "version": "3.0",
+  "generatedAt": "2026-01-11T12:00:00Z",
+  "app": {
+    "appId": "gotribe-webapp",
+    "appName": "GoTribe Webapp",
+    "appType": "webapp",
+    "layoutSkill": "webapp",
+    "defaultNavigation": {
+      "header": { "variant": "standard", "actions": ["search", "notifications"] },
+      "footer": { "variant": "tab-bar", "tabs": ["home", "discover", "tribes", "profile"] },
+      "sidemenu": { "visible": false }
+    },
+    "screens": [
+      {
+        "id": "screen-id",
+        "file": "screen-id.html",
+        "name": "Screen Display Name",
+        "description": "What this screen shows and does",
+        "section": "section-id",
+        "parentEntity": "tribe",
+        "navigation": {
+          "header": { "variant": "minimal" },
+          "footer": { "variant": "hidden" }
+        },
+        "components": ["header", "form-input", "button-primary"],
+        "icons": ["arrow_back", "close"],
+        "flows": ["onboarding", "authentication"]
+      }
+    ]
   }
 }
 ```
 
+**IMPORTANT:**
+- Output SINGLE `app` object, NOT `apps` array
+- The prompt will specify which app you're generating for
+- Include ALL screens for that specific app only
+
+## Field Requirements
+
+**App Fields:**
+- `appId` - Unique identifier (provided in prompt, e.g., "gotribe-webapp")
+- `appName` - Display name (provided in prompt, e.g., "GoTribe Webapp")
+- `appType` - One of: "webapp", "mobile", "admin" (provided in prompt)
+- `layoutSkill` - One of: "webapp", "mobile", "desktop" (provided in prompt)
+- `defaultNavigation` - Default nav state for all screens in this app
+- `screens` - Array of all screens for THIS app only
+
+**Screen Fields (ALL REQUIRED):**
+- `id` - Unique identifier (e.g., "auth-splash")
+- `file` - HTML filename (e.g., "auth-splash.html")
+- `name` - Display name (e.g., "Splash Screen")
+- `description` - What the screen shows (from brief)
+- `section` - Section ID this screen belongs to
+- `parentEntity` - (optional) Entity context like "tribe", "event"
+- `navigation` - (optional) Only include if different from app default
+- `components` - Array of component names (MINIMUM 2)
+- `icons` - Array of icon names (MINIMUM 1)
+- `flows` - Array of flow IDs this screen appears in (MINIMUM 1, use "miscellaneous" if standalone)
+
 ## Component Selection Guidelines
 
-**Onboarding/Auth Screens**: header, form-input, button-primary, checkbox, progress-bar
-**Home/Feed Screens**: header, bottom-nav, story-circle, card, filter-pills, section-header, search-bar
-**List/Directory Screens**: header, bottom-nav, search-bar, filter-pills, list-item or card, empty-state
-**Detail/Profile Screens**: header, avatar, badge, stat-card, tab-bar, button-primary, image-gallery
-**Form/Creation Screens**: header, form-input, form-textarea, form-select, checkbox, radio, toggle, button-primary, button-secondary
-**Settings Screens**: header, list-item, toggle, button-secondary
-**Modal/Overlay Screens**: modal, button-primary, button-secondary
-**Dashboard Screens**: header, stat-card, chart, progress-bar, section-header
+| Screen Type | Typical Components |
+|-------------|-------------------|
+| Auth/Onboarding | header, form-input, button-primary, checkbox, progress-bar |
+| Home/Feed | header, bottom-nav, story-circle, post-card, filter-pills, fab |
+| List/Directory | header, bottom-nav, search-bar, filter-pills, list-item, empty-state |
+| Detail/Profile | header, avatar, badge, stat-card, tab-bar, button-primary |
+| Form/Creation | header, form-input, form-textarea, form-select, button-primary |
+| Settings | header, list-item, toggle, button-secondary |
+| Modal/Overlay | modal, button-primary, button-secondary |
+| Admin Dashboard | header, side-menu, stat-card, chart, data-table |
+| Admin List | header, side-menu, search-bar, data-table, pagination, bulk-actions |
 
 ## Icon Selection Guidelines
 
-**Header Icons**: menu, search, notifications, account, filter, settings
-**Bottom Nav Icons**: home, camping, event, chat, account
-**Back/Close Icons**: arrow_back, close
-**Feature Icons**: following, donars, offerings, shops, jobs, kitchen
-**Action Icons**: add, filter, expand_content
+| Location | Typical Icons |
+|----------|--------------|
+| Header | menu, search, notifications, account, filter, settings |
+| Bottom Nav | home, camping, event, chat, account |
+| Back/Close | arrow_back, close |
+| Actions | add, filter, edit, delete, share, more_vert |
+| Admin | dashboard, trending_up, warning, block |
+
+## Coverage Rules
+
+1. Every screen from the brief MUST be included in the output
+2. Every screen MUST have at least 2 components
+3. Every screen MUST have at least 1 icon
+4. Every screen MUST belong to at least 1 flow (use "miscellaneous" if needed)
+5. Navigation overrides only needed when different from app default
 
 ## Notes
 
-- The `screens` array should be deduplicated (no duplicates)
-- The `components` array should be deduplicated
-- The `icons` array should be deduplicated
-- Every screen in `screenComponents` must have at least `header` or appropriate navigation
-- Every screen should identify icons used in header, footer, and content
+- Get screen IDs and descriptions from the brief's navigation schema
+- Get flow membership by parsing flows.md
+- Use exact icon names from assets/icons/ if provided
 - Complex screens may have 10+ components and 5+ icons
 - Simple screens may have 3-5 components and 1-3 icons
-- Use the user icon names provided if available (e.g., camping.svg not tribe.svg)

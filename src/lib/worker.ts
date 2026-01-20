@@ -8,6 +8,8 @@ export interface WorkerTask {
   model?: 'opus' | 'sonnet' | 'haiku';
   allowRead?: boolean;
   addDirs?: string[];
+  /** Timeout in milliseconds (default: 300000 = 5 minutes) */
+  timeout?: number;
 }
 
 export interface WorkerResult {
@@ -53,6 +55,7 @@ export async function runWorkersParallel(tasks: WorkerTask[]): Promise<WorkerRes
       if (task.model) options.model = task.model;
       if (task.allowRead) options.allowRead = task.allowRead;
       if (task.addDirs) options.addDirs = task.addDirs;
+      if (task.timeout) options.timeout = task.timeout;
       const output = await invokeAgent(task.systemPrompt, task.userPrompt, options);
       console.log(`  Completed: ${task.id}`);
       return { id: task.id, output };
@@ -73,6 +76,7 @@ export async function runWorkerSequential(task: WorkerTask): Promise<WorkerResul
     if (task.model) options.model = task.model;
     if (task.allowRead) options.allowRead = task.allowRead;
     if (task.addDirs) options.addDirs = task.addDirs;
+    if (task.timeout) options.timeout = task.timeout;
     const output = await invokeAgent(task.systemPrompt, task.userPrompt, options);
     console.log(`Completed: ${task.id}`);
     return { id: task.id, output };

@@ -23,7 +23,13 @@
       "Bash(agentflow mockups:*)",
       "Bash(claude -p --tools \"\")",
       "Bash(git remote add:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(npx tsc)",
+      "Bash(ls:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd multi-platform support and enhanced command options\n\n- Add platform detection and platform-specific briefs \\(platforms.ts\\)\n- Add screen verification and coverage reporting \\(verification.ts\\)\n- Add platform-specific design skills \\(webapp, mobile, desktop\\)\n- Enhance analyze command with --verify and --useAssets options\n- Add --platform and --skill options to flows, stylesheet, screens commands\n- Add --force and --batch options to screens command\n- Improve validation with detailed coverage reports\n- Archive completed bug and feature plans\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push)",
+      "Bash(xargs:*)",
+      "Bash(git commit:*)"
     ]
   }
 }

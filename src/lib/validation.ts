@@ -260,3 +260,79 @@ export function validateMarkdownOutput(content: string): {
     errors
   };
 }
+
+/**
+ * Correct asset paths in generated HTML based on output directory depth
+ * @param html - The HTML content to fix
+ * @param depth - Number of directory levels from project root (e.g., 3 for outputs/screens/admin/)
+ */
+export function correctAssetPaths(html: string, depth: number): string {
+  const correctPrefix = '../'.repeat(depth) + 'assets/';
+
+  // Fix various incorrect patterns for src attributes
+  const result = html
+    .replace(/src="\.\.\/\.\.\/\.\.\/\.\.\/assets\//g, `src="${correctPrefix}`)
+    .replace(/src="\.\.\/\.\.\/\.\.\/assets\//g, `src="${correctPrefix}`)
+    .replace(/src="\.\.\/\.\.\/assets\//g, `src="${correctPrefix}`)
+    .replace(/src="\.\.\/assets\//g, `src="${correctPrefix}`)
+    .replace(/src="assets\//g, `src="${correctPrefix}`)
+    // Fix href attributes
+    .replace(/href="\.\.\/\.\.\/\.\.\/\.\.\/assets\//g, `href="${correctPrefix}`)
+    .replace(/href="\.\.\/\.\.\/\.\.\/assets\//g, `href="${correctPrefix}`)
+    .replace(/href="\.\.\/\.\.\/assets\//g, `href="${correctPrefix}`)
+    .replace(/href="\.\.\/assets\//g, `href="${correctPrefix}`)
+    .replace(/href="assets\//g, `href="${correctPrefix}`)
+    // Fix url() in CSS
+    .replace(/url\(['"]?\.\.\/\.\.\/\.\.\/\.\.\/assets\//g, `url('${correctPrefix}`)
+    .replace(/url\(['"]?\.\.\/\.\.\/\.\.\/assets\//g, `url('${correctPrefix}`)
+    .replace(/url\(['"]?\.\.\/\.\.\/assets\//g, `url('${correctPrefix}`)
+    .replace(/url\(['"]?\.\.\/assets\//g, `url('${correctPrefix}`)
+    .replace(/url\(['"]?assets\//g, `url('${correctPrefix}`);
+
+  return result;
+}
+
+/**
+ * Get default skill for a platform based on naming conventions
+ */
+export function getDefaultSkillForPlatform(platform: string): string {
+  const lower = platform.toLowerCase();
+  // Admin/backend platforms default to desktop skill
+  if (lower.includes('admin') || lower.includes('backend') || lower.includes('dashboard')) {
+    return 'desktop';
+  }
+  // Mobile platforms default to mobile skill
+  if (lower.includes('mobile') || lower.includes('app') || lower.includes('ios') || lower.includes('android')) {
+    return 'mobile';
+  }
+  // Everything else defaults to webapp
+  return 'webapp';
+}
+
+/**
+ * Get output directory name for screens based on platform and skill
+ * Returns folder name and depth from project root
+ */
+export function getScreensOutputInfo(
+  platform: string | null,
+  skill: string
+): { folderName: string; depth: number } {
+  // No platform - use base screens directory
+  if (!platform) {
+    if (skill !== 'webapp') {
+      return { folderName: skill, depth: 3 };
+    }
+    return { folderName: '', depth: 2 }; // outputs/screens/
+  }
+
+  // Get default skill for this platform
+  const defaultSkill = getDefaultSkillForPlatform(platform);
+
+  if (skill === defaultSkill) {
+    // Using default skill - just use platform name
+    return { folderName: platform, depth: 3 };
+  }
+
+  // Non-default skill - prefix with skill name
+  return { folderName: `${skill}-${platform}`, depth: 3 };
+}

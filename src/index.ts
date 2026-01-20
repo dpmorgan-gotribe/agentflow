@@ -8,6 +8,7 @@ import { stylesheet } from './commands/stylesheet.js';
 import { screens } from './commands/screens.js';
 import { planFix } from './commands/plan-fix.js';
 import { planFeature } from './commands/plan-feature.js';
+import { userflows } from './commands/userflows.js';
 
 const program = new Command();
 
@@ -65,6 +66,12 @@ program
     force: options.force,
     batch: options.batch
   }));
+
+program
+  .command('userflows')
+  .option('--platform <name>', 'Filter to specific platform')
+  .description('Generate visual userflows diagram with navigation zones')
+  .action((options) => userflows({ platform: options.platform }));
 
 program
   .command('plan-fix <name>')

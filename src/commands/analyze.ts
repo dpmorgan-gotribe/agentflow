@@ -11,7 +11,16 @@ function stripPreamble(content: string): string {
 import { join } from 'path';
 import { loadSystemPrompt, loadSkill } from '../lib/agent.js';
 import { runWorkersParallel, runWorkerSequential } from '../lib/worker.js';
-import { loadBrief, isBriefEmpty } from '../lib/brief.js';
+import {
+  loadBrief,
+  isBriefEmpty,
+  extractNavigationSchema as extractBriefSchema,
+  extractAllScreensFromSchema,
+  formatScreenInventory,
+  formatScreenList,
+  getAllScreenIds,
+  ExtractedAppScreens
+} from '../lib/brief.js';
 import {
   detectPlatforms,
   loadAllBriefs,
@@ -24,8 +33,20 @@ import {
   generateCoverageReport,
   generateDetailedCoverageReport,
   printCoverageReport,
-  printDetailedCoverageReport
+  printDetailedCoverageReport,
+  extractNavigationSchema
 } from '../lib/verification.js';
+import {
+  PlatformScreensJson,
+  validateSchema,
+  getScreensFilename,
+  getAllComponents,
+  getAllIcons,
+  getCoverage,
+  getPlatformId,
+  detectAppType,
+  getLayoutSkill
+} from '../lib/navigation-schema.js';
 
 interface AnalyzeOptions {
   verify?: boolean;
@@ -111,6 +132,45 @@ export async function analyze(styleCount: number = 1, options: AnalyzeOptions = 
   } else {
     console.log('Loaded project brief(s)');
   }
+
+  // Extract navigation schema from brief JSON (for consolidated briefs)
+  let briefApps: ExtractedAppScreens[] = [];
+  if (combinedBrief) {
+    const briefSchema = extractBriefSchema(combinedBrief);
+    if (briefSchema) {
+      briefApps = extractAllScreensFromSchema(briefSchema);
+      if (briefApps.length > 0) {
+        console.log(`\nFound ${briefApps.length} app(s) in brief schema:`);
+        for (const app of briefApps) {
+          console.log(`  ${app.appId}: ${app.screens.length} screens (${app.appType})`);
+        }
+      }
+    }
+  }
+
+  // Build helper function for asset mode instructions
+  const buildAssetModeInstruction = (useAssets: boolean): string => {
+    if (useAssets) {
+      return `## ASSET MODE: useAssets=true
+ALL styles (0 through ${styleCount - 1}) MUST:
+- Use user icons from assets/icons/ (paths listed below)
+- Use colors from the brief (NOT research competitors)
+- Follow wireframe layout patterns
+
+Styles vary ONLY in: typography, spacing, component styling, visual characteristics.
+This creates variations of the user's vision, not research-inspired alternatives.
+
+CRITICAL: Your output MUST start with: <!-- assetMode: useAssets -->
+`;
+    } else {
+      return `## ASSET MODE: standard
+- Style 0: Uses user assets (icons, colors from brief)
+- Style 1+: Uses library icons and research-inspired colors
+
+CRITICAL: Your output MUST start with: <!-- assetMode: standard -->
+`;
+    }
+  };
 
   // Load system prompt
   const systemPrompt = await loadSystemPrompt(projectDir, 'analyst');
@@ -263,7 +323,80 @@ ${options.useAssets
 ${styleCount > 1 ? `- Style 1-${styleCount - 1}: Based on competitor research above (use library icons)` : ''}`}
 
 Produce output according to the skill format.`;
+    } else if (task.id === 'assets') {
+      // Assets worker - needs useAssets mode handling
+      const assetModeInstruction = buildAssetModeInstruction(options.useAssets || false);
+
+      const iconInstructionForAssets = options.useAssets
+        ? `## User Icons (REQUIRED FOR ALL STYLES)
+ALL styles must use these icons from assets/icons/:
+${userIcons.map(f => `- ${f}`).join('\n') || 'No icons found'}
+`
+        : iconInventory;
+
+      userPrompt = `Inventory assets and provide recommendations for this project.
+
+${assetModeInstruction}
+
+${options.useAssets
+  ? `**CRITICAL FOR useAssets MODE:**
+ALL styles (0-${styleCount - 1}) MUST use the SAME colors from the brief.
+ALL styles MUST use the same user icons from assets/icons/.
+Styles vary ONLY in: font choices, spacing, visual characteristics.
+Do NOT use competitor colors for ANY style.`
+  : `Style 0: User assets from brief.
+Style 1+: Competitor-inspired assets with different colors.`}
+
+${logoInfo}
+
+${iconInstructionForAssets}
+
+## Project Brief
+${combinedBrief || 'No brief provided. Analyze based on wireframes only.'}
+
+## Wireframes
+Files in assets/wireframes/: ${images.join(', ')}
+
+## Competitive Research
+${researchResult.output || 'No research available.'}
+
+## Style Count
+Generate asset recommendations for ${styleCount} styles.
+
+Produce output according to the skill format.`;
+
+    } else if (task.id === 'inspirations') {
+      // Inspirations worker - needs useAssets mode handling
+      const assetModeInstruction = buildAssetModeInstruction(options.useAssets || false);
+
+      userPrompt = `Create mood board and inspirations for this project.
+
+${assetModeInstruction}
+
+${options.useAssets
+  ? `**CRITICAL FOR useAssets MODE:**
+All style inspirations should show variations of the user's vision.
+Use the user's color palette (#6B9B37 green) as the foundation.
+Show different typography, spacing, and visual treatments - not different brands.`
+  : `Style 0: User's vision from brief.
+Style 1+: Competitor-inspired alternatives.`}
+
+## Project Brief
+${combinedBrief || 'No brief provided. Analyze based on wireframes only.'}
+
+## Wireframes
+Files in assets/wireframes/: ${images.join(', ')}
+
+## Competitive Research
+${researchResult.output || 'No research available.'}
+
+## Style Count
+Generate inspirations for ${styleCount} styles.
+
+Produce output according to the skill format.`;
+
     } else {
+      // Generic fallback for any other tasks
       userPrompt = `Analyze the project and produce output according to the skill.
 
 ## Project Brief
@@ -316,6 +449,7 @@ Produce output according to the skill format.`;
       const flowsResult = await runWorkerSequential({
         id: `flows-${platform}`,
         systemPrompt: `${systemPrompt}\n\n## Skill\n\n${flowsSkill}`,
+        timeout: 600000, // 10 minutes for large screen inventories
         userPrompt: `Analyze user flows and journeys for the ${platform} platform.
 ${wireframeReadInstruction}
 
@@ -348,11 +482,22 @@ Produce output according to the skill format. Remember: FLOWS ONLY, not styles.`
       });
 
       if (flowsResult.output) {
-        await writeFile(join(platformDir, 'flows.md'), stripPreamble(flowsResult.output));
+        const strippedFlows = stripPreamble(flowsResult.output);
+        await writeFile(join(platformDir, 'flows.md'), strippedFlows);
         console.log(`  Written: ${platform}/flows.md`);
+
+        // Extract navigation schema from flows output
+        const navSchema = extractNavigationSchema(strippedFlows);
+        if (navSchema) {
+          await writeFile(
+            join(platformDir, 'navigation-schema.md'),
+            `# Navigation Schema\n\n\`\`\`yaml\n${navSchema}\n\`\`\``
+          );
+          console.log(`  Written: ${platform}/navigation-schema.md`);
+        }
       }
 
-      // Screens worker for this platform
+      // Screens worker for this platform - v3.0 single-app format
       const screensSkill = await loadSkill(projectDir, 'analysis/analyze-screens');
       const iconInventoryForScreens = userIcons.length > 0
         ? `## Available User Icons
@@ -362,10 +507,26 @@ ${userIcons.map(f => `- ${f.replace(/\.(svg|png)$/i, '')}`).join('\n')}
 Use these exact icon names when identifying icons for screens.`
         : '## User Icons\nNo user icons found in assets/icons/';
 
-      const screensResult = await runWorkerSequential({
-        id: `screens-${platform}`,
-        systemPrompt: `${systemPrompt}\n\n## Skill\n\n${screensSkill}`,
-        userPrompt: `Extract all screens, their required UI components, AND required icons for the ${platform} platform.
+      // Derive app metadata
+      const platformId = getPlatformId(platform);
+      const appType = detectAppType(platform);
+      const layoutSkill = getLayoutSkill(appType);
+      const appId = platform.includes('-') ? platform : `gotribe-${platformId}`;
+      const appName = platform.charAt(0).toUpperCase() + platform.slice(1).replace('-', ' ');
+
+      const MAX_RETRIES = 2;
+      let validOutput: PlatformScreensJson | null = null;
+
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        if (attempt > 1) {
+          console.log(`  Retry ${attempt}/${MAX_RETRIES} for ${platform}...`);
+        }
+
+        const screensResult = await runWorkerSequential({
+          id: `screens-${platform}`,
+          systemPrompt: `${systemPrompt}\n\n## Skill\n\n${screensSkill}`,
+          timeout: 600000, // 10 minutes for large screen inventories
+          userPrompt: `Extract all screens for the ${platform} platform in v3.0 single-app format.
 
 ## Platform: ${platform}
 This analysis is specifically for the ${platform} platform.
@@ -384,59 +545,114 @@ ${iconInventoryForScreens}
 For each screen, identify:
 1. UI components needed (header, bottom-nav, card, button-primary, modal, form-input, avatar, badge, etc.)
 2. Icons needed (navigation icons, action icons, tab icons, feature icons)
+3. Which flows this screen belongs to
 
-Output ONLY valid JSON with this structure:
+OUTPUT v3.0 JSON FORMAT (SINGLE APP):
 {
-  "platform": "${platform}",
-  "screens": ["screen-name.html", ...],
-  "userflows": [{ "id": "...", "name": "...", "screens": [...] }, ...],
-  "components": ["header", "bottom-nav", "card", "button-primary", ...],
-  "screenComponents": {
-    "screen-name": ["header", "bottom-nav", "card"],
-    ...
-  },
-  "icons": ["home", "search", "notifications", "menu", ...],
-  "screenIcons": {
-    "screen-name": ["menu", "search", "home"],
-    ...
+  "version": "3.0",
+  "generatedAt": "${new Date().toISOString()}",
+  "app": {
+    "appId": "${appId}",
+    "appName": "${appName}",
+    "appType": "${appType}",
+    "layoutSkill": "${layoutSkill}",
+    "defaultNavigation": {
+      "header": { "variant": "standard", "actions": ["search", "notifications"] },
+      "footer": { "variant": "tab-bar", "tabs": ["home", "discover", "profile"] },
+      "sidemenu": { "visible": false }
+    },
+    "screens": [
+      {
+        "id": "screen-id",
+        "file": "screen-id.html",
+        "name": "Screen Name",
+        "description": "What this screen shows",
+        "section": "section-id",
+        "components": ["header", "bottom-nav", "card"],
+        "icons": ["menu", "search", "home"],
+        "flows": ["onboarding", "discovery"]
+      }
+    ]
   }
 }
 
+CRITICAL REQUIREMENTS:
+1. Output SINGLE "app" object (NOT "apps" array)
+2. Include ALL screens from the platform inventory
+3. EVERY screen MUST have: components (min 2), icons (min 1), flows (min 1)
+4. Use "miscellaneous" flow for screens not in any defined flow
+${attempt > 1 ? '\n5. PREVIOUS ATTEMPT FAILED - ensure valid JSON with all required fields' : ''}
+
 No markdown, no explanations, just JSON.`
-      });
+        });
 
-      if (screensResult.output) {
-        let jsonContent = screensResult.output.trim();
-        if (jsonContent.startsWith('```')) {
-          jsonContent = jsonContent.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
-        }
+        if (screensResult.output) {
+          let jsonContent = screensResult.output.trim();
+          if (jsonContent.startsWith('```')) {
+            jsonContent = jsonContent.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+          }
 
-        try {
-          const parsed = JSON.parse(jsonContent);
-          await writeFile(join(platformDir, 'screens.json'), JSON.stringify(parsed, null, 2));
-          console.log(`  Written: ${platform}/screens.json`);
-          if (parsed.screens) {
-            console.log(`  Found ${parsed.screens.length} screens`);
+          try {
+            const parsed = JSON.parse(jsonContent);
+
+            // Validate v3.0 schema
+            const validation = validateSchema(parsed);
+            if (validation.valid) {
+              validOutput = parsed as PlatformScreensJson;
+              break;
+            } else {
+              console.warn(`  Schema validation failed:`);
+              validation.errors.slice(0, 3).forEach(e => console.warn(`    - ${e}`));
+              if (validation.warnings.length > 0) {
+                validation.warnings.slice(0, 2).forEach(w => console.warn(`    ! ${w}`));
+              }
+            }
+          } catch (e) {
+            console.warn(`  Invalid JSON: ${e instanceof Error ? e.message : 'parse error'}`);
           }
-          if (parsed.components) {
-            console.log(`  Found ${parsed.components.length} unique components`);
-          }
-          if (parsed.icons) {
-            console.log(`  Found ${parsed.icons.length} unique icons`);
-          }
-        } catch {
-          console.warn(`  Warning: ${platform}/screens.json output was not valid JSON, skipping`);
         }
+      }
+
+      // Write output (to shared directory with platform prefix)
+      const screensFilename = getScreensFilename(platform);
+      const screensPath = join(sharedDir, screensFilename);
+
+      if (validOutput) {
+        await writeFile(screensPath, JSON.stringify(validOutput, null, 2));
+        console.log(`  Written: ${screensFilename}`);
+
+        const screenCount = validOutput.app.screens.length;
+        const components = getAllComponents(validOutput);
+        const icons = getAllIcons(validOutput);
+        const coverage = getCoverage(validOutput);
+
+        console.log(`  Screens: ${screenCount}`);
+        console.log(`  Components: ${components.length}`);
+        console.log(`  Icons: ${icons.length}`);
+
+        const status = coverage.percent === 100 ? '✓' : '⚠';
+        console.log(`  ${status} Flow Coverage: ${coverage.inFlows}/${coverage.total} (${coverage.percent}%)`);
+        if (coverage.orphaned.length > 0 && coverage.orphaned.length <= 5) {
+          console.log(`    Orphaned: ${coverage.orphaned.join(', ')}`);
+        }
+      } else {
+        console.warn(`  Warning: Failed to generate valid v3.0 schema for ${platform}`);
       }
     }
   } else {
-    // Single platform analysis (legacy behavior)
+    // Single platform analysis (with brief schema support)
     console.log('\n--- Phase 3: Screen, Component & Icon Mapping ---');
+
+    // Build screen inventory from brief schema if available
+    const screenInventoryForFlows = briefApps.length > 0
+      ? formatScreenList(briefApps)
+      : '';
 
     const flowsSkill = await loadSkill(projectDir, 'analysis/analyze-flows');
     const flowsResult = await runWorkerSequential({
       id: 'flows',
       systemPrompt: `${systemPrompt}\n\n## Skill\n\n${flowsSkill}`,
+      timeout: 600000, // 10 minutes for large screen inventories
       userPrompt: `Analyze user flows and journeys for this project.
 ${wireframeReadInstruction}
 
@@ -447,6 +663,21 @@ CRITICAL: Output USER FLOWS only. Do NOT output:
 - Style analysis
 
 Your output MUST follow the skill format with "## Flow N: [Name]" headers.
+
+${screenInventoryForFlows ? `${screenInventoryForFlows}
+
+**CRITICAL COVERAGE REQUIREMENT:**
+Every screen listed above MUST appear in at least one flow.
+After defining primary flows, create additional flows to cover remaining screens:
+- "Settings & Profile Flow" for settings-*, profile-*, account-* screens
+- "Financial Management Flow" for wallet-*, transaction-*, payment-* screens
+- "Tribe Administration Flow" for tribe-admin-*, treasury-* screens
+- "Content Management Flow" for wiki-*, document-*, media-* screens
+- "Admin Operations Flow" for admin-* screens
+- "Miscellaneous Flow" for any remaining orphaned screens
+
+Your output MUST achieve 100% coverage of the screen list above.
+` : ''}
 
 ## Project Brief
 ${combinedBrief || 'No brief provided. Analyze based on wireframes only.'}
@@ -463,11 +694,22 @@ Produce output according to the skill format. Remember: FLOWS ONLY, not styles.`
     });
 
     if (flowsResult.output) {
-      await writeFile(join(sharedDir, 'flows.md'), stripPreamble(flowsResult.output));
+      const strippedFlows = stripPreamble(flowsResult.output);
+      await writeFile(join(sharedDir, 'flows.md'), strippedFlows);
       console.log('  Written: flows.md');
+
+      // Extract navigation schema from flows output
+      const navSchema = extractNavigationSchema(strippedFlows);
+      if (navSchema) {
+        await writeFile(
+          join(sharedDir, 'navigation-schema.md'),
+          `# Navigation Schema\n\n\`\`\`yaml\n${navSchema}\n\`\`\``
+        );
+        console.log('  Written: navigation-schema.md');
+      }
     }
 
-    // Screens mapping
+    // Screens mapping - generate per-platform v3.0 files
     if (flowsResult.output) {
       const screensSkill = await loadSkill(projectDir, 'analysis/analyze-screens');
       const iconInventoryForScreens = userIcons.length > 0
@@ -478,10 +720,155 @@ ${userIcons.map(f => `- ${f.replace(/\.(svg|png)$/i, '')}`).join('\n')}
 Use these exact icon names when identifying icons for screens.`
         : '## User Icons\nNo user icons found in assets/icons/';
 
-      const screensResult = await runWorkerSequential({
-        id: 'screens',
-        systemPrompt: `${systemPrompt}\n\n## Skill\n\n${screensSkill}`,
-        userPrompt: `Extract all screens, their required UI components, AND required icons from the flows analysis below.
+      // Process each app separately for per-platform files
+      if (briefApps.length > 0) {
+        console.log(`\n  Generating per-platform screens files for ${briefApps.length} app(s)...`);
+
+        for (const briefApp of briefApps) {
+          const platformId = getPlatformId(briefApp.appId);
+          const appType = briefApp.appType as 'webapp' | 'mobile' | 'admin';
+          const layoutSkillValue = getLayoutSkill(appType);
+          const screenCount = briefApp.screens.length;
+
+          console.log(`\n  Processing: ${briefApp.appId} (${screenCount} screens)`);
+
+          // Build platform-specific screen inventory
+          const platformInventory = formatScreenInventory([briefApp]);
+
+          const MAX_RETRIES = 2;
+          let validOutput: PlatformScreensJson | null = null;
+
+          for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            if (attempt > 1) {
+              console.log(`    Retry ${attempt}/${MAX_RETRIES}...`);
+            }
+
+            const screensResult = await runWorkerSequential({
+              id: `screens-${platformId}`,
+              systemPrompt: `${systemPrompt}\n\n## Skill\n\n${screensSkill}`,
+              timeout: 600000,
+              userPrompt: `Extract all screens for ${briefApp.appName} in v3.0 single-app format.
+
+${platformInventory}
+
+**CRITICAL**: Your output MUST include ALL ${screenCount} screens from the inventory above.
+
+## Flows Analysis (filter for screens in this app)
+${stripPreamble(flowsResult.output)}
+
+## Project Brief (for component and icon context)
+${combinedBrief || 'No brief provided.'}
+
+${iconInventoryForScreens}
+
+For each screen, identify:
+1. UI components needed (header, bottom-nav, card, button-primary, modal, form-input, avatar, badge, etc.)
+2. Icons needed (navigation icons, action icons, tab icons, feature icons)
+3. Which flows this screen belongs to
+
+OUTPUT v3.0 JSON FORMAT (SINGLE APP):
+{
+  "version": "3.0",
+  "generatedAt": "${new Date().toISOString()}",
+  "app": {
+    "appId": "${briefApp.appId}",
+    "appName": "${briefApp.appName}",
+    "appType": "${appType}",
+    "layoutSkill": "${layoutSkillValue}",
+    "defaultNavigation": {
+      "header": { "variant": "standard", "actions": ["search", "notifications"] },
+      "footer": { "variant": "tab-bar", "tabs": ["home", "discover", "profile"] },
+      "sidemenu": { "visible": false }
+    },
+    "screens": [
+      {
+        "id": "screen-id",
+        "file": "screen-id.html",
+        "name": "Screen Name",
+        "description": "What this screen shows",
+        "section": "section-id",
+        "components": ["header", "bottom-nav", "card"],
+        "icons": ["menu", "search", "home"],
+        "flows": ["onboarding", "discovery"]
+      }
+    ]
+  }
+}
+
+CRITICAL REQUIREMENTS:
+1. Output SINGLE "app" object (NOT "apps" array)
+2. Include ALL ${screenCount} screens from the inventory
+3. EVERY screen MUST have: components (min 2), icons (min 1), flows (min 1)
+4. Use "miscellaneous" flow for screens not in any defined flow
+${attempt > 1 ? '\n5. PREVIOUS ATTEMPT FAILED - ensure valid JSON with all required fields' : ''}
+
+No markdown, no explanations, just JSON.`
+            });
+
+            if (screensResult.output) {
+              let jsonContent = screensResult.output.trim();
+              if (jsonContent.startsWith('```')) {
+                jsonContent = jsonContent.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+              }
+
+              try {
+                const parsed = JSON.parse(jsonContent);
+
+                // Validate v3.0 schema
+                const validation = validateSchema(parsed);
+                if (validation.valid) {
+                  validOutput = parsed as PlatformScreensJson;
+                  break;
+                } else {
+                  console.warn(`    Schema validation failed:`);
+                  validation.errors.slice(0, 3).forEach(e => console.warn(`      - ${e}`));
+                }
+              } catch (e) {
+                console.warn(`    Invalid JSON: ${e instanceof Error ? e.message : 'parse error'}`);
+              }
+            }
+          }
+
+          // Write per-platform file
+          const screensFilename = getScreensFilename(briefApp.appId);
+          const screensPath = join(sharedDir, screensFilename);
+
+          if (validOutput) {
+            await writeFile(screensPath, JSON.stringify(validOutput, null, 2));
+            console.log(`    Written: ${screensFilename}`);
+
+            const actualScreenCount = validOutput.app.screens.length;
+            const components = getAllComponents(validOutput);
+            const icons = getAllIcons(validOutput);
+            const coverage = getCoverage(validOutput);
+
+            console.log(`    Screens: ${actualScreenCount}/${screenCount}`);
+            console.log(`    Components: ${components.length}`);
+            console.log(`    Icons: ${icons.length}`);
+
+            const status = coverage.percent === 100 ? '✓' : '⚠';
+            console.log(`    ${status} Flow Coverage: ${coverage.inFlows}/${coverage.total} (${coverage.percent}%)`);
+          } else {
+            console.warn(`    Warning: Failed to generate valid v3.0 schema for ${briefApp.appId}`);
+          }
+        }
+      } else {
+        // Single app without brief schema - use default webapp
+        console.log('  No brief schema found, generating single webapp-screens.json');
+
+        const MAX_RETRIES = 2;
+        let validOutput: PlatformScreensJson | null = null;
+
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+          if (attempt > 1) {
+            console.log(`  Retry ${attempt}/${MAX_RETRIES}...`);
+          }
+
+          const screensResult = await runWorkerSequential({
+            id: 'screens-webapp',
+            systemPrompt: `${systemPrompt}\n\n## Skill\n\n${screensSkill}`,
+            timeout: 600000,
+            userPrompt: `Extract all screens in v3.0 single-app format.
 
 ## Flows Analysis
 ${stripPreamble(flowsResult.output)}
@@ -494,44 +881,91 @@ ${iconInventoryForScreens}
 For each screen, identify:
 1. UI components needed (header, bottom-nav, card, button-primary, modal, form-input, avatar, badge, etc.)
 2. Icons needed (navigation icons, action icons, tab icons, feature icons)
+3. Which flows this screen belongs to
 
-Output ONLY valid JSON with this structure:
+OUTPUT v3.0 JSON FORMAT (SINGLE APP):
 {
-  "screens": ["screen-name.html", ...],
-  "userflows": [{ "id": "...", "name": "...", "screens": [...] }, ...],
-  "components": ["header", "bottom-nav", "card", "button-primary", ...],
-  "screenComponents": {
-    "screen-name": ["header", "bottom-nav", "card"],
-    ...
-  },
-  "icons": ["home", "search", "notifications", "menu", ...],
-  "screenIcons": {
-    "screen-name": ["menu", "search", "home"],
-    ...
+  "version": "3.0",
+  "generatedAt": "${new Date().toISOString()}",
+  "app": {
+    "appId": "webapp",
+    "appName": "Web Application",
+    "appType": "webapp",
+    "layoutSkill": "webapp",
+    "defaultNavigation": {
+      "header": { "variant": "standard", "actions": ["search", "notifications"] },
+      "footer": { "variant": "tab-bar", "tabs": ["home", "discover", "profile"] },
+      "sidemenu": { "visible": false }
+    },
+    "screens": [
+      {
+        "id": "screen-id",
+        "file": "screen-id.html",
+        "name": "Screen Name",
+        "description": "What this screen shows",
+        "section": "section-id",
+        "components": ["header", "bottom-nav", "card"],
+        "icons": ["menu", "search", "home"],
+        "flows": ["onboarding", "discovery"]
+      }
+    ]
   }
 }
 
-No markdown, no explanations, just JSON.`
-      });
+CRITICAL REQUIREMENTS:
+1. Output SINGLE "app" object (NOT "apps" array)
+2. Include ALL screens from the flows analysis
+3. EVERY screen MUST have: components (min 2), icons (min 1), flows (min 1)
+4. Use "miscellaneous" flow for screens not in any defined flow
+${attempt > 1 ? '\n5. PREVIOUS ATTEMPT FAILED - ensure valid JSON with all required fields' : ''}
 
-      if (screensResult.output) {
-        let jsonContent = screensResult.output.trim();
-        if (jsonContent.startsWith('```')) {
-          jsonContent = jsonContent.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+No markdown, no explanations, just JSON.`
+          });
+
+          if (screensResult.output) {
+            let jsonContent = screensResult.output.trim();
+            if (jsonContent.startsWith('```')) {
+              jsonContent = jsonContent.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+            }
+
+            try {
+              const parsed = JSON.parse(jsonContent);
+
+              // Validate v3.0 schema
+              const validation = validateSchema(parsed);
+              if (validation.valid) {
+                validOutput = parsed as PlatformScreensJson;
+                break;
+              } else {
+                console.warn(`  Schema validation failed:`);
+                validation.errors.slice(0, 3).forEach(e => console.warn(`    - ${e}`));
+              }
+            } catch (e) {
+              console.warn(`  Invalid JSON: ${e instanceof Error ? e.message : 'parse error'}`);
+            }
+          }
         }
 
-        try {
-          const parsed = JSON.parse(jsonContent);
-          await writeFile(join(sharedDir, 'screens.json'), JSON.stringify(parsed, null, 2));
-          console.log('  Written: screens.json');
-          if (parsed.components) {
-            console.log(`  Found ${parsed.components.length} unique components`);
-          }
-          if (parsed.icons) {
-            console.log(`  Found ${parsed.icons.length} unique icons`);
-          }
-        } catch {
-          console.warn('  Warning: screens.json output was not valid JSON, skipping');
+        // Write webapp-screens.json
+        const screensPath = join(sharedDir, 'webapp-screens.json');
+
+        if (validOutput) {
+          await writeFile(screensPath, JSON.stringify(validOutput, null, 2));
+          console.log('  Written: webapp-screens.json');
+
+          const screenCount = validOutput.app.screens.length;
+          const components = getAllComponents(validOutput);
+          const icons = getAllIcons(validOutput);
+          const coverage = getCoverage(validOutput);
+
+          console.log(`  Screens: ${screenCount}`);
+          console.log(`  Components: ${components.length}`);
+          console.log(`  Icons: ${icons.length}`);
+
+          const status = coverage.percent === 100 ? '✓' : '⚠';
+          console.log(`  ${status} Flow Coverage: ${coverage.inFlows}/${coverage.total} (${coverage.percent}%)`);
+        } else {
+          console.warn('  Warning: Failed to generate valid v3.0 schema');
         }
       }
     }
@@ -570,6 +1004,7 @@ No markdown, no explanations, just JSON.`
 
   // Summary
   if (multiPlatform) {
+    const platformFiles = platforms.map(p => getScreensFilename(p)).join(', ');
     console.log(`
 Analysis complete!
 
@@ -578,9 +1013,10 @@ Shared outputs in outputs/analysis/shared/
   - styles.md        (${styleCount} style options)
   - assets.md        (per-style assets)
   - inspirations.md  (mood board)
+  - ${platformFiles} (per-platform v3.0 screens)
 
 Platform outputs in outputs/analysis/{platform}/
-${platforms.map(p => `  - ${p}/flows.md, ${p}/screens.json`).join('\n')}
+${platforms.map(p => `  - ${p}/flows.md`).join('\n')}
 
 Asset directories created:
   - assets/styles/style-0/ through style-${styleCount - 1}/
@@ -589,6 +1025,9 @@ Next: Review the outputs, then run:
   agentflow mockups --platform=${platforms[0]}
 `);
   } else {
+    const screensFiles = briefApps.length > 0
+      ? briefApps.map(app => getScreensFilename(app.appId)).join(', ')
+      : 'webapp-screens.json';
     console.log(`
 Analysis complete!
 
@@ -596,7 +1035,7 @@ Outputs written to outputs/analysis/
   - research.md      (competitive analysis)
   - styles.md        (${styleCount} style options)
   - flows.md         (user journeys)
-  - screens.json     (screens, userflows, and component mapping)
+  - ${screensFiles}  (v3.0 per-platform screens)
   - assets.md        (per-style assets)
   - inspirations.md  (mood board)
 
