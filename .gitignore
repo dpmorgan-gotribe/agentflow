@@ -1,0 +1,38 @@
+# Runtime state (transient, session-specific)
+.claude/state/
+.claude/worktrees/
+
+# Pipeline stage outputs (regenerated each run)
+pipeline/
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+*.p12
+
+# Build outputs
+.next/
+dist/
+.expo/
+.turbo/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local settings (per-developer, not shared)
+.claude/settings.local.json
