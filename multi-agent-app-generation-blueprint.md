@@ -25,7 +25,7 @@ Every section follows the same pattern: **principle** (what and why), **pattern*
 
 ## 1. Claude Code's agentic primitives
 
-Claude Code provides six primitives. Understanding what each one is for — and what it is *not* for — prevents the most common failure mode of agent systems: jamming every feature through the first primitive you learn.
+Claude Code provides six primitives. Understanding what each one is for — and what it is _not_ for — prevents the most common failure mode of agent systems: jamming every feature through the first primitive you learn.
 
 ### Subagents
 
@@ -102,6 +102,7 @@ Skills support dynamic context injection — shell commands prefixed with `!` ru
 
 ```markdown
 ## Current branch context
+
 - Branch: !`git branch --show-current`
 - Recent changes: !`git log --oneline -5`
 ```
@@ -114,15 +115,15 @@ Slash commands are now unified with skills. Both `.claude/commands/deploy.md` an
 
 Hooks are **deterministic** shell commands, HTTP endpoints, LLM prompts, or agent invocations at specific lifecycle points. Unlike CLAUDE.md instructions (advisory), hooks provide guaranteed enforcement.
 
-| Event | Purpose |
-|---|---|
-| `PreToolUse` | Block dangerous commands, enforce file boundaries, validate inputs |
-| `PostToolUse` | Auto-format code, run linters, update progress logs |
-| `Stop` | Run final validation, update lesson logs |
-| `SubagentStop` | Validate subagent output, trigger next pipeline stage |
-| `SessionStart` | Inject environment context, load architecture spec |
-| `PreCompact` | Save context snapshot before auto-compaction wipes state |
-| `Notification` | Alert human on approval gates |
+| Event          | Purpose                                                            |
+| -------------- | ------------------------------------------------------------------ |
+| `PreToolUse`   | Block dangerous commands, enforce file boundaries, validate inputs |
+| `PostToolUse`  | Auto-format code, run linters, update progress logs                |
+| `Stop`         | Run final validation, update lesson logs                           |
+| `SubagentStop` | Validate subagent output, trigger next pipeline stage              |
+| `SessionStart` | Inject environment context, load architecture spec                 |
+| `PreCompact`   | Save context snapshot before auto-compaction wipes state           |
+| `Notification` | Alert human on approval gates                                      |
 
 Configuration lives in `.claude/settings.json`:
 
@@ -132,19 +133,23 @@ Configuration lives in `.claude/settings.json`:
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "hooks": [{
-          "type": "command",
-          "command": "node .claude/hooks/block-dangerous.js"
-        }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/block-dangerous.js"
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",
-        "hooks": [{
-          "type": "command",
-          "command": "npx prettier --write \"$CLAUDE_TOOL_INPUT_FILE_PATH\" 2>/dev/null || true"
-        }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx prettier --write \"$CLAUDE_TOOL_INPUT_FILE_PATH\" 2>/dev/null || true"
+          }
+        ]
       }
     ]
   }
@@ -173,26 +178,26 @@ Model Context Protocol servers provide external tool integration via `.mcp.json`
 
 CLAUDE.md provides persistent instructions loaded every session. Claude walks upward from the working directory to the filesystem root, loading every CLAUDE.md and CLAUDE.local.md found.
 
-| Scope | Location | Purpose |
-|---|---|---|
-| Enterprise | System dirs | Org-wide rules |
-| User | `~/.claude/CLAUDE.md` | Personal preferences |
-| Project | `./CLAUDE.md` | Team conventions |
-| Local | `./CLAUDE.local.md` | Personal, gitignored |
-| Subdirectory | `apps/web/CLAUDE.md` | Loaded when files in that dir are accessed |
+| Scope        | Location              | Purpose                                    |
+| ------------ | --------------------- | ------------------------------------------ |
+| Enterprise   | System dirs           | Org-wide rules                             |
+| User         | `~/.claude/CLAUDE.md` | Personal preferences                       |
+| Project      | `./CLAUDE.md`         | Team conventions                           |
+| Local        | `./CLAUDE.local.md`   | Personal, gitignored                       |
+| Subdirectory | `apps/web/CLAUDE.md`  | Loaded when files in that dir are accessed |
 
 CLAUDE.md supports `@` imports: `@docs/architecture.md` or `@~/.claude/global-rules.md` (max depth 5). Keep each CLAUDE.md **under 200 lines**.
 
 ### Decision tree
 
-| Need | Primitive |
-|---|---|
+| Need                                     | Primitive                     |
+| ---------------------------------------- | ----------------------------- |
 | Persistent project facts and conventions | CLAUDE.md or `.claude/rules/` |
-| Reusable procedure or playbook | Skill (SKILL.md) |
-| Context isolation and specialized tools | Subagent |
-| Deterministic enforcement of rules | Hook |
-| Persistent external service or API | MCP server |
-| Quick user-triggered action | Slash command (via skill) |
+| Reusable procedure or playbook           | Skill (SKILL.md)              |
+| Context isolation and specialized tools  | Subagent                      |
+| Deterministic enforcement of rules       | Hook                          |
+| Persistent external service or API       | MCP server                    |
+| Quick user-triggered action              | Slash command (via skill)     |
 
 ---
 
@@ -279,18 +284,18 @@ async function runStage(stage: PipelineStage, input: any): Promise<any> {
     options: {
       allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
       permissionMode: "acceptEdits",
-      model: stage.model ?? await readModelConfig(stage.name),
+      model: stage.model ?? (await readModelConfig(stage.name)),
       maxBudgetUsd: stage.budgetUsd,
-      outputFormat: { type: "json_schema", schema: stage.schema }
-    }
+      outputFormat: { type: "json_schema", schema: stage.schema },
+    },
   })) {
     if (message.type === "result" && message.subtype === "success") {
       result = message.structured_output;
     }
   }
   await fs.writeFile(
-    `./pipeline/${stage.name}-output.json`, 
-    JSON.stringify(result, null, 2)
+    `./pipeline/${stage.name}-output.json`,
+    JSON.stringify(result, null, 2),
   );
   return result;
 }
@@ -464,7 +469,7 @@ The fundamental problem with vibe coding is that it optimizes for the first iter
 
 Industry convergence: Kiro (Amazon), GitHub Spec Kit, BMAD Method, Cline Memory Bank, TaskMaster all use structured markdown as specification format.
 
-A brief.md is a **hybrid agentic PRD** — strategic context of a BRD, acceptance criteria of a PRD, technical precision of an RFC, all structured for machine consumption. It describes *what to build*. CLAUDE.md describes *how to work*. Keep them separate.
+A brief.md is a **hybrid agentic PRD** — strategic context of a BRD, acceptance criteria of a PRD, technical precision of an RFC, all structured for machine consumption. It describes _what to build_. CLAUDE.md describes _how to work_. Keep them separate.
 
 ### Schema-locked structure
 
@@ -474,7 +479,7 @@ Every brief.md starts with YAML frontmatter validated against JSON Schema:
 ---
 $schema: ./schemas/brief-frontmatter.schema.json
 version: "1.0.0"
-status: draft          # draft | review | approved | locked
+status: draft # draft | review | approved | locked
 project-name: "Acme Dashboard"
 author: "Jane Doe"
 created: 2026-01-15
@@ -538,13 +543,17 @@ Three layers protect brief integrity:
 ```json
 {
   "hooks": {
-    "PreToolUse": [{
-      "matcher": "Write|Edit|MultiEdit",
-      "hooks": [{
-        "type": "command",
-        "command": "node .claude/hooks/validate-brief.mjs"
-      }]
-    }]
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/validate-brief.mjs"
+          }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -560,11 +569,12 @@ allowed-tools: Read Bash Grep Glob
 ---
 
 Run in sequence:
+
 1. `npx markdownlint-cli2 brief.md`
 2. `node scripts/validate-brief.mjs --frontmatter`
 3. `node scripts/validate-brief.mjs --codeblocks`
 4. `node scripts/validate-brief.mjs --companions`
-Report all errors with line numbers, or "✓ Brief validation passed"
+   Report all errors with line numbers, or "✓ Brief validation passed"
 ```
 
 ### Brief authoring workflow
@@ -597,6 +607,7 @@ brief.md
 
 ```markdown
 ## Brief Protocol
+
 - The canonical specification is `brief.md` at project root
 - Read brief.md FIRST before starting any work
 - Never ask the user for information that is in the brief
@@ -610,6 +621,7 @@ brief.md
 Split into a companion file when content exceeds ~50 lines of structured data, is consumed by tools or build systems, would create noisy diffs, or represents a machine-readable contract. The navigation-schema.json at 1,787 lines is a canonical example.
 
 For large companions:
+
 - Provide a **`.summary.md`** human-readable outline — agents read this first
 - Use **jq extraction** for targeted reads: `jq '.routes[] | select(.guard == "auth")' companion/navigation-schema.json`
 - Index in `brief.manifest.json` with JSONPath markers
@@ -662,8 +674,9 @@ allowed-tools: Read Bash Glob
 ---
 
 ## Steps
+
 1. Check if ./assets/ exists — if not, write empty asset-inventory.json
-2. Glob ./assets/**/* and catalog by subdirectory
+2. Glob ./assets/\*_/_ and catalog by subdirectory
 3. For images, extract dimensions via `file` or `identify`
 4. For fonts, detect format and family name via `fc-query` or filename
 5. For logos/icons (SVG), read the file to get viewBox
@@ -673,25 +686,26 @@ allowed-tools: Read Bash Glob
 9. Write docs/asset-inventory.json
 
 ## Output format
+
 {
-  "hasUserAssets": true,
-  "logos": {
-    "primary": { "path": "assets/logos/primary.svg", "viewBox": "0 0 240 60" },
-    "mark": { "path": "assets/logos/mark.svg", "viewBox": "0 0 60 60" }
-  },
-  "icons": [
-    { "name": "search", "path": "assets/icons/search.svg" }
-  ],
-  "fonts": [
-    { "family": "AcmeSans", "weights": [400, 700], 
-      "files": ["assets/fonts/acme-sans-400.woff2", "assets/fonts/acme-sans-700.woff2"] }
-  ],
-  "images": { "hero": [...], "backgrounds": [...] },
-  "wireframes": [
-    { "screen": "admin-dashboard", "path": "assets/wireframes/admin-dashboard.png" }
-  ],
-  "brandGuides": ["assets/brand-guides/brand-guide.pdf"],
-  "colors": { "primary": "#6B9B37", "secondary": "#14b8a6" }
+"hasUserAssets": true,
+"logos": {
+"primary": { "path": "assets/logos/primary.svg", "viewBox": "0 0 240 60" },
+"mark": { "path": "assets/logos/mark.svg", "viewBox": "0 0 60 60" }
+},
+"icons": [
+{ "name": "search", "path": "assets/icons/search.svg" }
+],
+"fonts": [
+{ "family": "AcmeSans", "weights": [400, 700],
+"files": ["assets/fonts/acme-sans-400.woff2", "assets/fonts/acme-sans-700.woff2"] }
+],
+"images": { "hero": [...], "backgrounds": [...] },
+"wireframes": [
+{ "screen": "admin-dashboard", "path": "assets/wireframes/admin-dashboard.png" }
+],
+"brandGuides": ["assets/brand-guides/brand-guide.pdf"],
+"colors": { "primary": "#6B9B37", "secondary": "#14b8a6" }
 }
 ```
 
@@ -737,9 +751,9 @@ export const sharedPreset = {
         secondary: userColors.secondary ?? defaultPalette.secondary,
       },
       fontFamily: {
-        sans: userFonts.length 
-          ? [userFonts[0].family, 'system-ui', 'sans-serif']
-          : ['Inter', 'system-ui', 'sans-serif'],
+        sans: userFonts.length
+          ? [userFonts[0].family, "system-ui", "sans-serif"]
+          : ["Inter", "system-ui", "sans-serif"],
       },
     },
   },
@@ -750,24 +764,24 @@ export const sharedPreset = {
 
 Per-asset-type fallback is essential because users rarely provide everything:
 
-| Asset | User has | User missing |
-|---|---|---|
-| Logo | Use `assets/logos/primary.svg` | Generate via DALL-E MCP in logo style matching brand-guide |
-| Colors | Use `assets/colors.json` or extracted | Research from competitors, pick palette |
-| Fonts | Reference `assets/fonts/*.woff2` | Google Fonts API pick matching brand guide |
-| Icons | Use `assets/icons/*.svg` | Icons8 MCP, matched by keyword |
-| Images | Use `assets/images/*` | Unsplash MCP or DALL-E generation |
-| Wireframes | Use as layout blueprint | UI Designer generates layout from scratch |
+| Asset      | User has                              | User missing                                               |
+| ---------- | ------------------------------------- | ---------------------------------------------------------- |
+| Logo       | Use `assets/logos/primary.svg`        | Generate via DALL-E MCP in logo style matching brand-guide |
+| Colors     | Use `assets/colors.json` or extracted | Research from competitors, pick palette                    |
+| Fonts      | Reference `assets/fonts/*.woff2`      | Google Fonts API pick matching brand guide                 |
+| Icons      | Use `assets/icons/*.svg`              | Icons8 MCP, matched by keyword                             |
+| Images     | Use `assets/images/*`                 | Unsplash MCP or DALL-E generation                          |
+| Wireframes | Use as layout blueprint               | UI Designer generates layout from scratch                  |
 
 ### Architecture.yaml records asset provenance
 
 ```yaml
 # In architecture.yaml
 assets:
-  provenance: hybrid      # user | researched | generated | hybrid
+  provenance: hybrid # user | researched | generated | hybrid
   userProvided:
     logos: true
-    icons: partial        # user has some, generating rest
+    icons: partial # user has some, generating rest
     fonts: true
     wireframes: [admin-dashboard, mobile-home]
   generated:
@@ -787,14 +801,14 @@ Not every agent needs Opus. The Git Agent renaming branches can use Haiku. The A
 
 Claude Code provides several overlapping ways to set the model:
 
-| Mechanism | Scope | Precedence |
-|---|---|---|
-| `ANTHROPIC_MODEL` env var | Process | 1 (highest) |
-| `--model` CLI flag | Invocation | 2 |
-| `/model` slash command | Session | 3 |
-| Agent YAML `model:` field | Per-agent | 4 |
-| `settings.json` default | Project | 5 |
-| Claude Code default | Global | 6 (lowest) |
+| Mechanism                 | Scope      | Precedence  |
+| ------------------------- | ---------- | ----------- |
+| `ANTHROPIC_MODEL` env var | Process    | 1 (highest) |
+| `--model` CLI flag        | Invocation | 2           |
+| `/model` slash command    | Session    | 3           |
+| Agent YAML `model:` field | Per-agent  | 4           |
+| `settings.json` default   | Project    | 5           |
+| Claude Code default       | Global     | 6 (lowest)  |
 
 The `model: inherit` value in agent YAML means "use whatever the parent/session is using." This is useful for generic helper agents.
 
@@ -807,36 +821,36 @@ The `model: inherit` value in agent YAML means "use whatever the parent/session 
 version: "1.0"
 
 defaults:
-  planning:   claude-opus-4-6           # Deep reasoning needed
-  building:   claude-sonnet-4-6         # Balanced quality/cost
-  quality:    claude-sonnet-4-6         # Careful review
-  meta:       claude-opus-4-6           # System-building is high-stakes
-  mechanical: claude-haiku-4-5          # Cheap deterministic work
+  planning: claude-opus-4-6 # Deep reasoning needed
+  building: claude-sonnet-4-6 # Balanced quality/cost
+  quality: claude-sonnet-4-6 # Careful review
+  meta: claude-opus-4-6 # System-building is high-stakes
+  mechanical: claude-haiku-4-5 # Cheap deterministic work
 
 agents:
-  analyst:             { tier: planning, effort: max }
-  architect:           { tier: planning, effort: max }
-  project-manager:     { tier: planning, effort: high }
-  ui-designer:         { tier: building, effort: high }
-  web-frontend-builder:    { tier: building, effort: high }
+  analyst: { tier: planning, effort: max }
+  architect: { tier: planning, effort: max }
+  project-manager: { tier: planning, effort: high }
+  ui-designer: { tier: building, effort: high }
+  web-frontend-builder: { tier: building, effort: high }
   mobile-frontend-builder: { tier: building, effort: high }
-  backend-builder:     { tier: building, effort: high }
-  tester:              { tier: quality,  effort: medium }
-  reviewer:            { tier: quality,  effort: high }
-  git-agent:           { tier: mechanical, effort: low }
-  skills-agent:        { tier: meta,     effort: high }
-  agent-expert:        { tier: meta,     effort: max }
-  lessons-agent:       { tier: quality,  effort: medium }
+  backend-builder: { tier: building, effort: high }
+  tester: { tier: quality, effort: medium }
+  reviewer: { tier: quality, effort: high }
+  git-agent: { tier: mechanical, effort: low }
+  skills-agent: { tier: meta, effort: high }
+  agent-expert: { tier: meta, effort: max }
+  lessons-agent: { tier: quality, effort: medium }
 
 budget:
   perStageMaxUsd:
-    analyze:    3.00
-    mockups:    10.00
+    analyze: 3.00
+    mockups: 10.00
     stylesheet: 2.00
-    screens:    25.00    # Scales with screen count
-    code:       50.00
-    test:       10.00
-    review:     5.00
+    screens: 25.00 # Scales with screen count
+    code: 50.00
+    test: 10.00
+    review: 5.00
   perPipelineMaxUsd: 150.00
 ```
 
@@ -849,12 +863,12 @@ extends: ~/.claude/models.yaml
 agents:
   # This project has complex auth — use Opus for backend
   backend-builder: { tier: planning, effort: max }
-  
+
   # Simple UI — downgrade to Haiku
-  ui-designer:     { tier: mechanical, effort: medium }
+  ui-designer: { tier: mechanical, effort: medium }
 
 budget:
-  perPipelineMaxUsd: 250.00     # Larger project budget
+  perPipelineMaxUsd: 250.00 # Larger project budget
 ```
 
 ### How the orchestrator reads config
@@ -879,25 +893,25 @@ export async function readModelConfig(agentName: string): Promise<{
   budgetUsd: number;
 }> {
   const globalConfig = parseConfig(
-    path.join(os.homedir(), ".claude", "models.yaml")
+    path.join(os.homedir(), ".claude", "models.yaml"),
   );
   const projectConfig = parseConfig(".claude/models.yaml");
-  
+
   // Project extends global
-  const merged = projectConfig 
+  const merged = projectConfig
     ? mergeConfigs(globalConfig, projectConfig)
     : globalConfig;
 
   // Env var override
   const envOverride = process.env.ANTHROPIC_MODEL;
-  
+
   const agentMeta = merged.agents[agentName];
   const model = envOverride ?? merged.defaults[agentMeta.tier];
-  
+
   return {
     model,
     effort: agentMeta.effort,
-    budgetUsd: merged.budget.perStageMaxUsd[agentName] ?? 5.00,
+    budgetUsd: merged.budget.perStageMaxUsd[agentName] ?? 5.0,
   };
 }
 
@@ -911,8 +925,8 @@ function mergeConfigs(global: ModelConfig, project: ModelConfig): ModelConfig {
         ...global.budget.perStageMaxUsd,
         ...project.budget?.perStageMaxUsd,
       },
-      perPipelineMaxUsd: project.budget?.perPipelineMaxUsd 
-        ?? global.budget.perPipelineMaxUsd,
+      perPipelineMaxUsd:
+        project.budget?.perPipelineMaxUsd ?? global.budget.perPipelineMaxUsd,
     },
   };
 }
@@ -927,7 +941,7 @@ Agent files specify `model: inherit` so they pick up whatever the orchestrator a
 name: backend-builder
 description: Generates tRPC routers, Prisma schema, migrations.
 tools: Read, Write, Edit, Bash, Grep, Glob
-model: inherit      # Orchestrator sets via config
+model: inherit # Orchestrator sets via config
 permissionMode: acceptEdits
 ---
 ```
@@ -943,7 +957,7 @@ const messages = query({
     effort,
     maxBudgetUsd: budgetUsd,
     // ...
-  }
+  },
 });
 ```
 
@@ -951,11 +965,12 @@ const messages = query({
 
 ```markdown
 ## Model Configuration
+
 - System defaults: ~/.claude/models.yaml (managed by platform team)
 - Project overrides: .claude/models.yaml (edit freely per project)
-- To switch a single agent to a different tier, add it to `agents:` 
+- To switch a single agent to a different tier, add it to `agents:`
   in the project config
-- Budget limits are enforced by the orchestrator — exceeding 
+- Budget limits are enforced by the orchestrator — exceeding
   perPipelineMaxUsd aborts the run
 - To bypass config entirely for debugging: ANTHROPIC_MODEL=claude-sonnet-4-6
 ```
@@ -980,7 +995,7 @@ Stages and estimated costs:
                                             ────────
   Estimated total:                          ~$93.20
   Pipeline budget:                          $150.00
-  
+
 Proceed? [y/N]
 ```
 
@@ -999,9 +1014,10 @@ Every production AI coding tool has converged on this: Claude Code Plan Mode, Ki
 ```markdown
 ---
 id: feat-001
-type: feature          # feature | bug | refactor | investigation
-status: in-progress    # draft | approved | in-progress | completed 
-                       # | abandoned | superseded
+type: feature # feature | bug | refactor | investigation
+status:
+  in-progress # draft | approved | in-progress | completed
+  # | abandoned | superseded
 author-agent: architect
 created: 2026-04-14
 updated: 2026-04-14
@@ -1022,33 +1038,39 @@ max-attempts: 5
 # feat-001: User Authentication System
 
 ## Problem Statement
+
 The application requires JWT-based authentication with email/password
 login, OAuth2 social providers, and role-based access control.
 
 Brief reference: `brief.md § 13. Security`
 
 ## Approach
+
 1. Implement Clerk integration for auth provider
 2. Add auth middleware to Fastify routes
 3. Create RBAC guards matching navigation-schema.json guard definitions
 4. Add session management with refresh token rotation
 
 ## Rejected Alternatives
+
 - **Firebase Auth** — rejected because brief specifies Clerk
 - **Custom JWT implementation** — rejected for security risk
 
 ## Expected Outcomes
+
 - [ ] Login/register screens render correctly
 - [ ] JWT tokens issued on successful auth
 - [ ] Protected routes return 401 without valid token
 - [ ] RBAC guards enforce role-based access
 
 ## Validation Criteria
+
 - All auth unit tests pass
 - Integration test: login → access protected route → logout
 - No secrets in committed code
 
 ## Attempt Log
+
 <!-- Populated automatically by agents -->
 ```
 
@@ -1078,7 +1100,7 @@ When a plan completes or is abandoned, the archive captures:
 ---
 # COMPLETION RECORD (appended to archived plan)
 completed: 2026-04-15
-outcome: success       # success | partial | failed | abandoned
+outcome: success # success | partial | failed | abandoned
 actual-files-changed:
   - src/auth/clerk.ts (created)
   - src/middleware/auth.ts (created)
@@ -1098,6 +1120,7 @@ duration-minutes: 45
 ```
 
 Agents search the archive via four indexes:
+
 - **By affected file**: `grep -rl "src/auth" plans/archive/`
 - **By feature area**: frontmatter `feature-area` field
 - **By error message**: for bug plans
@@ -1109,49 +1132,51 @@ A hash-based loop detection hook blocks the third identical attempt:
 
 ```javascript
 // .claude/hooks/detect-loop.mjs
-import crypto from 'crypto';
-import fs from 'fs';
+import crypto from "crypto";
+import fs from "fs";
 
-const ATTEMPTS_FILE = '.claude/state/recent-attempts.json';
+const ATTEMPTS_FILE = ".claude/state/recent-attempts.json";
 const MAX_IDENTICAL = 3;
 
 function hashAttempt(action) {
   const sig = `${action.tool}:${action.file}:${action.content?.slice(0, 200)}`;
-  return crypto.createHash('sha256').update(sig).digest('hex').slice(0, 12);
+  return crypto.createHash("sha256").update(sig).digest("hex").slice(0, 12);
 }
 
-let input = '';
+let input = "";
 for await (const chunk of process.stdin) input += chunk;
 const toolInput = JSON.parse(input);
 
 const hash = hashAttempt({
   tool: toolInput.tool_name,
   file: toolInput.tool_input?.file_path || toolInput.tool_input?.command,
-  content: toolInput.tool_input?.content || toolInput.tool_input?.new_string
+  content: toolInput.tool_input?.content || toolInput.tool_input?.new_string,
 });
 
 const attempts = fs.existsSync(ATTEMPTS_FILE)
-  ? JSON.parse(fs.readFileSync(ATTEMPTS_FILE, 'utf8'))
+  ? JSON.parse(fs.readFileSync(ATTEMPTS_FILE, "utf8"))
   : [];
 
-const identical = attempts.filter(a => a.hash === hash).length;
+const identical = attempts.filter((a) => a.hash === hash).length;
 
 if (identical >= MAX_IDENTICAL) {
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason:
-        `LOOP DETECTED: This exact action has been attempted ${identical} times. ` +
-        `Previous attempts failed. Try a fundamentally different approach or ` +
-        `escalate to human with /plan-bug.`
-    }
-  }));
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason:
+          `LOOP DETECTED: This exact action has been attempted ${identical} times. ` +
+          `Previous attempts failed. Try a fundamentally different approach or ` +
+          `escalate to human with /plan-bug.`,
+      },
+    }),
+  );
   process.exit(0);
 }
 
 attempts.push({ hash, timestamp: Date.now(), tool: toolInput.tool_name });
-fs.mkdirSync('.claude/state', { recursive: true });
+fs.mkdirSync(".claude/state", { recursive: true });
 fs.writeFileSync(ATTEMPTS_FILE, JSON.stringify(attempts.slice(-50), null, 2));
 process.exit(0);
 ```
@@ -1162,6 +1187,7 @@ CLAUDE.md configures the retry policy:
 
 ```markdown
 ## Retry Policy
+
 - Attempt 1-2: Try different approaches to the same problem
 - Attempt 3: Run `/plan-investigation` to research the problem
 - Attempt 4: Try the investigation's recommended approach
@@ -1178,7 +1204,7 @@ Every agent's first action — before reading code, before planning, before touc
 ---
 name: check-existing-work
 description: Search active and archived plans for work related to the
-  current task. Run BEFORE starting any new work. Returns summaries 
+  current task. Run BEFORE starting any new work. Returns summaries
   with file references, not full plan content.
 allowed-tools: Read Bash Grep Glob
 ---
@@ -1187,7 +1213,7 @@ allowed-tools: Read Bash Grep Glob
 2. Search plans/active/ for matching plans
 3. Search plans/archive/ for matching completed/abandoned work
 4. Search plans/superseded/ for replaced plans
-5. For each match, return: plan ID, type, status, outcome, one-line 
+5. For each match, return: plan ID, type, status, outcome, one-line
    summary, and link to full plan file (do NOT paste content)
 6. If matches found, warn: "Related work exists — review before proceeding"
 7. If no matches: "No related work found — safe to proceed"
@@ -1215,7 +1241,7 @@ allowed-tools: Read Write Bash Grep Glob
 
 1. Accept feature description from $ARGUMENTS or ask user
 2. Run `/check-existing-work` — verify no duplicate plans
-3. Generate next plan ID: count existing feat-*.md files + 1
+3. Generate next plan ID: count existing feat-\*.md files + 1
 4. Read plans/templates/feature-plan.md
 5. Fill in: problem statement (from brief.md reference), approach,
    affected files (by searching codebase), expected outcomes,
@@ -1247,6 +1273,7 @@ Git worktree isolation: `claude --worktree feat-user-auth` creates an isolated c
 Conversational context dies on compaction, session restart, or crash. **Chained context snapshots** preserve work state as compact markdown files that link backward, forming a chain an agent can follow until it has enough state to resume.
 
 This differs from:
+
 - **CLAUDE.md** (stable project facts that always apply)
 - **Plans** (intent: what we're doing and why)
 - **Lessons** (generalized insights from completed work)
@@ -1265,42 +1292,49 @@ agent: backend-builder
 task-id: feat-012-user-profiles
 previous-context: 20260414-143801-backend-builder-user-profiles.md
 checkpoint: false
-status: in-progress     # in-progress | blocked | checkpoint | final
+status: in-progress # in-progress | blocked | checkpoint | final
 ---
 
 # Context snapshot — backend-builder — user profiles API
 
 ## Summary
+
 Implementing the user profile CRUD endpoints for feat-012. Schema done,
 routes partially wired. Stuck on a Zod validation issue.
 
 ## Completed since last snapshot
+
 - Added users table migration in packages/db/migrations/0042_users.sql
 - Wrote Zod schema in packages/types/src/user.ts
 - Implemented GET /users/:id route in apps/api/routes/users.ts
 
 ## Current state
+
 - Working branch: feat/user-profiles (commit 7a3f2c1)
 - Tests: 4/7 passing
 - Failing: POST /users — Zod refuses to accept nullable optional `bio`
 
 ## Next steps
+
 1. Fix Zod schema — `bio: z.string().nullish()` instead of `z.string().nullable().optional()`
 2. Add PUT /users/:id route
 3. Add DELETE /users/:id route (soft delete per brief §13)
 4. Run full test suite and update tasks.yaml
 
 ## Open questions
+
 - Should profile images go through the media module or inline upload?
   → Posted to Slack #architecture, awaiting Architect agent response.
 
 ## Key files touched
+
 - packages/db/migrations/0042_users.sql
 - packages/types/src/user.ts
 - apps/api/routes/users.ts
-- apps/api/routes/__tests__/users.test.ts
+- apps/api/routes/**tests**/users.test.ts
 
 ## Decisions made
+
 - Chose UUID v7 for user IDs (time-ordered, better index locality)
 - Soft delete via `deleted_at` column, not separate `deleted_users` table
 ```
@@ -1325,16 +1359,19 @@ status: checkpoint
 ## Everything needed to resume this feature from scratch
 
 ### Feature goal
+
 User profile CRUD with soft delete, per brief.md § 11 screen catalog
 "Profile Settings" and companion/data-models.yaml `User` entity.
 
 ### What's done
+
 - Migration 0042: users table with UUID v7, soft delete, timestamps
 - Zod schema at packages/types/src/user.ts
 - GET /users/:id, POST /users working with 7/7 tests passing
 - Plan: plans/active/feat-012-user-profiles.md (status: in-progress)
 
 ### What's left
+
 - PUT /users/:id route
 - DELETE /users/:id (soft delete)
 - Frontend builders haven't started — waiting for API complete
@@ -1342,11 +1379,13 @@ User profile CRUD with soft delete, per brief.md § 11 screen catalog
   Architect decision (see last 3 snapshots)
 
 ### Key architectural decisions
+
 - UUID v7 (not v4) for time-ordered IDs
 - Soft delete via deleted_at column
 - Profile images: DECISION PENDING (architect async)
 
 ### To resume: next agent should
+
 1. Read this checkpoint
 2. Check plans/active/feat-012-user-profiles.md
 3. Read apps/api/routes/users.ts current state
@@ -1415,12 +1454,16 @@ allowed-tools: Read Bash Glob
 ```json
 {
   "hooks": {
-    "SessionStart": [{
-      "hooks": [{
-        "type": "command",
-        "command": "echo '{\"additionalContext\": \"If resuming work, run /load-context-chain to reconstruct state from previous sessions. Check contexts/ for most recent snapshot.\"}'"
-      }]
-    }]
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"additionalContext\": \"If resuming work, run /load-context-chain to reconstruct state from previous sessions. Check contexts/ for most recent snapshot.\"}'"
+          }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -1430,12 +1473,16 @@ allowed-tools: Read Bash Glob
 ```json
 {
   "hooks": {
-    "PreCompact": [{
-      "hooks": [{
-        "type": "command",
-        "command": "node .claude/hooks/auto-save-context.mjs"
-      }]
-    }]
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/auto-save-context.mjs"
+          }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -1445,12 +1492,16 @@ allowed-tools: Read Bash Glob
 ```json
 {
   "hooks": {
-    "Stop": [{
-      "hooks": [{
-        "type": "command",
-        "command": "node .claude/hooks/save-final-context.mjs"
-      }]
-    }]
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/save-final-context.mjs"
+          }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -1459,14 +1510,15 @@ allowed-tools: Read Bash Glob
 
 ```markdown
 ## Context Preservation Protocol
+
 - Before starting work, run `/load-context-chain` to check for prior state
-- After significant steps (completing a sub-task, before switching context, 
+- After significant steps (completing a sub-task, before switching context,
   end of session), run `/save-context`
 - If you're the first agent on a task: no prior chain exists, start fresh
 - If you find an open question in a prior context, address it or escalate
 - Checkpoints are made every 5 snapshots or at major milestones
-- Never read more than 5 snapshots deep without hitting a checkpoint — 
-  if the chain goes longer without checkpoint, it's broken. Make a 
+- Never read more than 5 snapshots deep without hitting a checkpoint —
+  if the chain goes longer without checkpoint, it's broken. Make a
   checkpoint to bound the damage.
 ```
 
@@ -1477,7 +1529,7 @@ allowed-tools: Read Bash Glob
 10:15  /save-context → contexts/20260414-101500-backend-...md
 10:45  /save-context → contexts/20260414-104501-backend-...md (previous: 101500)
 11:00  SYSTEM CRASH
-       
+
 11:30  Fresh session starts
        SessionStart hook reminds: "run /load-context-chain"
        Agent runs /load-context-chain
@@ -1509,21 +1561,23 @@ model: inherit
 ---
 
 ## Prerequisites
+
 - brief.md exists at project root
 - Run `/validate-brief` first — abort if validation fails
 
 ## Steps
+
 1. Run `/validate-brief` — abort on failure
 2. Run `/scan-assets` — produces docs/asset-inventory.json
 3. Read brief.md section by section, validating each against schema
-4. If asset-inventory.hasUserAssets, bias the analysis toward user's 
+4. If asset-inventory.hasUserAssets, bias the analysis toward user's
    existing brand (extract colors, fonts, style)
 5. Identify targets: admin portal, web portal, mobile app
 6. Map user journeys per persona (brief.md §6)
-7. List all screens per target (cross-reference brief.md §11 and 
+7. List all screens per target (cross-reference brief.md §11 and
    companion/navigation-schema.json)
 8. Identify integrations (auth provider, payments, analytics, AI)
-9. Research external technologies the Architect may need skills for — 
+9. Research external technologies the Architect may need skills for —
    note as "skills needed" in requirements
 10. Write docs/requirements.md with structured sections
 11. Write docs/brief-summary.json (compact index for other agents)
@@ -1531,14 +1585,17 @@ model: inherit
     assets found, compliance flags
 
 ## Output contract
+
 - docs/requirements.md exists and is valid
 - docs/asset-inventory.json exists and validates against schema
 - docs/brief-summary.json exists with required fields
-- Return JSON: { success: bool, targets: [...], screenCount: N, 
+- Return JSON: { success: bool, targets: [...], screenCount: N,
   skillsNeeded: [...], assetsFound: bool, warnings: [...] }
 
 ## Self-verification
+
 Before completing, verify:
+
 - All three output files exist
 - brief-summary.json is valid JSON
 - requirements.md has no [NEEDS CLARIFICATION] markers (if any,
@@ -1556,19 +1613,21 @@ description: Generate HTML mockups for all screens, using user wireframes
   as blueprints when present. Produces docs/mockups/*.html.
 allowed-tools: Read Write Bash Grep Glob
 model: inherit
-argument-hint: [count]   # Optional: limit to N mockups for initial review
+argument-hint: [count] # Optional: limit to N mockups for initial review
 ---
 
 ## Prerequisites
+
 - /analyze has completed successfully
 - docs/requirements.md, docs/asset-inventory.json exist
 
 ## Steps
+
 1. Read docs/asset-inventory.json — catalog what user assets exist
 2. Read docs/requirements.md — get screen list and journeys
 3. Read companion/navigation-schema.json via jq for screen metadata
-4. If $ARGUMENTS specifies a count N, limit this pass to N representative 
-   mockups spanning different screen types (1 dashboard, 1 list, 1 form, 
+4. If $ARGUMENTS specifies a count N, limit this pass to N representative
+   mockups spanning different screen types (1 dashboard, 1 list, 1 form,
    1 detail, etc.) — defer the rest to a later /mockups run after approval
 5. For each mockup:
    a. If assets/wireframes/{screen}.png exists, read it as layout blueprint
@@ -1580,6 +1639,7 @@ argument-hint: [count]   # Optional: limit to N mockups for initial review
 7. Report to orchestrator: mockup count, styles used, icons downloaded
 
 ## Critical output rules
+
 - ALWAYS write HTML output to the file path specified
 - NEVER include HTML in your response text
 - Response should ONLY contain the file path and status
@@ -1587,9 +1647,10 @@ argument-hint: [count]   # Optional: limit to N mockups for initial review
 - Self-verify: read back each file and confirm it starts with <!doctype or <html
 
 ## Output contract
-- docs/mockups/*.html files exist (one per screen)
+
+- docs/mockups/\*.html files exist (one per screen)
 - docs/mockups/index.html exists as grid review page
-- Return JSON: { success: bool, mockupsGenerated: N, 
+- Return JSON: { success: bool, mockupsGenerated: N,
   userAssetsUsed: [...], iconsFromMCP: [...] }
 ```
 
@@ -1600,18 +1661,20 @@ After `/mockups`, HITL gate: client reviews the mockup grid, approves style dire
 ```markdown
 ---
 name: stylesheet
-description: Generate the canonical design token system and shared 
-  stylesheet from approved mockups and user assets. Produces 
+description: Generate the canonical design token system and shared
+  stylesheet from approved mockups and user assets. Produces
   packages/tokens/ and packages/ui/ base styles.
 allowed-tools: Read Write Bash Grep Glob
 model: inherit
 ---
 
 ## Prerequisites
+
 - /mockups completed and approved by HITL gate
 - docs/asset-inventory.json exists
 
 ## Steps
+
 1. Analyze approved mockups to extract the consistent visual vocabulary:
    - Color palette (from user assets first, then from mockups)
    - Typography scale (from user fonts first, then from mockups)
@@ -1626,14 +1689,15 @@ model: inherit
    - css-variables.css for runtime theming
 4. Generate packages/ui/primitives/ base components following the
    locked style: Button, Input, Card, Modal, Badge, etc.
-5. Generate one reference HTML that shows every primitive with every 
+5. Generate one reference HTML that shows every primitive with every
    variant — the design system preview
 6. Write to docs/design-system-preview.html
 7. Report to orchestrator
 
 ## Output contract
-- packages/tokens/* files exist and pnpm typecheck passes
-- packages/ui/primitives/* components exist
+
+- packages/tokens/\* files exist and pnpm typecheck passes
+- packages/ui/primitives/\* components exist
 - docs/design-system-preview.html exists
 - Return JSON: { success: bool, tokenCount: N, primitiveCount: M,
   assetsDownloaded: [...] }
@@ -1646,40 +1710,44 @@ After `/stylesheet`, HITL gate: review design system preview, approve or iterate
 ```markdown
 ---
 name: screens
-description: Generate all remaining screens as HTML mockups using the 
-  approved stylesheet and primitives. Produces the complete visual spec 
+description: Generate all remaining screens as HTML mockups using the
+  approved stylesheet and primitives. Produces the complete visual spec
   for code generation.
 allowed-tools: Read Write Bash Grep Glob
 model: inherit
 ---
 
 ## Prerequisites
+
 - /stylesheet completed and approved
 - packages/tokens/ and packages/ui/primitives/ exist
 
 ## Steps
+
 1. Read companion/navigation-schema.json via jq — full screen list
-2. Identify which screens still need mockups (vs /mockups representative 
+2. Identify which screens still need mockups (vs /mockups representative
    set that were approved)
 3. For each remaining screen:
    a. Reference approved style from packages/tokens/
    b. Compose from packages/ui/primitives/ (via HTML/CSS equivalents)
    c. If wireframe exists, follow layout blueprint
    d. Write to docs/screens/{target}/{screen-id}.html
-4. After ALL screens complete, invoke /user-flows-generator skill to 
+4. After ALL screens complete, invoke /user-flows-generator skill to
    build docs/user-flows.html
 5. Report progress in batches of 20 screens (don't wait until all done)
 
 ## Batching strategy for large apps (450+ screens)
+
 - Group screens by feature area and user journey
 - Generate in batches of 20–40 screens per Claude invocation
 - Checkpoint contexts between batches
 - If a batch fails, retry only that batch, not the whole set
 
 ## Output contract
-- docs/screens/{target}/*.html for every screen in navigation-schema
+
+- docs/screens/{target}/\*.html for every screen in navigation-schema
 - docs/user-flows.html exists and is navigable
-- Return JSON: { success: bool, screensGenerated: N, 
+- Return JSON: { success: bool, screensGenerated: N,
   batches: [...], failedScreens: [...] }
 ```
 
@@ -1753,32 +1821,34 @@ const stages: PipelineStage[] = [
     slashCommand: "/screens",
     outputSchema: screensOutputSchema,
     gateEnabled: true,
-    onGate: userFlowsSignOffGate,     // THE FINAL SIGN-OFF GATE
+    onGate: userFlowsSignOffGate, // THE FINAL SIGN-OFF GATE
   },
   {
     name: "architect",
     slashCommand: "/architect",
     outputSchema: architectOutputSchema,
-    gateEnabled: false,     // Auto-proceed after screens approved
+    gateEnabled: false, // Auto-proceed after screens approved
   },
   // ... build-backend, build-frontend, test, review, git
 ];
 
 async function runPipeline(): Promise<void> {
   let currentInput: any = null;
-  
+
   for (const stage of stages) {
     let approved = false;
     let attempts = 0;
-    
+
     while (!approved && attempts < 3) {
       const { model, effort, budgetUsd } = await readModelConfig(stage.name);
-      
+
       let result: any = null;
       for await (const message of query({
-        prompt: stage.slashCommand + (currentInput?.feedback 
-          ? ` \n\nPrevious feedback: ${currentInput.feedback}` 
-          : ""),
+        prompt:
+          stage.slashCommand +
+          (currentInput?.feedback
+            ? ` \n\nPrevious feedback: ${currentInput.feedback}`
+            : ""),
         options: {
           allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
           permissionMode: "acceptEdits",
@@ -1792,18 +1862,18 @@ async function runPipeline(): Promise<void> {
           result = message.structured_output;
         }
       }
-      
+
       await fs.writeFile(
         `./pipeline/${stage.name}-output.json`,
-        JSON.stringify(result, null, 2)
+        JSON.stringify(result, null, 2),
       );
-      
+
       if (!stage.gateEnabled) {
         approved = true;
         currentInput = result;
         break;
       }
-      
+
       // HITL gate
       const decision = await stage.onGate!(result);
       if (decision.approved) {
@@ -1816,7 +1886,7 @@ async function runPipeline(): Promise<void> {
         throw new Error(`Pipeline aborted at stage: ${stage.name}`);
       }
     }
-    
+
     if (!approved) {
       throw new Error(`Stage ${stage.name} failed after 3 attempts`);
     }
@@ -1872,42 +1942,43 @@ After all screens are generated, the UI Designer produces `docs/user-flows.html`
 ```markdown
 ---
 name: user-flows-generator
-description: Generate docs/user-flows.html — the navigable demo of all 
+description: Generate docs/user-flows.html — the navigable demo of all
   screens used for client sign-off. Invoked at the end of /screens.
 allowed-tools: Read Write Bash Glob
 ---
 
 ## Steps
-1. Read docs/screens/**/*.html — catalog every screen
+
+1. Read docs/screens/\*_/_.html — catalog every screen
 2. Read docs/requirements.md §User Journeys — get journey definitions
 3. Read brief.md §6 User Personas
 4. Read companion/navigation-schema.json via jq for navigation metadata
 5. Read .claude/templates/user-flows-template.html for the viewer
 6. For each persona, group relevant screens into journeys:
-   e.g., "New user onboarding: auth-splash → auth-signup → auth-verify 
+   e.g., "New user onboarding: auth-splash → auth-signup → auth-verify
    → onboarding-1 → onboarding-2 → discover-home"
 7. Generate screens-manifest.json:
    {
-     "version": "1.0",
-     "personas": [
-       { 
-         "id": "seeker", 
-         "name": "Sarah the Seeker",
-         "journeys": [
-           {
-             "id": "discovery",
-             "title": "Discovering a community",
-             "screens": [
-               { "id": "auth-splash", "path": "screens/webapp/auth-splash.html",
-                 "note": "First impression — value prop must be clear" },
-               { "id": "auth-interests", "path": "...",
-                 "note": "Select 3+ interests for better matching" }
-             ]
-           }
-         ]
-       }
-     ],
-     "targets": ["admin", "webapp", "mobile"]
+   "version": "1.0",
+   "personas": [
+   {
+   "id": "seeker",
+   "name": "Sarah the Seeker",
+   "journeys": [
+   {
+   "id": "discovery",
+   "title": "Discovering a community",
+   "screens": [
+   { "id": "auth-splash", "path": "screens/webapp/auth-splash.html",
+   "note": "First impression — value prop must be clear" },
+   { "id": "auth-interests", "path": "...",
+   "note": "Select 3+ interests for better matching" }
+   ]
+   }
+   ]
+   }
+   ],
+   "targets": ["admin", "webapp", "mobile"]
    }
 8. Inject manifest as JSON in the HTML viewer
 9. Write docs/user-flows.html
@@ -1923,75 +1994,88 @@ The `user-flows-template.html` is a self-contained HTML file with inline CSS and
 <!-- docs/user-flows.html structure -->
 <!DOCTYPE html>
 <html>
-<head>
-  <title>User Flows — {project-name}</title>
-  <style>/* inline styles */</style>
-</head>
-<body>
-  <aside id="sidebar">
-    <h1>{project-name} User Flows</h1>
-    <nav>
-      <!-- Populated from manifest -->
-      <section data-persona="seeker">
-        <h2>Sarah the Seeker</h2>
-        <ul data-journey="discovery">
-          <li><a href="#auth-splash">1. Splash</a></li>
-          <li><a href="#auth-interests">2. Interests</a></li>
-          <!-- ... -->
-        </ul>
-      </section>
-    </nav>
-  </aside>
-  
-  <main>
-    <div id="controls">
-      <label>Device: 
-        <select id="device">
-          <option value="mobile">Mobile (375×667)</option>
-          <option value="tablet">Tablet (768×1024)</option>
-          <option value="desktop">Desktop (1440×900)</option>
-        </select>
-      </label>
-      <label>Target:
-        <select id="target">
-          <option value="webapp">Webapp</option>
-          <option value="mobile">Mobile app</option>
-          <option value="admin">Admin portal</option>
-        </select>
-      </label>
-    </div>
-    
-    <div id="screen-frame">
-      <div class="device-chrome" data-device="mobile">
-        <iframe id="screen" src=""></iframe>
+  <head>
+    <title>User Flows — {project-name}</title>
+    <style>
+      /* inline styles */
+    </style>
+  </head>
+  <body>
+    <aside id="sidebar">
+      <h1>{project-name} User Flows</h1>
+      <nav>
+        <!-- Populated from manifest -->
+        <section data-persona="seeker">
+          <h2>Sarah the Seeker</h2>
+          <ul data-journey="discovery">
+            <li><a href="#auth-splash">1. Splash</a></li>
+            <li><a href="#auth-interests">2. Interests</a></li>
+            <!-- ... -->
+          </ul>
+        </section>
+      </nav>
+    </aside>
+
+    <main>
+      <div id="controls">
+        <label
+          >Device:
+          <select id="device">
+            <option value="mobile">Mobile (375×667)</option>
+            <option value="tablet">Tablet (768×1024)</option>
+            <option value="desktop">Desktop (1440×900)</option>
+          </select>
+        </label>
+        <label
+          >Target:
+          <select id="target">
+            <option value="webapp">Webapp</option>
+            <option value="mobile">Mobile app</option>
+            <option value="admin">Admin portal</option>
+          </select>
+        </label>
       </div>
-    </div>
-    
-    <div id="annotations">
-      <h3>Step annotations</h3>
-      <ol id="annotation-list"></ol>
-    </div>
-  </main>
-  
-  <footer id="signoff">
-    <div>
-      <strong>Version:</strong> 1.0
-      <strong>Generated:</strong> 2026-04-14
-      <strong>Previous sign-offs:</strong> <a href="signoff-20260410.json">2026-04-10</a>
-    </div>
-    <form id="signoff-form">
-      <input type="text" placeholder="Client name" name="clientName" required>
-      <label><input type="checkbox" name="approved" required>
-        I approve these flows and authorize code generation to begin</label>
-      <button type="submit">Sign off</button>
-    </form>
-  </footer>
-  
-  <script>
-    const manifest = {/* injected by skill */};
-    // Render sidebar, handle nav, device switching, signoff POST
-  </script>
-</body>
+
+      <div id="screen-frame">
+        <div class="device-chrome" data-device="mobile">
+          <iframe id="screen" src=""></iframe>
+        </div>
+      </div>
+
+      <div id="annotations">
+        <h3>Step annotations</h3>
+        <ol id="annotation-list"></ol>
+      </div>
+    </main>
+
+    <footer id="signoff">
+      <div>
+        <strong>Version:</strong> 1.0 <strong>Generated:</strong> 2026-04-14
+        <strong>Previous sign-offs:</strong>
+        <a href="signoff-20260410.json">2026-04-10</a>
+      </div>
+      <form id="signoff-form">
+        <input
+          type="text"
+          placeholder="Client name"
+          name="clientName"
+          required
+        />
+        <label
+          ><input type="checkbox" name="approved" required /> I approve these
+          flows and authorize code generation to begin</label
+        >
+        <button type="submit">Sign off</button>
+      </form>
+    </footer>
+
+    <script>
+      const manifest = {
+        /* injected by skill */
+      };
+      // Render sidebar, handle nav, device switching, signoff POST
+    </script>
+  </body>
 </html>
 ```
 
@@ -2007,7 +2091,7 @@ The sign-off form POSTs to a small local endpoint the orchestrator runs (or writ
   "clientName": "Acme Corp / Jane Doe",
   "approved": true,
   "comments": "Love the onboarding flow. One concern: the empty state on
-    Discover feels a bit sparse. Not a blocker, please address in a 
+    Discover feels a bit sparse. Not a blocker, please address in a
     follow-up.",
   "screensApproved": 483,
   "screensManifestHash": "sha256:7a3f2c1..."
@@ -2045,13 +2129,16 @@ Instead of returning HTML in response text, instruct the agent to write HTML to 
 
 ```markdown
 # In ui-designer.md agent file
+
 ## CRITICAL OUTPUT RULES
+
 1. ALWAYS write HTML output to the file path specified in the task
 2. NEVER include HTML in your response text
 3. Your response should ONLY contain the file path and status
 4. DO NOT explain the HTML. DO NOT add markdown. DO NOT wrap code in backticks.
 
 ## Output Protocol
+
 1. Generate the HTML component
 2. Write it to the specified output path using the Write tool
 3. Verify the file by reading it back
@@ -2073,7 +2160,9 @@ const UIDesignerOutput = z.object({
 
 const response = await client.messages.create({
   model: "claude-sonnet-4-6",
-  messages: [/*...*/],
+  messages: [
+    /*...*/
+  ],
   output_config: { format: zodOutputFormat(UIDesignerOutput) },
 });
 // response.content[0].text is GUARANTEED to parse as UIDesignerOutput
@@ -2085,13 +2174,13 @@ For large HTML outputs that exceed schema complexity limits, use structured outp
 
 PostToolUse hook validates HTML immediately after Write:
 
-```bash
+````bash
 #!/bin/bash
 # .claude/hooks/validate-html-write.sh
 INPUT=$(cat)
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path')
 
-if [[ "$FILE_PATH" != */mockups/*.html && "$FILE_PATH" != */screens/*.html ]]; then 
+if [[ "$FILE_PATH" != */mockups/*.html && "$FILE_PATH" != */screens/*.html ]]; then
   exit 0
 fi
 
@@ -2110,35 +2199,39 @@ if echo "$CONTENT" | grep -q '```'; then
 fi
 
 exit 0
-```
+````
 
 ### Layer 5: retry with feedback
 
 When validation fails, retry with the specific error in the prompt:
 
 ```typescript
-async function generateHTMLWithRetry(prompt: string, outputPath: string, maxRetries = 3) {
+async function generateHTMLWithRetry(
+  prompt: string,
+  outputPath: string,
+  maxRetries = 3,
+) {
   let lastError: string | null = null;
-  
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const fullPrompt = lastError
       ? `${prompt}\n\n⚠️ PREVIOUS ATTEMPT FAILED:\n${lastError}\nFix the issue. Write ONLY valid HTML to ${outputPath}.`
       : prompt;
-    
+
     await callUIDesignerAgent(fullPrompt, outputPath);
-    
+
     const fileContent = await readFile(outputPath, "utf-8").catch(() => null);
-    if (!fileContent) { 
-      lastError = `No file written to ${outputPath}.`; 
-      continue; 
+    if (!fileContent) {
+      lastError = `No file written to ${outputPath}.`;
+      continue;
     }
-    
+
     const validation = validateHTML(fileContent);
     if (validation.valid) return outputPath;
-    
+
     lastError = validation.errors.join("\n");
   }
-  
+
   throw new Error(`UI Designer failed after ${maxRetries} attempts.`);
 }
 ```
@@ -2218,19 +2311,20 @@ tooling:
 
 ### Ready-to-use MCP servers
 
-| Need | Server | Notes |
-|---|---|---|
-| Icons | Icons8 MCP (`mcp.icons8.com/mcp`) | 368K+ icons, 116 styles |
-| Stock photos | Unsplash Smart MCP | Context-aware search, auto attribution |
-| Stock photos | Pexels MCP | Free alternative |
-| Image generation | DALL-E MCP / Gemini Nano Banana MCP | Hero images, logos |
-| Design systems | Figma MCP (`mcp.figma.com/mcp`) | Read designs, write to canvas |
+| Need             | Server                              | Notes                                  |
+| ---------------- | ----------------------------------- | -------------------------------------- |
+| Icons            | Icons8 MCP (`mcp.icons8.com/mcp`)   | 368K+ icons, 116 styles                |
+| Stock photos     | Unsplash Smart MCP                  | Context-aware search, auto attribution |
+| Stock photos     | Pexels MCP                          | Free alternative                       |
+| Image generation | DALL-E MCP / Gemini Nano Banana MCP | Hero images, logos                     |
+| Design systems   | Figma MCP (`mcp.figma.com/mcp`)     | Read designs, write to canvas          |
 
 **Fonts and color palettes** lack dedicated MCP servers — wrap Google Fonts API as a simple MCP or package color theory as a skill (more efficient for this use case).
 
 ### Partial vs. full inventory pattern
 
 Fits naturally with the pipeline stages:
+
 - **`/mockups` (partial)** — download only what each representative mockup needs
 - **`/stylesheet` (full)** — download complete asset inventory for production
 - **`/screens` (incremental)** — additional assets as new screens require them
@@ -2398,17 +2492,8 @@ Settings restrict Bash to `just` commands:
 ```json
 {
   "permissions": {
-    "allow": [
-      "Read(*)",
-      "Grep(*)",
-      "Glob(*)",
-      "Bash(just *)"
-    ],
-    "deny": [
-      "Bash(rm *)",
-      "Bash(curl * | *)",
-      "Bash(wget *)"
-    ]
+    "allow": ["Read(*)", "Grep(*)", "Glob(*)", "Bash(just *)"],
+    "deny": ["Bash(rm *)", "Bash(curl * | *)", "Bash(wget *)"]
   }
 }
 ```
@@ -2461,24 +2546,24 @@ compliance:
         reasons: ["E174.1"]
       - type: NSPrivacyAccessedAPICategoryUserDefaults
         reasons: ["CA92.1"]
-    collected_data_types: []  # From Analyst output
-  
+    collected_data_types: [] # From Analyst output
+
   ai_consent_modal:
     required: true
     provider: "Anthropic Claude"
     data_types: ["user text", "app preferences"]
     purpose: "Generating personalized recommendations"
-    
+
   required_native_features:
     - push_notifications
     - offline_support
     - haptic_feedback
     - native_navigation
-    
+
   account_management:
     account_deletion: true
     apple_sign_in_revocation: true
-    
+
   required_assets:
     icon: "./assets/icon.png"
     splash: "./assets/splash.png"
@@ -2486,6 +2571,7 @@ compliance:
 ```
 
 **Builders produce**:
+
 - Custom icon 1024×1024 PNG no alpha (iOS), adaptive icon (Android), custom branded splash
 - Realistic content everywhere — no Lorem ipsum, no sample data
 - Platform-specific features: native tab bar, haptic feedback, push notifications, offline handling
@@ -2493,6 +2579,7 @@ compliance:
 - Store listing: unique name, accurate description, screenshots of actual functionality
 
 **Reviewer verifies before submission**:
+
 - `npx expo-doctor` passes
 - Privacy manifest includes aggregated reasons from all dependencies
 - All permission descriptions are specific ("We use your location to show nearby gyms" not "This app uses your location")
@@ -2540,18 +2627,18 @@ and privacy policy at [URL].
 
 Every piece generates well with AI agents: convention-based routing (file = route), copy-paste components (no complex deps), shared styling vocabulary (same Tailwind classes everywhere).
 
-| Layer | Technology | Why |
-|---|---|---|
-| Web portals | Next.js 15 App Router | File-based routing = AI creates route by creating file |
-| Mobile | Expo SDK 52+ + Expo Router | Auto-detects monorepos, managed native modules |
-| Styling (web) | Tailwind CSS 4 + shadcn/ui | Utility classes, copy-paste components |
-| Styling (mobile) | NativeWind 4 + React Native Reusables | Same className syntax as web |
-| API | tRPC 11 + Zod | End-to-end type safety without codegen |
-| Database | Prisma 6 + PostgreSQL | Generated types from schema |
-| Auth | Clerk or Supabase Auth | Cross-platform SDKs |
-| State | Zustand + TanStack Query | Minimal boilerplate |
-| Forms | React Hook Form + Zod resolvers | Shared validation via @repo/types |
-| Monorepo | Turborepo + pnpm | Simple config, parallel builds |
+| Layer            | Technology                            | Why                                                    |
+| ---------------- | ------------------------------------- | ------------------------------------------------------ |
+| Web portals      | Next.js 15 App Router                 | File-based routing = AI creates route by creating file |
+| Mobile           | Expo SDK 52+ + Expo Router            | Auto-detects monorepos, managed native modules         |
+| Styling (web)    | Tailwind CSS 4 + shadcn/ui            | Utility classes, copy-paste components                 |
+| Styling (mobile) | NativeWind 4 + React Native Reusables | Same className syntax as web                           |
+| API              | tRPC 11 + Zod                         | End-to-end type safety without codegen                 |
+| Database         | Prisma 6 + PostgreSQL                 | Generated types from schema                            |
+| Auth             | Clerk or Supabase Auth                | Cross-platform SDKs                                    |
+| State            | Zustand + TanStack Query              | Minimal boilerplate                                    |
+| Forms            | React Hook Form + Zod resolvers       | Shared validation via @repo/types                      |
+| Monorepo         | Turborepo + pnpm                      | Simple config, parallel builds                         |
 
 ### Turborepo layout
 
@@ -2675,19 +2762,21 @@ Anthropic's recommended quality pattern: one agent generates, another verifies a
 ```json
 {
   "hooks": {
-    "PostToolUse": [{
-      "matcher": "Write|Edit",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "npx prettier --write \"$CLAUDE_TOOL_INPUT_FILE_PATH\" 2>/dev/null || true"
-        },
-        {
-          "type": "command",
-          "command": "npx eslint --fix \"$CLAUDE_TOOL_INPUT_FILE_PATH\" 2>/dev/null || true"
-        }
-      ]
-    }]
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx prettier --write \"$CLAUDE_TOOL_INPUT_FILE_PATH\" 2>/dev/null || true"
+          },
+          {
+            "type": "command",
+            "command": "npx eslint --fix \"$CLAUDE_TOOL_INPUT_FILE_PATH\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -2701,6 +2790,7 @@ Anthropic's recommended quality pattern: one agent generates, another verifies a
 The Lessons Agent monitors the entire pipeline. When a builder hits an error requiring multiple attempts, when the reviewer finds a recurring issue, when a plan archives with surprising lessons — it records them.
 
 Three scopes:
+
 - **Global** (`~/.claude/CLAUDE.md`) — applies across all projects
 - **Project** (`./CLAUDE.md` or `docs/lessons.md`) — project-specific
 - **Agent** (`.claude/agent-memory/<name>/MEMORY.md`) — agent-specific refinements
@@ -2883,33 +2973,33 @@ Several aspects are still maturing:
 
 ## Appendix A: Quick-reference decision table
 
-| Question | Answer |
-|---|---|
-| Canonical input format | brief.md (20-section schema-locked markdown) |
-| Input companion files | JSON/YAML in `./companion/`, referenced by path |
-| User assets location | `./assets/` with subdirs (logos, icons, fonts, images, wireframes, brand-guides) |
-| Asset priority | user-supplied > researched > generated |
-| Architecture spec | `.claude/architecture.yaml` (Architecture-as-Code) |
-| Model config location | `~/.claude/models.yaml` (system) → `.claude/models.yaml` (project) |
-| Pipeline stages | `/analyze` → `/mockups` → `/stylesheet` → `/screens` → build → test → review → git |
-| Stage implementation | Skills in `.claude/skills/` exposing slash commands |
-| Orchestration | External TypeScript orchestrator via Claude Agent SDK |
-| HITL gates | After analyze, mockups, stylesheet, screens (= final sign-off) |
-| Sign-off artifact | `docs/user-flows.html` with client name + approval JSON |
-| Output contracts | Six-layer defense-in-depth, file-based primary |
-| Plans | Markdown files in `plans/active/`, `plans/archive/`, `plans/superseded/` |
-| Plan operations | `/plan-feature`, `/plan-bug`, `/plan-archive`, `/plan-search`, etc. |
-| Loop detection | Hash-based circuit breaker in PreToolUse hook, max 3 identical attempts |
-| Context preservation | Chained markdown snapshots in `contexts/` with `previous-context` link |
-| Context checkpoints | Every 5 snapshots, or at milestones, or on-demand |
-| Crash recovery | SessionStart hook → `/load-context-chain` follows chain to most recent checkpoint |
-| Toolshed | Project-level `.mcp.json` + task-level skill specifications |
-| Safety | justfile + containerization + PreToolUse hooks + Auto Mode |
-| Monorepo | Turborepo + pnpm |
-| Stack | Next.js 15, Expo, tRPC + Zod, Prisma, shadcn/ui + RN Reusables, NativeWind, Tailwind |
-| Testing | Vitest (web), jest-expo (mobile), Playwright (web E2E), Maestro (mobile E2E) |
-| Compliance baseline | Privacy manifest, AI consent modal, native features, custom icon/splash, real content |
-| Recommended runtime | Claude Code via external orchestrator (not alternatives) |
+| Question               | Answer                                                                                |
+| ---------------------- | ------------------------------------------------------------------------------------- |
+| Canonical input format | brief.md (20-section schema-locked markdown)                                          |
+| Input companion files  | JSON/YAML in `./companion/`, referenced by path                                       |
+| User assets location   | `./assets/` with subdirs (logos, icons, fonts, images, wireframes, brand-guides)      |
+| Asset priority         | user-supplied > researched > generated                                                |
+| Architecture spec      | `.claude/architecture.yaml` (Architecture-as-Code)                                    |
+| Model config location  | `~/.claude/models.yaml` (system) → `.claude/models.yaml` (project)                    |
+| Pipeline stages        | `/analyze` → `/mockups` → `/stylesheet` → `/screens` → build → test → review → git    |
+| Stage implementation   | Skills in `.claude/skills/` exposing slash commands                                   |
+| Orchestration          | External TypeScript orchestrator via Claude Agent SDK                                 |
+| HITL gates             | After analyze, mockups, stylesheet, screens (= final sign-off)                        |
+| Sign-off artifact      | `docs/user-flows.html` with client name + approval JSON                               |
+| Output contracts       | Six-layer defense-in-depth, file-based primary                                        |
+| Plans                  | Markdown files in `plans/active/`, `plans/archive/`, `plans/superseded/`              |
+| Plan operations        | `/plan-feature`, `/plan-bug`, `/plan-archive`, `/plan-search`, etc.                   |
+| Loop detection         | Hash-based circuit breaker in PreToolUse hook, max 3 identical attempts               |
+| Context preservation   | Chained markdown snapshots in `contexts/` with `previous-context` link                |
+| Context checkpoints    | Every 5 snapshots, or at milestones, or on-demand                                     |
+| Crash recovery         | SessionStart hook → `/load-context-chain` follows chain to most recent checkpoint     |
+| Toolshed               | Project-level `.mcp.json` + task-level skill specifications                           |
+| Safety                 | justfile + containerization + PreToolUse hooks + Auto Mode                            |
+| Monorepo               | Turborepo + pnpm                                                                      |
+| Stack                  | Next.js 15, Expo, tRPC + Zod, Prisma, shadcn/ui + RN Reusables, NativeWind, Tailwind  |
+| Testing                | Vitest (web), jest-expo (mobile), Playwright (web E2E), Maestro (mobile E2E)          |
+| Compliance baseline    | Privacy manifest, AI consent modal, native features, custom icon/splash, real content |
+| Recommended runtime    | Claude Code via external orchestrator (not alternatives)                              |
 
 ---
 
@@ -2919,6 +3009,7 @@ Several aspects are still maturing:
 # Project CLAUDE.md
 
 ## Project Specification
+
 - The canonical specification is `brief.md` at project root
 - Read brief.md FIRST before starting any work
 - Never ask the user for information that is in the brief
@@ -2928,6 +3019,7 @@ Several aspects are still maturing:
 - Run `/validate-brief` if you suspect issues
 
 ## Agent Section Assignments
+
 - Analyst: all sections (validation + requirements extraction)
 - Architect: §7, §8, §9 + companion/data-models.yaml
 - PM: §12, §19, requirements.md
@@ -2936,25 +3028,30 @@ Several aspects are still maturing:
 - DevOps: §8, §16, §18
 
 ## User Assets
+
 - Check `./assets/` for user-supplied logos, icons, fonts, wireframes
 - User assets ALWAYS override generated or researched assets
 - Asset inventory lives at `docs/asset-inventory.json` after /scan-assets
 - If wireframe exists for a screen, use it as layout blueprint
 
 ## Model Configuration
+
 - System defaults: `~/.claude/models.yaml`
 - Project overrides: `.claude/models.yaml`
 - Orchestrator resolves model per agent at invocation time
 - To bypass: `ANTHROPIC_MODEL=claude-sonnet-4-6`
 
 ## Plan/Archive System (NON-NEGOTIABLE)
+
 ### Before ANY Work
+
 1. Run `/check-existing-work [keywords]` to search for related plans
 2. If related archived plans exist, READ their lessons
 3. Create a plan: `/plan-feature`, `/plan-bug`, `/plan-refactor`, or `/plan-investigation`
 4. Get plan approved before implementing (status: draft → approved)
 
 ### During Work
+
 - Work on your plan's git branch
 - Log attempts in plan's Attempt Log section
 - If stuck after 3 attempts, run `/plan-investigation`
@@ -2962,20 +3059,24 @@ Several aspects are still maturing:
 - NEVER try the same fix twice — check the attempt log
 
 ### After Work
+
 - Run `/plan-archive` with outcome and lessons learned
 - Lessons feed into `.claude/lessons.md` for future agents
 
 ### File Ownership
+
 - Check `affected-files` in active plans before editing any file
 - If claimed by another plan, coordinate with PM agent
 
 ## Context Preservation
+
 - Before starting work, run `/load-context-chain` for prior state
 - After significant steps, run `/save-context`
 - Checkpoints every 5 snapshots or at milestones
 - Never read more than 5 snapshots deep without hitting a checkpoint
 
 ## Retry Policy
+
 - Attempt 1-2: Try different approaches
 - Attempt 3: Run `/plan-investigation`
 - Attempt 4: Try investigation's recommendation
@@ -2983,6 +3084,7 @@ Several aspects are still maturing:
 - NEVER exceed 5 attempts on the same error
 
 ## Output Contracts
+
 - UI Designer writes HTML to files, returns only status
 - Never include HTML/code in response text
 - Self-verify by reading back files before reporting complete
@@ -2997,3 +3099,22 @@ This blueprint is opinionated by design. Every open decision has been locked wit
 The system you are building is ambitious: one structured brief, dozens of agents working in concert, hundreds of screens generated, three targets shipped. The patterns here — brief as canonical input, Architecture-as-Code, file-reference discipline, plan/archive memory, chained context preservation, slash-command pipeline stages with HITL gates, defense-in-depth output contracts, justfile safety, App Store compliance by design — are all subordinate to a single organizing idea: **make every important thing a file, make every file structured, and make structure enforceable**. Files survive crashes. Structure survives compaction. Enforcement survives agent drift.
 
 Build from Part 1 outward. Don't try to implement everything at once. The pipeline stages, orchestrator, plan system, and context chain should come first. The Toolshed, asset ingestion, user flows sign-off, and App Store compliance layer on top. The self-learning loop comes last — you can't capture lessons until you have runs to capture from.
+
+---
+
+## Refactor-001 addendum (2026-04-20) — the UI Designer → UI Kit pipeline
+
+This addendum lives at the end of the document so the hundreds of `§X LYYY-ZZZ` cross-references across scaffolding tasks remain valid (adding content at the top would shift every line number below it).
+
+Refactor-001 (see `plans/active/refactor-001-ui-designer-kit-pipeline.md`) materially changed the design pipeline's shape while preserving the blueprint's overall structure. The **scaffolding tasks** (`scaffolding/0*.md`) are the authoritative current spec; this section summarises the deltas so readers of the blueprint know what to look for:
+
+1. **Pipeline stages (§10).** Design phase went from 3 stages (`/mockups → /stylesheet → /screens`) to 5 stages (`/mockups → /stylesheet → /screens → /visual-review → /user-flows-generator`). `/mockups` is now the **N styles × M detected apps** style-selection gate. `/visual-review` is new — Layer 7 LLM visual critique with Playwright screenshots. `/user-flows-generator` is its own stage owning the final sign-off gate.
+2. **HITL gates (§11).** Four gates total (analyze, mockups, stylesheet, user-flows). Gate 2 (mockups) is the style selection — the reviewer picks one of N styles from an N × M grid with a modal viewer. Gate 4 (user-flows) binds the sign-off to a specific `(screensManifestHash, visualReviewReportHash, uiKitVersion)` triple; any drift invalidates the sign-off.
+3. **UI Kit as single source of truth.** `@repo/tokens` + `@repo/ui` collapse into one versioned `@repo/ui-kit` package (tokens + styles + primitives + patterns + layouts + illustrations + Storybook). Downstream builders (029/030) consume via a locked-down contract (022b: ESLint plugin + validate-consumer.ts + CONTRACT.md embedded in system prompts).
+4. **Anti-slop baked in.** Task 022's system prompt now includes hard bans (AI-lila gradients, Inter-only, 3-col card grid default, `#8b5cf6` primary, shadcn defaults), forced constraints, tone-of-voice rules, and a named-references library (Linear / Stripe / Arc / Raycast / Things 3 / Vercel / Duolingo). Layer 4 hook (§13) got an anti-slop grep set as a backstop.
+5. **`--nanobanana` opt-in flag.** Pipeline-wide flag gates image generation via Gemini Nano Banana. Off = $0 image spend with Unsplash + unDraw + picsum fallbacks. On = ~$3.50/project imagery. Task 041 filters `image-generator` from `.mcp.json` when the flag is inactive.
+6. **Output contracts — now seven layers (§13).** Added Layer 7 (LLM visual critique, 025b) and a Layer 0 (consumer contract for TS/TSX, 022b). Layer 5 retry pattern now has two parallel queues: mechanical (032b / Layer 6) and visual-rubric (025b / Layer 7).
+7. **Handshake files.** `docs/selected-style.json` (new, schema in 034b) binds the winning style to downstream stages. `docs/signoff-{timestamp}.json` extended to nine fields — adds `visualReviewReportHash` and `uiKitVersion`.
+8. **Platform naming is intentionally split.** `PlatformId = {webapp, mobile, admin}` (design-side paths like `docs/screens/{platform}/`) vs `Target = {web, mobile, admin, api}` (build-side dirs like `apps/{target}/`). Helper `platformIdToTarget()` bridges. Documented in 034b's `common.ts`.
+
+When reading §10 / §11 / §13 / §14 above, treat the scaffolding tasks (023, 024, 025, 025b, 034, 034b, 035, 036, 041) as the implementation spec; this blueprint is the principles guide explaining the why.

@@ -1,0 +1,2435 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Style selection — /mockups HITL gate preview</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family:
+          system-ui,
+          -apple-system,
+          Segoe UI,
+          sans-serif;
+        margin: 0;
+        background: #fafafa;
+        color: #18181b;
+      }
+
+      /* Page chrome */
+      header.page {
+        padding: 20px 32px;
+        border-bottom: 1px solid #e4e4e7;
+        position: sticky;
+        top: 0;
+        background: rgba(250, 250, 250, 0.85);
+        backdrop-filter: blur(10px);
+        z-index: 50;
+      }
+      header.page h1 {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      header.page .sub {
+        color: #71717a;
+        font-size: 13px;
+        margin-top: 4px;
+      }
+      header.page .sub code {
+        background: #f4f4f5;
+        padding: 1px 6px;
+        border-radius: 3px;
+        font-size: 12px;
+      }
+
+      main {
+        padding: 28px 32px 80px;
+        max-width: 1400px;
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+
+      /* Row card */
+      .row {
+        background: white;
+        border: 1px solid #e4e4e7;
+        border-radius: 12px;
+        overflow: hidden;
+        transition: border-color 150ms;
+      }
+      .row:hover {
+        border-color: #a1a1aa;
+      }
+      .row-head {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        padding: 14px 20px;
+        border-bottom: 1px solid #f4f4f5;
+      }
+      .idx {
+        width: 24px;
+        height: 24px;
+        display: grid;
+        place-items: center;
+        background: #f4f4f5;
+        color: #52525b;
+        font-size: 12px;
+        font-weight: 600;
+        border-radius: 6px;
+      }
+      .title {
+        font-weight: 600;
+        font-size: 14px;
+      }
+      .palette {
+        display: flex;
+        gap: 3px;
+      }
+      .palette span {
+        width: 14px;
+        height: 14px;
+        border-radius: 3px;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+      }
+      .refs {
+        font-size: 12px;
+        color: #71717a;
+      }
+      .dials {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        color: #52525b;
+        background: #f4f4f5;
+        padding: 3px 8px;
+        border-radius: 4px;
+      }
+      .spacer {
+        flex: 1;
+      }
+      .pick {
+        padding: 6px 14px;
+        background: #18181b;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+      }
+      .pick:hover {
+        background: #3f3f46;
+      }
+
+      .cells {
+        display: grid;
+        grid-template-columns: 1.1fr 0.6fr 1.1fr;
+        gap: 18px;
+        padding: 18px 20px 22px;
+      }
+      .cell {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .cell-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #a1a1aa;
+        font-weight: 600;
+      }
+      .frame {
+        border: 1px solid #e4e4e7;
+        border-radius: 8px;
+        overflow: hidden;
+        aspect-ratio: 16/10;
+        position: relative;
+        cursor: zoom-in;
+        transition:
+          transform 120ms,
+          box-shadow 120ms,
+          border-color 120ms;
+      }
+      .frame:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+        border-color: #a1a1aa;
+      }
+      .frame::after {
+        content: "↗ open";
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        background: rgba(24, 24, 27, 0.78);
+        color: white;
+        font-size: 9px;
+        font-weight: 600;
+        padding: 3px 6px;
+        border-radius: 4px;
+        opacity: 0;
+        transition: opacity 120ms;
+        pointer-events: none;
+      }
+      .frame:hover::after {
+        opacity: 1;
+      }
+      .frame.mobile {
+        aspect-ratio: 9/16;
+        max-width: 170px;
+        margin: 0 auto;
+        border-radius: 22px;
+        border-width: 6px;
+        border-color: #1c1917;
+      }
+
+      /* Each mini-screen is rendered from a <template> instantiated with CSS vars per row. */
+      /* All dimensions are scaled so the screens feel like real shrinks, not icons. */
+
+      /* ====== WEBAPP SCREEN (landing/dashboard) ====== */
+      .scr-web {
+        width: 100%;
+        height: 100%;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--font);
+        display: flex;
+        overflow: hidden;
+      }
+      .scr-web .side {
+        width: 22%;
+        background: var(--side);
+        border-right: 1px solid var(--border);
+        padding: 10px 8px;
+        font-size: 7px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .scr-web .side .brand {
+        font-weight: 700;
+        font-size: 9px;
+        letter-spacing: -0.02em;
+        margin-bottom: 4px;
+        color: var(--fg-strong);
+        font-family: var(--font-display, var(--font));
+      }
+      .scr-web .side .item {
+        padding: 3px 6px;
+        border-radius: calc(var(--radius) * 0.5);
+        color: var(--muted);
+      }
+      .scr-web .side .item.active {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+      .scr-web .main {
+        flex: 1;
+        padding: 10px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        background: var(--bg);
+      }
+      .scr-web .h {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .scr-web .h h2 {
+        margin: 0;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        font-family: var(--font-display, var(--font));
+      }
+      .scr-web .btn {
+        background: var(--accent);
+        color: var(--accent-fg);
+        border-radius: var(--radius);
+        padding: 3px 8px;
+        font-size: 7px;
+        font-weight: 600;
+      }
+      .scr-web .stats {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+      }
+      .scr-web .stat {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 6px 7px;
+      }
+      .scr-web .stat .k {
+        font-size: 6px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .scr-web .stat .v {
+        font-size: 11px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        color: var(--fg-strong);
+      }
+      .scr-web .stat .d {
+        font-size: 6px;
+        color: var(--accent);
+        margin-top: 1px;
+      }
+      .scr-web .list {
+        flex: 1;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 6px 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .scr-web .li {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 7px;
+        padding: 2px 0;
+        border-bottom: 1px solid var(--border-subtle);
+      }
+      .scr-web .li:last-child {
+        border-bottom: 0;
+      }
+      .scr-web .tag {
+        background: var(--accent-soft);
+        color: var(--accent);
+        padding: 1px 4px;
+        border-radius: 3px;
+        font-size: 6px;
+        font-weight: 600;
+      }
+
+      /* ====== MOBILE SCREEN ====== */
+      .scr-mob {
+        width: 100%;
+        height: 100%;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--font);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .scr-mob .status {
+        height: 14px;
+        display: flex;
+        justify-content: space-between;
+        padding: 4px 10px 0;
+        font-size: 6px;
+        color: var(--fg-strong);
+        font-weight: 600;
+      }
+      .scr-mob .top {
+        padding: 6px 12px 8px;
+      }
+      .scr-mob .top h1 {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: var(--fg-strong);
+        font-family: var(--font-display, var(--font));
+      }
+      .scr-mob .top p {
+        margin: 2px 0 0;
+        font-size: 7px;
+        color: var(--muted);
+      }
+      .scr-mob .card {
+        margin: 6px 10px;
+        padding: 8px 10px;
+        background: var(--accent);
+        color: var(--accent-fg);
+        border-radius: var(--radius);
+      }
+      .scr-mob .card .l {
+        font-size: 6px;
+        opacity: 0.8;
+      }
+      .scr-mob .card .n {
+        font-size: 13px;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+        margin-top: 2px;
+      }
+      .scr-mob .feed {
+        padding: 4px 10px;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+      .scr-mob .row-m {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 5px 8px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        font-size: 7px;
+      }
+      .scr-mob .row-m .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+      .scr-mob .tabs {
+        border-top: 1px solid var(--border);
+        background: var(--card);
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        padding: 4px 0 6px;
+      }
+      .scr-mob .tab {
+        text-align: center;
+        font-size: 6px;
+        color: var(--muted);
+      }
+      .scr-mob .tab.on {
+        color: var(--accent);
+        font-weight: 700;
+      }
+      .scr-mob .tab .ico {
+        width: 10px;
+        height: 10px;
+        margin: 0 auto 1px;
+        border-radius: 2px;
+        background: currentColor;
+        opacity: 0.6;
+      }
+      .scr-mob .tab.on .ico {
+        opacity: 1;
+      }
+
+      /* ====== ADMIN SCREEN ====== */
+      .scr-adm {
+        width: 100%;
+        height: 100%;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--font);
+        display: flex;
+        overflow: hidden;
+      }
+      .scr-adm .side {
+        width: 18%;
+        background: var(--fg-strong);
+        color: var(--bg);
+        padding: 8px 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        font-size: 6px;
+      }
+      .scr-adm .side .b {
+        font-weight: 800;
+        font-size: 8px;
+        margin-bottom: 4px;
+        letter-spacing: -0.02em;
+      }
+      .scr-adm .side .it {
+        padding: 2px 5px;
+        border-radius: 3px;
+        opacity: 0.7;
+      }
+      .scr-adm .side .it.on {
+        background: rgba(255, 255, 255, 0.12);
+        opacity: 1;
+      }
+      .scr-adm .main {
+        flex: 1;
+        padding: 8px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .scr-adm .h {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .scr-adm .h .t {
+        font-size: 10px;
+        font-weight: 700;
+        font-family: var(--font-display, var(--font));
+        letter-spacing: -0.01em;
+      }
+      .scr-adm .h .t small {
+        font-size: 6px;
+        color: var(--muted);
+        font-weight: 400;
+        display: block;
+      }
+      .scr-adm .grid3 {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 4px;
+      }
+      .scr-adm .box {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 4px 6px;
+      }
+      .scr-adm .box .k {
+        font-size: 5.5px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 600;
+      }
+      .scr-adm .box .v {
+        font-size: 10px;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+        color: var(--fg-strong);
+      }
+      .scr-adm .chart {
+        flex: 1;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 6px;
+        position: relative;
+        overflow: hidden;
+      }
+      .scr-adm .chart svg {
+        width: 100%;
+        height: 100%;
+      }
+
+      /* Bottom bar */
+      footer.sticky {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: white;
+        border-top: 1px solid #e4e4e7;
+        padding: 10px 32px;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        font-size: 12px;
+        color: #52525b;
+      }
+      footer.sticky code {
+        background: #f4f4f5;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 11px;
+      }
+      footer.sticky .pill {
+        margin-left: auto;
+        background: #18181b;
+        color: white;
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-size: 12px;
+      }
+
+      /* ====== Modal (full mockup viewer) ====== */
+      .modal-root {
+        position: fixed;
+        inset: 0;
+        background: rgba(9, 9, 11, 0.72);
+        backdrop-filter: blur(6px);
+        z-index: 100;
+        display: none;
+        padding: 32px;
+        overflow-y: auto;
+      }
+      .modal-root.open {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 18px;
+      }
+      .modal-bar {
+        position: sticky;
+        top: 0;
+        z-index: 101;
+        width: 100%;
+        max-width: 1400px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 12px 20px;
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(8px);
+        border-radius: 10px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+      }
+      .modal-bar .m-title {
+        font-weight: 600;
+        font-size: 14px;
+        color: #18181b;
+      }
+      .modal-bar .m-sub {
+        font-size: 12px;
+        color: #71717a;
+      }
+      .modal-bar .m-viewport {
+        display: inline-flex;
+        gap: 4px;
+        background: #f4f4f5;
+        padding: 3px;
+        border-radius: 6px;
+      }
+      .modal-bar .m-viewport button {
+        background: transparent;
+        border: 0;
+        padding: 4px 10px;
+        font-size: 11px;
+        color: #52525b;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .modal-bar .m-viewport button.on {
+        background: white;
+        color: #18181b;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+        font-weight: 600;
+      }
+      .modal-bar .m-spacer {
+        flex: 1;
+      }
+      .modal-bar .m-pick {
+        background: #18181b;
+        color: white;
+        border: 0;
+        padding: 7px 14px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .modal-bar .m-pick:hover {
+        background: #3f3f46;
+      }
+      .modal-bar .m-close {
+        background: transparent;
+        border: 1px solid #e4e4e7;
+        color: #52525b;
+        padding: 6px 10px;
+        border-radius: 6px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .modal-bar .m-close:hover {
+        background: #f4f4f5;
+      }
+      .modal-stage {
+        width: 100%;
+        max-width: 1400px;
+        background: white;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35);
+        display: flex;
+        justify-content: center;
+        padding: 24px;
+      }
+      .modal-stage .viewport {
+        width: 100%;
+        height: 900px;
+        border: 1px solid #e4e4e7;
+        border-radius: 10px;
+        overflow: hidden;
+        position: relative;
+        transition:
+          width 150ms,
+          border-radius 150ms;
+      }
+      .modal-stage .viewport.tablet {
+        width: 820px;
+      }
+      .modal-stage .viewport.mobile {
+        width: 390px;
+        border-radius: 28px;
+        border: 8px solid #1c1917;
+        height: 844px;
+      }
+      .modal-stage .viewport > .scroller {
+        width: 100%;
+        height: 100%;
+        overflow-y: auto;
+        background: var(--bg);
+      }
+
+      /* ====== Full-length templates (rendered inside modal scroller) ====== */
+      /* FULL WEBAPP */
+      .full-web {
+        font-family: var(--font);
+        color: var(--fg);
+        background: var(--bg);
+        min-height: 100%;
+      }
+      .full-web .topbar {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        padding: 12px 24px;
+        border-bottom: 1px solid var(--border);
+        background: var(--card);
+        position: sticky;
+        top: 0;
+        z-index: 5;
+      }
+      .full-web .topbar .brand {
+        font-weight: 800;
+        font-size: 16px;
+        letter-spacing: -0.02em;
+        color: var(--fg-strong);
+        font-family: var(--font-display, var(--font));
+      }
+      .full-web .topbar .search {
+        flex: 0 1 320px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 6px 12px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .full-web .topbar .tabs {
+        display: flex;
+        gap: 4px;
+        margin-left: 16px;
+      }
+      .full-web .topbar .tabs span {
+        padding: 5px 12px;
+        font-size: 12px;
+        color: var(--muted);
+        border-radius: var(--radius);
+      }
+      .full-web .topbar .tabs span.on {
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .full-web .topbar .avatar {
+        margin-left: auto;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: var(--accent);
+        color: var(--accent-fg);
+        display: grid;
+        place-items: center;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .full-web .body {
+        display: flex;
+        min-height: calc(100% - 57px);
+      }
+      .full-web .side {
+        width: 220px;
+        padding: 18px 14px;
+        border-right: 1px solid var(--border);
+        background: var(--side);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .full-web .side .sec {
+        font-size: 10px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+        margin: 12px 6px 4px;
+      }
+      .full-web .side a {
+        padding: 6px 10px;
+        border-radius: var(--radius);
+        color: var(--muted);
+        font-size: 13px;
+        text-decoration: none;
+        display: flex;
+        justify-content: space-between;
+      }
+      .full-web .side a.on {
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .full-web .side a .count {
+        background: var(--border);
+        color: var(--muted);
+        padding: 1px 6px;
+        border-radius: 10px;
+        font-size: 10px;
+      }
+      .full-web .main {
+        flex: 1;
+        padding: 26px 32px;
+        display: flex;
+        flex-direction: column;
+        gap: 22px;
+      }
+      .full-web .crumbs {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .full-web .pagehead {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+      }
+      .full-web .pagehead h1 {
+        margin: 0;
+        font-size: 26px;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: var(--fg-strong);
+        font-family: var(--font-display, var(--font));
+      }
+      .full-web .pagehead p {
+        margin: 4px 0 0;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .full-web .pagehead .actions {
+        display: flex;
+        gap: 8px;
+      }
+      .full-web .btn-pri {
+        background: var(--accent);
+        color: var(--accent-fg);
+        border: 0;
+        border-radius: var(--radius);
+        padding: 8px 14px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .full-web .btn-sec {
+        background: var(--card);
+        color: var(--fg-strong);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 8px 14px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .full-web .stats {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+      }
+      .full-web .stats .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 14px 16px;
+      }
+      .full-web .stats .k {
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-weight: 600;
+      }
+      .full-web .stats .v {
+        font-size: 24px;
+        font-weight: 800;
+        color: var(--fg-strong);
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.02em;
+        margin-top: 4px;
+      }
+      .full-web .stats .d {
+        font-size: 11px;
+        color: var(--accent);
+        margin-top: 4px;
+        font-weight: 600;
+      }
+      .full-web .tabs-row {
+        display: flex;
+        gap: 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .full-web .tabs-row span {
+        padding: 10px 16px;
+        font-size: 13px;
+        color: var(--muted);
+        border-bottom: 2px solid transparent;
+        cursor: pointer;
+      }
+      .full-web .tabs-row span.on {
+        color: var(--fg-strong);
+        border-bottom-color: var(--accent);
+        font-weight: 600;
+      }
+      .full-web .filter {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .full-web .chip {
+        background: var(--card);
+        border: 1px solid var(--border);
+        padding: 4px 10px;
+        border-radius: var(--radius);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .full-web .chip.on {
+        background: var(--accent-soft);
+        color: var(--accent);
+        border-color: transparent;
+        font-weight: 600;
+      }
+      .full-web table {
+        width: 100%;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        border-collapse: separate;
+        border-spacing: 0;
+        overflow: hidden;
+        font-size: 13px;
+      }
+      .full-web th {
+        text-align: left;
+        padding: 10px 14px;
+        background: var(--side);
+        color: var(--muted);
+        font-weight: 600;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        border-bottom: 1px solid var(--border);
+      }
+      .full-web td {
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border-subtle);
+        color: var(--fg);
+      }
+      .full-web tr:last-child td {
+        border-bottom: 0;
+      }
+      .full-web td.num {
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        color: var(--fg-strong);
+        text-align: right;
+      }
+      .full-web .tag {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .full-web .tag.paid {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+      .full-web .tag.due {
+        background: rgba(234, 179, 8, 0.14);
+        color: #a16207;
+      }
+      .full-web .tag.overdue {
+        background: rgba(244, 63, 94, 0.14);
+        color: #be123c;
+      }
+      .full-web .pager {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 12px;
+        color: var(--muted);
+        padding: 8px 0;
+      }
+      .full-web .pager .pages {
+        display: flex;
+        gap: 4px;
+      }
+      .full-web .pager .pages span {
+        min-width: 24px;
+        text-align: center;
+        padding: 3px 6px;
+        border-radius: var(--radius);
+        border: 1px solid var(--border);
+      }
+      .full-web .pager .pages span.on {
+        background: var(--fg-strong);
+        color: var(--bg);
+        border-color: var(--fg-strong);
+        font-weight: 700;
+      }
+
+      /* FULL MOBILE */
+      .full-mob {
+        font-family: var(--font);
+        color: var(--fg);
+        background: var(--bg);
+        min-height: 100%;
+        padding-bottom: 76px;
+      }
+      .full-mob .status {
+        height: 28px;
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 20px 0;
+        font-size: 12px;
+        color: var(--fg-strong);
+        font-weight: 600;
+      }
+      .full-mob .hdr {
+        padding: 8px 20px 12px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .full-mob .hdr h1 {
+        margin: 0;
+        font-size: 24px;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: var(--fg-strong);
+        font-family: var(--font-display, var(--font));
+      }
+      .full-mob .hdr .avatar {
+        margin-left: auto;
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        background: var(--accent);
+        color: var(--accent-fg);
+        display: grid;
+        place-items: center;
+        font-weight: 700;
+        font-size: 13px;
+      }
+      .full-mob .hero {
+        margin: 8px 16px 16px;
+        padding: 18px;
+        background: var(--accent);
+        color: var(--accent-fg);
+        border-radius: calc(var(--radius) * 2);
+      }
+      .full-mob .hero .l {
+        font-size: 11px;
+        opacity: 0.85;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+      }
+      .full-mob .hero .n {
+        font-size: 34px;
+        font-weight: 800;
+        margin-top: 4px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.02em;
+      }
+      .full-mob .hero .d {
+        font-size: 12px;
+        opacity: 0.85;
+        margin-top: 4px;
+      }
+      .full-mob .qa {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        padding: 0 16px 16px;
+      }
+      .full-mob .qa .q {
+        padding: 14px 10px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        text-align: center;
+        font-size: 11px;
+        color: var(--muted);
+        font-weight: 600;
+      }
+      .full-mob .qa .q .ico {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        background: var(--accent-soft);
+        margin: 0 auto 6px;
+      }
+      .full-mob .seg {
+        margin: 0 16px 12px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        background: var(--side);
+        padding: 3px;
+        border-radius: var(--radius);
+      }
+      .full-mob .seg span {
+        padding: 6px 0;
+        text-align: center;
+        font-size: 12px;
+        color: var(--muted);
+        border-radius: calc(var(--radius) - 2px);
+        font-weight: 600;
+      }
+      .full-mob .seg span.on {
+        background: var(--card);
+        color: var(--fg-strong);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+      }
+      .full-mob .section-label {
+        padding: 4px 20px;
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+      }
+      .full-mob .list {
+        padding: 4px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .full-mob .item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+      }
+      .full-mob .item .av {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        background: var(--accent-soft);
+        color: var(--accent);
+        display: grid;
+        place-items: center;
+        font-size: 12px;
+        font-weight: 700;
+        flex-shrink: 0;
+      }
+      .full-mob .item .ttl {
+        font-size: 13px;
+        color: var(--fg-strong);
+        font-weight: 600;
+      }
+      .full-mob .item .meta {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+      .full-mob .item .amt {
+        margin-left: auto;
+        font-size: 13px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        color: var(--fg-strong);
+      }
+      .full-mob .banner {
+        margin: 16px;
+        padding: 18px;
+        border: 1px dashed var(--border);
+        border-radius: var(--radius);
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      .full-mob .banner .t {
+        font-weight: 700;
+        font-size: 14px;
+        color: var(--fg-strong);
+      }
+      .full-mob .banner .s {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+      .full-mob .banner button {
+        margin-left: auto;
+        background: var(--accent);
+        color: var(--accent-fg);
+        border: 0;
+        padding: 6px 12px;
+        border-radius: var(--radius);
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .full-mob .tabbar {
+        position: sticky;
+        bottom: 0;
+        background: var(--card);
+        border-top: 1px solid var(--border);
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        padding: 8px 0 14px;
+      }
+      .full-mob .tabbar .tab {
+        text-align: center;
+        font-size: 10px;
+        color: var(--muted);
+        font-weight: 600;
+      }
+      .full-mob .tabbar .tab.on {
+        color: var(--accent);
+      }
+      .full-mob .tabbar .tab .ico {
+        width: 20px;
+        height: 20px;
+        margin: 0 auto 3px;
+        border-radius: 5px;
+        background: currentColor;
+        opacity: 0.5;
+      }
+      .full-mob .tabbar .tab.on .ico {
+        opacity: 1;
+      }
+
+      /* FULL ADMIN */
+      .full-adm {
+        font-family: var(--font);
+        color: var(--fg);
+        background: var(--bg);
+        min-height: 100%;
+        display: flex;
+      }
+      .full-adm .side {
+        width: 220px;
+        background: var(--fg-strong);
+        color: var(--bg);
+        padding: 20px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .full-adm .side .b {
+        font-weight: 800;
+        font-size: 15px;
+        letter-spacing: -0.02em;
+        margin-bottom: 10px;
+      }
+      .full-adm .side .sec {
+        font-size: 10px;
+        opacity: 0.5;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+        margin: 12px 6px 4px;
+      }
+      .full-adm .side a {
+        padding: 7px 10px;
+        border-radius: 5px;
+        color: rgba(255, 255, 255, 0.75);
+        text-decoration: none;
+        font-size: 13px;
+      }
+      .full-adm .side a.on {
+        background: rgba(255, 255, 255, 0.12);
+        color: white;
+        font-weight: 600;
+      }
+      .full-adm .main {
+        flex: 1;
+        padding: 26px 32px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+      .full-adm .h {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+      }
+      .full-adm .h h1 {
+        margin: 0;
+        font-size: 22px;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: var(--fg-strong);
+        font-family: var(--font-display, var(--font));
+      }
+      .full-adm .h p {
+        margin: 4px 0 0;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .full-adm .h .picker {
+        background: var(--card);
+        border: 1px solid var(--border);
+        padding: 6px 12px;
+        border-radius: var(--radius);
+        font-size: 12px;
+        color: var(--fg-strong);
+        font-weight: 600;
+      }
+      .full-adm .stats {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 8px;
+      }
+      .full-adm .stats .box {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 10px 12px;
+      }
+      .full-adm .stats .k {
+        font-size: 10px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        font-weight: 600;
+      }
+      .full-adm .stats .v {
+        font-size: 20px;
+        font-weight: 800;
+        color: var(--fg-strong);
+        font-variant-numeric: tabular-nums;
+        margin-top: 2px;
+        letter-spacing: -0.02em;
+      }
+      .full-adm .stats .d {
+        font-size: 10px;
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .full-adm .chart {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 16px 20px;
+      }
+      .full-adm .chart .t {
+        font-size: 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        font-weight: 700;
+      }
+      .full-adm .chart svg {
+        width: 100%;
+        height: 160px;
+        margin-top: 8px;
+      }
+      .full-adm .twocol {
+        display: grid;
+        grid-template-columns: 1.4fr 1fr;
+        gap: 12px;
+      }
+      .full-adm .events {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+      }
+      .full-adm .events .th {
+        padding: 10px 14px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        font-weight: 700;
+        background: var(--side);
+        border-bottom: 1px solid var(--border);
+      }
+      .full-adm .events .ev {
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border-subtle);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 12px;
+      }
+      .full-adm .events .ev:last-child {
+        border-bottom: 0;
+      }
+      .full-adm .events .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent);
+        flex-shrink: 0;
+      }
+      .full-adm .events .dot.warn {
+        background: #eab308;
+      }
+      .full-adm .events .dot.err {
+        background: #f43f5e;
+      }
+      .full-adm .events .ttl {
+        color: var(--fg-strong);
+        font-weight: 600;
+      }
+      .full-adm .events .meta {
+        color: var(--muted);
+        margin-left: auto;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+      }
+      .full-adm .alert {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-left: 3px solid #eab308;
+        border-radius: var(--radius);
+        padding: 14px 18px;
+      }
+      .full-adm .alert .t {
+        font-weight: 700;
+        font-size: 13px;
+        color: var(--fg-strong);
+      }
+      .full-adm .alert .s {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="page">
+      <h1>Style selection — Aurora (demo)</h1>
+      <div class="sub">
+        10 styles × 3 apps (<b>webapp</b>, <b>mobile</b>, <b>admin</b>) = 30
+        mockups. Click any thumbnail to open the full scrollable mockup. Pick
+        one style → writes <code>docs/selected-style.json</code> → losers
+        archive to <code>docs/mockups/archive/</code>.
+      </div>
+    </header>
+
+    <main id="grid"></main>
+
+    <footer class="sticky">
+      <div>
+        <code>--nanobanana</code> <b>off</b> · $0 image spend · refs from
+        Unsplash + named libraries
+      </div>
+      <div>·</div>
+      <div>Dials are editable at this gate</div>
+      <span class="pill">Waiting for selection…</span>
+    </footer>
+
+    <!-- Reusable screen templates. Rendered once per style via JS with CSS-var overrides. -->
+    <template id="tmpl-web">
+      <div class="scr-web">
+        <aside class="side">
+          <div class="brand">Aurora</div>
+          <div class="item active">Overview</div>
+          <div class="item">Customers</div>
+          <div class="item">Invoices</div>
+          <div class="item">Reports</div>
+          <div class="item">Settings</div>
+        </aside>
+        <section class="main">
+          <div class="h">
+            <h2>Overview</h2>
+            <div class="btn">+ New invoice</div>
+          </div>
+          <div class="stats">
+            <div class="stat">
+              <div class="k">MRR</div>
+              <div class="v">$48,210</div>
+              <div class="d">+12.4%</div>
+            </div>
+            <div class="stat">
+              <div class="k">Active</div>
+              <div class="v">1,284</div>
+              <div class="d">+38</div>
+            </div>
+            <div class="stat">
+              <div class="k">Churn</div>
+              <div class="v">2.1%</div>
+              <div class="d">−0.3%</div>
+            </div>
+          </div>
+          <div class="list">
+            <div class="li">
+              <span>Acme Corp · Invoice #1048</span
+              ><span class="tag">Paid</span>
+            </div>
+            <div class="li">
+              <span>Northwind · Invoice #1047</span
+              ><span class="tag">Paid</span>
+            </div>
+            <div class="li">
+              <span>Globex · Invoice #1046</span><span class="tag">Due</span>
+            </div>
+            <div class="li">
+              <span>Initech · Invoice #1045</span><span class="tag">Paid</span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </template>
+
+    <template id="tmpl-mob">
+      <div class="scr-mob">
+        <div class="status"><span>9:41</span><span>●●●●</span></div>
+        <div class="top">
+          <h1>Good morning,<br />Sarah</h1>
+          <p>3 invoices waiting for you</p>
+        </div>
+        <div class="card">
+          <div class="l">THIS MONTH</div>
+          <div class="n">$48,210</div>
+        </div>
+        <div class="feed">
+          <div class="row-m">
+            <span>Acme Corp</span><span class="dot"></span>
+          </div>
+          <div class="row-m">
+            <span>Northwind</span><span class="dot"></span>
+          </div>
+          <div class="row-m"><span>Globex</span><span class="dot"></span></div>
+        </div>
+        <div class="tabs">
+          <div class="tab on">
+            <div class="ico"></div>
+            Home
+          </div>
+          <div class="tab">
+            <div class="ico"></div>
+            Invoices
+          </div>
+          <div class="tab">
+            <div class="ico"></div>
+            Clients
+          </div>
+          <div class="tab">
+            <div class="ico"></div>
+            Me
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <template id="tmpl-adm">
+      <div class="scr-adm">
+        <aside class="side">
+          <div class="b">Aurora Admin</div>
+          <div class="it on">Dashboard</div>
+          <div class="it">Users</div>
+          <div class="it">Billing</div>
+          <div class="it">Audit log</div>
+          <div class="it">Feature flags</div>
+        </aside>
+        <section class="main">
+          <div class="h">
+            <div class="t">
+              Platform health<small>Last 30 days · production</small>
+            </div>
+            <div
+              class="btn"
+              style="
+                background: var(--accent);
+                color: var(--accent-fg);
+                padding: 3px 8px;
+                border-radius: var(--radius);
+                font-size: 7px;
+                font-weight: 700;
+              "
+            >
+              Export
+            </div>
+          </div>
+          <div class="grid3">
+            <div class="box">
+              <div class="k">Users</div>
+              <div class="v">12,480</div>
+            </div>
+            <div class="box">
+              <div class="k">Orgs</div>
+              <div class="v">482</div>
+            </div>
+            <div class="box">
+              <div class="k">API p95</div>
+              <div class="v">142ms</div>
+            </div>
+            <div class="box">
+              <div class="k">Errors</div>
+              <div class="v">0.04%</div>
+            </div>
+          </div>
+          <div class="chart">
+            <svg viewBox="0 0 200 60" preserveAspectRatio="none">
+              <polyline
+                fill="none"
+                stroke="var(--accent)"
+                stroke-width="1.5"
+                points="0,45 20,40 40,42 60,30 80,32 100,22 120,25 140,15 160,18 180,10 200,12"
+              />
+              <polyline
+                fill="var(--accent)"
+                fill-opacity="0.12"
+                stroke="none"
+                points="0,45 20,40 40,42 60,30 80,32 100,22 120,25 140,15 160,18 180,10 200,12 200,60 0,60"
+              />
+            </svg>
+          </div>
+        </section>
+      </div>
+    </template>
+
+    <script>
+      // 10 deliberately different styles — none use the banned AI-lila purples.
+      const STYLES = [
+        {
+          name: "Neutral · One blue",
+          refs: "Linear · Notion · Vercel",
+          dials: "variance 4 · motion 3 · density 6",
+          vars: {
+            "--bg": "#ffffff",
+            "--fg": "#3f3f46",
+            "--fg-strong": "#09090b",
+            "--muted": "#71717a",
+            "--side": "#fafafa",
+            "--card": "#ffffff",
+            "--border": "#e4e4e7",
+            "--border-subtle": "#f4f4f5",
+            "--accent": "#2563eb",
+            "--accent-soft": "#dbeafe",
+            "--accent-fg": "#ffffff",
+            "--radius": "6px",
+            "--font": "'Inter', system-ui",
+            "--font-display": "'Inter', system-ui",
+          },
+        },
+        {
+          name: "Graphite & mint",
+          refs: "Raycast · Arc · Supabase",
+          dials: "variance 5 · motion 4 · density 6",
+          vars: {
+            "--bg": "#0a0a0a",
+            "--fg": "#d4d4d8",
+            "--fg-strong": "#fafafa",
+            "--muted": "#71717a",
+            "--side": "#0f0f10",
+            "--card": "#141416",
+            "--border": "#27272a",
+            "--border-subtle": "#1f1f22",
+            "--accent": "#4ade80",
+            "--accent-soft": "rgba(74,222,128,0.14)",
+            "--accent-fg": "#052e16",
+            "--radius": "10px",
+            "--font": "'Geist', system-ui",
+            "--font-display": "'Geist', system-ui",
+          },
+        },
+        {
+          name: "Paper · Editorial",
+          refs: "Stripe Press · Readwise · Instrument",
+          dials: "variance 6 · motion 2 · density 3",
+          vars: {
+            "--bg": "#faf7f2",
+            "--fg": "#3c2e24",
+            "--fg-strong": "#1c1714",
+            "--muted": "#8a7a6b",
+            "--side": "#f3eee6",
+            "--card": "#fdfbf7",
+            "--border": "#e6ddd0",
+            "--border-subtle": "#ece3d6",
+            "--accent": "#c2410c",
+            "--accent-soft": "#fde4d3",
+            "--accent-fg": "#ffffff",
+            "--radius": "2px",
+            "--font": "'Inter', system-ui",
+            "--font-display": "'Instrument Serif', Georgia, serif",
+          },
+        },
+        {
+          name: "Cobalt Pro",
+          refs: "Stripe Dashboard · Bloomberg · Retool",
+          dials: "variance 2 · motion 2 · density 8",
+          vars: {
+            "--bg": "#f8fafc",
+            "--fg": "#334155",
+            "--fg-strong": "#0f172a",
+            "--muted": "#64748b",
+            "--side": "#ffffff",
+            "--card": "#ffffff",
+            "--border": "#e2e8f0",
+            "--border-subtle": "#f1f5f9",
+            "--accent": "#0369a1",
+            "--accent-soft": "#e0f2fe",
+            "--accent-fg": "#ffffff",
+            "--radius": "4px",
+            "--font": "'Inter', system-ui",
+            "--font-display": "'Inter', system-ui",
+          },
+        },
+        {
+          name: "Noir · High contrast",
+          refs: "Framer · Awwwards · Dieter Rams",
+          dials: "variance 7 · motion 5 · density 4",
+          vars: {
+            "--bg": "#0c0a09",
+            "--fg": "#e7e5e4",
+            "--fg-strong": "#fafaf9",
+            "--muted": "#78716c",
+            "--side": "#16130f",
+            "--card": "#1c1917",
+            "--border": "#292524",
+            "--border-subtle": "#201d1b",
+            "--accent": "#ea580c",
+            "--accent-soft": "rgba(234,88,12,0.16)",
+            "--accent-fg": "#ffffff",
+            "--radius": "3px",
+            "--font": "'Satoshi', system-ui",
+            "--font-display": "'Satoshi', system-ui",
+          },
+        },
+        {
+          name: "Sage · Clinical",
+          refs: "Oscar Health · Mailchimp · Hims",
+          dials: "variance 4 · motion 3 · density 4",
+          vars: {
+            "--bg": "#f6f7f4",
+            "--fg": "#44403c",
+            "--fg-strong": "#1c1917",
+            "--muted": "#78716c",
+            "--side": "#ffffff",
+            "--card": "#ffffff",
+            "--border": "#e7e5e4",
+            "--border-subtle": "#f5f5f4",
+            "--accent": "#166534",
+            "--accent-soft": "#dcfce7",
+            "--accent-fg": "#ffffff",
+            "--radius": "14px",
+            "--font": "'Outfit', system-ui",
+            "--font-display": "'Cabinet Grotesk', 'Outfit', sans-serif",
+          },
+        },
+        {
+          name: "Steel · Industrial cockpit",
+          refs: "PostHog · Grafana · Datadog",
+          dials: "variance 3 · motion 2 · density 9",
+          vars: {
+            "--bg": "#18181b",
+            "--fg": "#a1a1aa",
+            "--fg-strong": "#fafafa",
+            "--muted": "#71717a",
+            "--side": "#09090b",
+            "--card": "#1f1f23",
+            "--border": "#2e2e33",
+            "--border-subtle": "#262628",
+            "--accent": "#eab308",
+            "--accent-soft": "rgba(234,179,8,0.14)",
+            "--accent-fg": "#18181b",
+            "--radius": "2px",
+            "--font": "'IBM Plex Sans', system-ui",
+            "--font-display": "'IBM Plex Sans', system-ui",
+          },
+        },
+        {
+          name: "Peach · Soft & playful",
+          refs: "Duolingo · Things 3 · Oui",
+          dials: "variance 7 · motion 8 · density 3",
+          vars: {
+            "--bg": "#fff7f0",
+            "--fg": "#57453a",
+            "--fg-strong": "#2a1f17",
+            "--muted": "#9a8373",
+            "--side": "#ffe9d9",
+            "--card": "#ffffff",
+            "--border": "#f4dcc6",
+            "--border-subtle": "#faecd9",
+            "--accent": "#f87171",
+            "--accent-soft": "#ffe4e6",
+            "--accent-fg": "#ffffff",
+            "--radius": "16px",
+            "--font": "'Nunito', system-ui",
+            "--font-display": "'Nunito', system-ui",
+          },
+        },
+        {
+          name: "Terminal · Developer tools",
+          refs: "Raycast · Fly.io · Replit",
+          dials: "variance 5 · motion 4 · density 7",
+          vars: {
+            "--bg": "#050607",
+            "--fg": "#9ca3af",
+            "--fg-strong": "#f3f4f6",
+            "--muted": "#6b7280",
+            "--side": "#0b0d10",
+            "--card": "#101317",
+            "--border": "#1f2328",
+            "--border-subtle": "#17191d",
+            "--accent": "#22c55e",
+            "--accent-soft": "rgba(34,197,94,0.14)",
+            "--accent-fg": "#022c12",
+            "--radius": "4px",
+            "--font": "'JetBrains Mono', ui-monospace, monospace",
+            "--font-display": "'JetBrains Mono', ui-monospace, monospace",
+          },
+        },
+        {
+          name: "Navy · Classic finance",
+          refs: "Stripe · American Express · Robinhood (dark)",
+          dials: "variance 2 · motion 1 · density 6",
+          vars: {
+            "--bg": "#fdfdfc",
+            "--fg": "#334155",
+            "--fg-strong": "#0c1a3a",
+            "--muted": "#64748b",
+            "--side": "#f1f4fa",
+            "--card": "#ffffff",
+            "--border": "#dfe5ef",
+            "--border-subtle": "#eceff5",
+            "--accent": "#1e3a8a",
+            "--accent-soft": "#e0e7ff",
+            "--accent-fg": "#ffffff",
+            "--radius": "3px",
+            "--font": "'Inter', system-ui",
+            "--font-display": "'Cormorant Garamond', Georgia, serif",
+          },
+        },
+      ];
+
+      const grid = document.getElementById("grid");
+      STYLES.forEach((s, i) => {
+        const row = document.createElement("section");
+        row.className = "row";
+        row.style.cssText = Object.entries(s.vars)
+          .map(([k, v]) => `${k}:${v}`)
+          .join(";");
+        const palette = [
+          s.vars["--fg-strong"],
+          s.vars["--accent"],
+          s.vars["--side"] || s.vars["--card"],
+        ];
+
+        row.innerHTML = `
+      <header class="row-head">
+        <div class="idx">${String(i + 1).padStart(2, "0")}</div>
+        <div class="title">${s.name}</div>
+        <div class="palette">${palette.map((c) => `<span style="background:${c}"></span>`).join("")}</div>
+        <div class="refs">${s.refs}</div>
+        <div class="dials">${s.dials}</div>
+        <div class="spacer"></div>
+        <button class="pick" onclick="pick(${i})">Choose this style →</button>
+      </header>
+      <div class="cells">
+        <div class="cell"><div class="cell-label">Webapp · home</div><div class="frame" onclick="openModal(${i}, 'web')">${tmpl("tmpl-web")}</div></div>
+        <div class="cell"><div class="cell-label">Mobile · home</div><div class="frame mobile" onclick="openModal(${i}, 'mob')">${tmpl("tmpl-mob")}</div></div>
+        <div class="cell"><div class="cell-label">Admin · dashboard</div><div class="frame" onclick="openModal(${i}, 'adm')">${tmpl("tmpl-adm")}</div></div>
+      </div>
+    `;
+        grid.appendChild(row);
+      });
+
+      function tmpl(id) {
+        return document.getElementById(id).innerHTML;
+      }
+      function pick(i) {
+        const s = STYLES[i];
+        const id = "style-" + String(i).padStart(2, "0");
+        const now = new Date().toISOString();
+        const payload = {
+          styleId: id,
+          styleName: s.name,
+          dials: s.dials,
+          selectedAt: now,
+          selectedBy: "human",
+          mockupsManifest: "docs/mockups/" + id + "/manifest.json",
+        };
+        const pill = document.querySelector("footer.sticky .pill");
+        if (pill) {
+          pill.textContent = "Selected · " + id;
+          pill.style.background = s.vars["--accent"] || "#18181b";
+        }
+        alert(
+          "Selected " +
+            id +
+            ' · "' +
+            s.name +
+            '"\n\n' +
+            "Writes docs/selected-style.json:\n" +
+            JSON.stringify(payload, null, 2) +
+            "\n\n" +
+            "Next:\n" +
+            "  • losers archive to docs/mockups/archive/\n" +
+            "  • /stylesheet reads selected-style.json + styles.md[" +
+            id +
+            "] → builds @repo/ui-kit\n" +
+            "  • /screens composes remaining screens from the kit",
+        );
+        if (modal.classList.contains("open")) closeModal();
+      }
+
+      /* ====== Modal wiring ====== */
+      let modal = null;
+      let currentStyleIdx = null;
+      let currentType = null;
+      document.addEventListener("DOMContentLoaded", () => {
+        modal = document.getElementById("modal");
+        modal.addEventListener("click", (e) => {
+          if (e.target === modal) closeModal();
+        });
+      });
+
+      function openModal(i, type) {
+        currentStyleIdx = i;
+        currentType = type;
+        const s = STYLES[i];
+        const root = document.getElementById("modal-viewport");
+        root.style.cssText = Object.entries(s.vars)
+          .map(([k, v]) => `${k}:${v}`)
+          .join(";");
+        document.getElementById("m-title").textContent =
+          s.name + " · " + typeLabel(type);
+        document.getElementById("m-sub").textContent = s.refs + " · " + s.dials;
+        document.getElementById("m-pick").onclick = () => pick(i);
+        renderModal(type);
+        setViewport(type === "mob" ? "mobile" : "desktop");
+        modal.classList.add("open");
+        document.body.style.overflow = "hidden";
+      }
+
+      function closeModal() {
+        modal.classList.remove("open");
+        document.body.style.overflow = "";
+      }
+
+      function setViewport(vp) {
+        const stage = document.getElementById("modal-stage-viewport");
+        stage.classList.remove("mobile", "tablet");
+        if (vp === "mobile") stage.classList.add("mobile");
+        else if (vp === "tablet") stage.classList.add("tablet");
+        document.querySelectorAll(".m-viewport button").forEach((b) => {
+          b.classList.toggle("on", b.dataset.vp === vp);
+        });
+      }
+
+      function renderModal(type) {
+        const scroller = document.getElementById("modal-scroller");
+        if (type === "web") scroller.innerHTML = tmpl("tmpl-full-web");
+        else if (type === "mob") scroller.innerHTML = tmpl("tmpl-full-mob");
+        else scroller.innerHTML = tmpl("tmpl-full-adm");
+        scroller.scrollTop = 0;
+      }
+
+      function typeLabel(t) {
+        return t === "web"
+          ? "Webapp / Overview"
+          : t === "mob"
+            ? "Mobile / Home"
+            : "Admin / Platform health";
+      }
+
+      document.addEventListener("keydown", (e) => {
+        if (!modal || !modal.classList.contains("open")) return;
+        if (e.key === "Escape") closeModal();
+        if (e.key === "1") setViewport("mobile");
+        if (e.key === "2") setViewport("tablet");
+        if (e.key === "3") setViewport("desktop");
+      });
+    </script>
+
+    <!-- ====== Modal root ====== -->
+    <div class="modal-root" id="modal" role="dialog" aria-modal="true">
+      <div class="modal-bar">
+        <div>
+          <div class="m-title" id="m-title">—</div>
+          <div class="m-sub" id="m-sub">—</div>
+        </div>
+        <div class="m-spacer"></div>
+        <div class="m-viewport" role="group" aria-label="Viewport">
+          <button data-vp="mobile" onclick="setViewport('mobile')">
+            📱 Mobile
+          </button>
+          <button data-vp="tablet" onclick="setViewport('tablet')">
+            ▭ Tablet
+          </button>
+          <button data-vp="desktop" onclick="setViewport('desktop')" class="on">
+            🖥 Desktop
+          </button>
+        </div>
+        <button class="m-pick" id="m-pick">Choose this style →</button>
+        <button class="m-close" onclick="closeModal()">Close · Esc</button>
+      </div>
+      <div class="modal-stage">
+        <div class="viewport" id="modal-stage-viewport">
+          <div class="scroller" id="modal-viewport">
+            <div id="modal-scroller"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====== Full-length templates (rendered inside modal) ====== -->
+    <template id="tmpl-full-web">
+      <div class="full-web">
+        <div class="topbar">
+          <div class="brand">Aurora</div>
+          <div class="search">⌕ Search invoices, clients, reports…</div>
+          <div class="tabs">
+            <span>Overview</span><span class="on">Invoices</span
+            ><span>Customers</span><span>Reports</span>
+          </div>
+          <div class="avatar">SD</div>
+        </div>
+        <div class="body">
+          <aside class="side">
+            <div class="sec">Workspace</div>
+            <a>Home</a>
+            <a class="on">Invoices <span class="count">128</span></a>
+            <a>Customers <span class="count">482</span></a>
+            <a>Products</a>
+            <a>Subscriptions</a>
+            <div class="sec">Finance</div>
+            <a>Payouts</a>
+            <a>Tax reports</a>
+            <a>Balances</a>
+            <div class="sec">Settings</div>
+            <a>Team</a>
+            <a>API keys</a>
+            <a>Branding</a>
+          </aside>
+          <main class="main">
+            <div class="crumbs">Home / Finance / Invoices</div>
+            <div class="pagehead">
+              <div>
+                <h1>Invoices</h1>
+                <p>128 invoices · $284,430 outstanding · 7 overdue</p>
+              </div>
+              <div class="actions">
+                <button class="btn-sec">Export CSV</button>
+                <button class="btn-pri">+ New invoice</button>
+              </div>
+            </div>
+            <div class="stats">
+              <div class="card">
+                <div class="k">Outstanding</div>
+                <div class="v">$284,430</div>
+                <div class="d">+12.4% vs Mar</div>
+              </div>
+              <div class="card">
+                <div class="k">Paid this month</div>
+                <div class="v">$148,902</div>
+                <div class="d">+8.1%</div>
+              </div>
+              <div class="card">
+                <div class="k">Avg. days to pay</div>
+                <div class="v">18</div>
+                <div class="d">−2 days</div>
+              </div>
+              <div class="card">
+                <div class="k">Overdue</div>
+                <div class="v">7</div>
+                <div class="d">2 critical</div>
+              </div>
+            </div>
+            <div class="tabs-row">
+              <span class="on">All · 128</span><span>Paid · 94</span
+              ><span>Due · 27</span><span>Overdue · 7</span>
+            </div>
+            <div class="filter">
+              <span class="chip on">Last 30 days</span>
+              <span class="chip">All customers</span>
+              <span class="chip">All products</span>
+              <span class="chip">+ Add filter</span>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Invoice</th>
+                  <th>Customer</th>
+                  <th>Issued</th>
+                  <th>Due</th>
+                  <th>Status</th>
+                  <th style="text-align: right">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>#1048</td>
+                  <td>Acme Corp</td>
+                  <td>Apr 12</td>
+                  <td>Apr 26</td>
+                  <td><span class="tag paid">Paid</span></td>
+                  <td class="num">$12,480.00</td>
+                </tr>
+                <tr>
+                  <td>#1047</td>
+                  <td>Northwind Traders</td>
+                  <td>Apr 10</td>
+                  <td>Apr 24</td>
+                  <td><span class="tag paid">Paid</span></td>
+                  <td class="num">$8,320.50</td>
+                </tr>
+                <tr>
+                  <td>#1046</td>
+                  <td>Globex Industries</td>
+                  <td>Apr 9</td>
+                  <td>Apr 23</td>
+                  <td><span class="tag due">Due</span></td>
+                  <td class="num">$22,110.00</td>
+                </tr>
+                <tr>
+                  <td>#1045</td>
+                  <td>Initech Systems</td>
+                  <td>Apr 5</td>
+                  <td>Apr 19</td>
+                  <td><span class="tag paid">Paid</span></td>
+                  <td class="num">$4,900.00</td>
+                </tr>
+                <tr>
+                  <td>#1044</td>
+                  <td>Soylent Green</td>
+                  <td>Apr 3</td>
+                  <td>Apr 17</td>
+                  <td><span class="tag overdue">Overdue</span></td>
+                  <td class="num">$31,400.00</td>
+                </tr>
+                <tr>
+                  <td>#1043</td>
+                  <td>Umbrella Retail</td>
+                  <td>Apr 2</td>
+                  <td>Apr 16</td>
+                  <td><span class="tag due">Due</span></td>
+                  <td class="num">$6,180.25</td>
+                </tr>
+                <tr>
+                  <td>#1042</td>
+                  <td>Wayne Enterprises</td>
+                  <td>Mar 30</td>
+                  <td>Apr 13</td>
+                  <td><span class="tag paid">Paid</span></td>
+                  <td class="num">$18,750.00</td>
+                </tr>
+                <tr>
+                  <td>#1041</td>
+                  <td>Stark Industries</td>
+                  <td>Mar 28</td>
+                  <td>Apr 11</td>
+                  <td><span class="tag paid">Paid</span></td>
+                  <td class="num">$42,000.00</td>
+                </tr>
+                <tr>
+                  <td>#1040</td>
+                  <td>Oscorp</td>
+                  <td>Mar 27</td>
+                  <td>Apr 10</td>
+                  <td><span class="tag overdue">Overdue</span></td>
+                  <td class="num">$9,220.00</td>
+                </tr>
+                <tr>
+                  <td>#1039</td>
+                  <td>Cyberdyne Systems</td>
+                  <td>Mar 25</td>
+                  <td>Apr 8</td>
+                  <td><span class="tag paid">Paid</span></td>
+                  <td class="num">$15,600.00</td>
+                </tr>
+                <tr>
+                  <td>#1038</td>
+                  <td>Weyland-Yutani</td>
+                  <td>Mar 22</td>
+                  <td>Apr 5</td>
+                  <td><span class="tag paid">Paid</span></td>
+                  <td class="num">$7,450.00</td>
+                </tr>
+                <tr>
+                  <td>#1037</td>
+                  <td>Tyrell Corp</td>
+                  <td>Mar 20</td>
+                  <td>Apr 3</td>
+                  <td><span class="tag paid">Paid</span></td>
+                  <td class="num">$28,910.00</td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="pager">
+              <div>Showing 12 of 128</div>
+              <div class="pages">
+                <span class="on">1</span><span>2</span><span>3</span
+                ><span>…</span><span>11</span>
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
+    </template>
+
+    <template id="tmpl-full-mob">
+      <div class="full-mob">
+        <div class="status"><span>9:41</span><span>●●●● 5G</span></div>
+        <div class="hdr">
+          <h1>Good morning,<br />Sarah</h1>
+          <div class="avatar">SD</div>
+        </div>
+        <div class="hero">
+          <div class="l">This month</div>
+          <div class="n">$48,210</div>
+          <div class="d">+12.4% vs last month · 3 invoices waiting</div>
+        </div>
+        <div class="qa">
+          <div class="q">
+            <div class="ico"></div>
+            New invoice
+          </div>
+          <div class="q">
+            <div class="ico"></div>
+            Add client
+          </div>
+          <div class="q">
+            <div class="ico"></div>
+            Scan receipt
+          </div>
+        </div>
+        <div class="seg">
+          <span>Today</span><span class="on">This week</span
+          ><span>This month</span>
+        </div>
+        <div class="section-label">Recent activity</div>
+        <div class="list">
+          <div class="item">
+            <div class="av">AC</div>
+            <div>
+              <div class="ttl">Acme Corp paid</div>
+              <div class="meta">Invoice #1048 · 2h ago</div>
+            </div>
+            <div class="amt">+$12,480</div>
+          </div>
+          <div class="item">
+            <div class="av">NT</div>
+            <div>
+              <div class="ttl">Northwind paid</div>
+              <div class="meta">Invoice #1047 · 5h ago</div>
+            </div>
+            <div class="amt">+$8,320</div>
+          </div>
+          <div class="item">
+            <div class="av">GI</div>
+            <div>
+              <div class="ttl">Globex invoice sent</div>
+              <div class="meta">Invoice #1046 · Yesterday</div>
+            </div>
+            <div class="amt">$22,110</div>
+          </div>
+          <div class="item">
+            <div class="av">IS</div>
+            <div>
+              <div class="ttl">Initech paid</div>
+              <div class="meta">Invoice #1045 · 2d ago</div>
+            </div>
+            <div class="amt">+$4,900</div>
+          </div>
+          <div class="item">
+            <div class="av">SG</div>
+            <div>
+              <div class="ttl">Soylent Green overdue</div>
+              <div class="meta">Invoice #1044 · 3d ago</div>
+            </div>
+            <div class="amt">$31,400</div>
+          </div>
+          <div class="item">
+            <div class="av">UR</div>
+            <div>
+              <div class="ttl">Umbrella paid</div>
+              <div class="meta">Invoice #1043 · 4d ago</div>
+            </div>
+            <div class="amt">+$6,180</div>
+          </div>
+          <div class="item">
+            <div class="av">WE</div>
+            <div>
+              <div class="ttl">Wayne Enterprises paid</div>
+              <div class="meta">Invoice #1042 · 6d ago</div>
+            </div>
+            <div class="amt">+$18,750</div>
+          </div>
+          <div class="item">
+            <div class="av">SI</div>
+            <div>
+              <div class="ttl">Stark Industries paid</div>
+              <div class="meta">Invoice #1041 · 1w ago</div>
+            </div>
+            <div class="amt">+$42,000</div>
+          </div>
+        </div>
+        <div class="banner">
+          <div>
+            <div class="t">Connect your bank</div>
+            <div class="s">Reconcile payments automatically.</div>
+          </div>
+          <button>Link</button>
+        </div>
+        <div class="tabbar">
+          <div class="tab on">
+            <div class="ico"></div>
+            Home
+          </div>
+          <div class="tab">
+            <div class="ico"></div>
+            Invoices
+          </div>
+          <div class="tab">
+            <div class="ico"></div>
+            Clients
+          </div>
+          <div class="tab">
+            <div class="ico"></div>
+            Me
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <template id="tmpl-full-adm">
+      <div class="full-adm">
+        <aside class="side">
+          <div class="b">Aurora Admin</div>
+          <div class="sec">Monitor</div>
+          <a class="on">Dashboard</a>
+          <a>Incidents</a>
+          <a>Audit log</a>
+          <a>Performance</a>
+          <div class="sec">Manage</div>
+          <a>Users</a>
+          <a>Organizations</a>
+          <a>Billing</a>
+          <a>Feature flags</a>
+          <div class="sec">System</div>
+          <a>Queues</a>
+          <a>Deployments</a>
+          <a>Settings</a>
+        </aside>
+        <main class="main">
+          <div class="h">
+            <div>
+              <h1>Platform health</h1>
+              <p>Last 30 days · production · us-east-1</p>
+            </div>
+            <div class="picker">Last 30 days ▾</div>
+          </div>
+          <div class="stats">
+            <div class="box">
+              <div class="k">Users</div>
+              <div class="v">12,480</div>
+              <div class="d">+3.2%</div>
+            </div>
+            <div class="box">
+              <div class="k">Orgs</div>
+              <div class="v">482</div>
+              <div class="d">+5</div>
+            </div>
+            <div class="box">
+              <div class="k">Active / day</div>
+              <div class="v">4,812</div>
+              <div class="d">+6.1%</div>
+            </div>
+            <div class="box">
+              <div class="k">API p95</div>
+              <div class="v">142ms</div>
+              <div class="d">−8ms</div>
+            </div>
+            <div class="box">
+              <div class="k">Error rate</div>
+              <div class="v">0.04%</div>
+              <div class="d">−0.02%</div>
+            </div>
+            <div class="box">
+              <div class="k">MRR</div>
+              <div class="v">$48.2k</div>
+              <div class="d">+12.4%</div>
+            </div>
+          </div>
+          <div class="chart">
+            <div class="t">Requests / min · last 24h</div>
+            <svg viewBox="0 0 400 120" preserveAspectRatio="none">
+              <polyline
+                fill="none"
+                stroke="var(--accent)"
+                stroke-width="2"
+                points="0,90 20,82 40,86 60,70 80,74 100,50 120,58 140,40 160,46 180,28 200,34 220,22 240,30 260,18 280,26 300,14 320,22 340,12 360,20 380,10 400,16"
+              />
+              <polyline
+                fill="var(--accent)"
+                fill-opacity="0.12"
+                stroke="none"
+                points="0,90 20,82 40,86 60,70 80,74 100,50 120,58 140,40 160,46 180,28 200,34 220,22 240,30 260,18 280,26 300,14 320,22 340,12 360,20 380,10 400,16 400,120 0,120"
+              />
+            </svg>
+          </div>
+          <div class="twocol">
+            <div class="events">
+              <div class="th">Recent events</div>
+              <div class="ev">
+                <span class="dot"></span
+                ><span class="ttl">Deploy #2481 succeeded</span
+                ><span class="meta">2m ago</span>
+              </div>
+              <div class="ev">
+                <span class="dot warn"></span
+                ><span class="ttl">High memory on worker-07</span
+                ><span class="meta">14m ago</span>
+              </div>
+              <div class="ev">
+                <span class="dot"></span
+                ><span class="ttl"
+                  >Org "Stark Industries" upgraded to Enterprise</span
+                ><span class="meta">1h ago</span>
+              </div>
+              <div class="ev">
+                <span class="dot err"></span
+                ><span class="ttl">5xx spike in /api/v2/webhooks</span
+                ><span class="meta">2h ago</span>
+              </div>
+              <div class="ev">
+                <span class="dot"></span
+                ><span class="ttl">Feature flag "new-inbox" rolled to 100%</span
+                ><span class="meta">4h ago</span>
+              </div>
+              <div class="ev">
+                <span class="dot"></span
+                ><span class="ttl">Nightly backup completed (184GB)</span
+                ><span class="meta">6h ago</span>
+              </div>
+              <div class="ev">
+                <span class="dot warn"></span
+                ><span class="ttl">Rate limit breach · API key ak_47…</span
+                ><span class="meta">8h ago</span>
+              </div>
+              <div class="ev">
+                <span class="dot"></span><span class="ttl">282 new signups</span
+                ><span class="meta">Yesterday</span>
+              </div>
+            </div>
+            <div class="alert">
+              <div class="t">Action required</div>
+              <div class="s">
+                One TLS certificate expires in 7 days
+                (<b>api-eu.aurora.dev</b>). Renewal will run automatically at
+                02:00 UTC, but manual verification is recommended.
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </template>
+  </body>
+</html>
