@@ -3118,3 +3118,86 @@ Refactor-001 (see `plans/active/refactor-001-ui-designer-kit-pipeline.md`) mater
 8. **Platform naming is intentionally split.** `PlatformId = {webapp, mobile, admin}` (design-side paths like `docs/screens/{platform}/`) vs `Target = {web, mobile, admin, api}` (build-side dirs like `apps/{target}/`). Helper `platformIdToTarget()` bridges. Documented in 034b's `common.ts`.
 
 When reading §10 / §11 / §13 / §14 above, treat the scaffolding tasks (023, 024, 025, 025b, 034, 034b, 035, 036, 041) as the implementation spec; this blueprint is the principles guide explaining the why.
+
+---
+
+## Appendix C — Refactor-003 Pipeline Reorder (2026-04-20)
+
+This addendum lives at the end of the document — same discipline as Appendix B — so cross-references in scaffolding tasks stay valid.
+
+Refactor-003 (see `plans/active/refactor-003-pipeline-reorder-architect-credentials.md`) reordered the pipeline so that **architect + PM run AFTER design sign-off**, not before. The design stages (022–025b) are framework-agnostic by contract — they emit HTML + CSS + CVA variants, not React/Vue/Svelte — so nothing in the design flow reads architect output. Moving architect late gives the user (a) vendor decisions that reflect what they actually approved, (b) credential capture at a gate where they have full context, and (c) an architect that sees composed screens when scoping SDK imports.
+
+### 1. New canonical stage order
+
+Task 035's `STAGES` array is authoritative. Blueprint §23 L2765-2822 walkthrough is historical. The order:
+
+```
+/new-project <slug>                 # scaffolds Turborepo + packages/ui-kit + design MCPs
+/analyze                            # + phase 2.5 integrations-options.md research menu
+  → gate 1 (requirements)
+/skills-audit --scope=design
+/mockups
+  → gate 2 (mockups — pick style + edit dials)
+/stylesheet
+  → gate 3 (design-system)
+/screens
+/visual-review
+/user-flows-generator
+  → gate 4 (design sign-off — binds screens + report + uiKitVersion)
+/architect                          # NEW late architect — vendor decisions, .env.example, checklists
+  → gate 5 (credentials — file-drop: .env + docs/credentials-confirmed.txt)
+/pm --mode=tasks
+/skills-audit --scope=build
+/register-mcp-servers --scope=build # usually no-op
+/build-backend → (build-web || build-mobile)
+/test → /review → /git
+```
+
+Five gates total (was four). Gate 5 is new.
+
+### 2. Three-way deployment enum
+
+Every integration in `architecture.yaml.apps.*.integrations[]` carries a `deployment` enum: `vendor | self-hosted | declined`. Emission paths differ by deployment:
+
+| deployment | Emits row in `.env.example`? | Emits entry in `credentials-checklist.md`? | Emits config template? |
+| --- | --- | --- | --- |
+| `vendor` | yes (with signup URL comment) | yes | no |
+| `self-hosted` | no (unless API key also needed) | no | yes — `docs/config/{service}.template` + entry in `deployment-checklist.md` |
+| `declined` | no | no | no — `declinedRationale` field only |
+
+### 3. Gate 5 file-drop mechanic
+
+Gate 5 has **no HTTP server** — the filesystem is the handoff. Architect emits `.env.example` + three checklist files. User copies to `.env` in their own editor, fills in keys, then drops `docs/credentials-confirmed.txt` containing one of: `proceed` / `defer:SVC_A,SVC_B` / `abort`. Orchestrator file-watches that path; advances on write.
+
+**Architect NEVER reads or writes `.env`.** `block-dangerous.sh` enforces this across every agent. Orchestrator stat-checks `.env` existence (never reads contents). `.env` remains user-owned through build; builders fail loudly at runtime if required-now keys are missing — correct failure mode, since the user was warned at gate 5.
+
+### 4. Design-stage metadata independence
+
+Design stages (022–025b) read ONLY analyst outputs + `selected-style.json` + kit. Two metadata fields that used to live on `architecture.yaml.tooling` moved to `selected-style.json`:
+
+- `design_dials` → `selected-style.json.dials` (locked at gate 2 from per-style values in `styles.md`)
+- `icon_library` → `selected-style.json.iconLibrary` (locked at gate 2 from per-style values in `assets.md`)
+
+Architect still records final values in `architecture.yaml.tooling` — but as a mirror of the user's gate-2 decision, not as a source. Design-stage MCP servers (playwright, icons8, unsplash, chrome-devtools, optional image-generator) are registered at `/new-project` time from `mcp-defaults-design.json` — a fixed factory default, no architect call.
+
+### 5. Split skills-audit
+
+`/skills-audit` gains `--scope=design | --scope=build`:
+
+- `--scope=design` runs pre-mockups, audits design-stage tooling (NativeWind, Storybook, CVA, Tailwind plugins, MCP clients)
+- `--scope=build` runs post-architect, audits vendor SDKs from `architecture.yaml.apps.*.integrations[]` (stripe-node, @thirdweb-dev/react, mapbox-gl, resend, etc.)
+
+Same underlying logic, two different audit-target lists keyed to pipeline position.
+
+### 6. Dual-mode PM
+
+`/pm` gains `--mode=tasks | --mode=kit-change-request`:
+
+- `--mode=tasks` (main, post-architect) → `docs/tasks.yaml`
+- `--mode=kit-change-request` (on-demand during design) → `plans/active/kit-change-request-{id}.md` mini-plan. Does NOT require `architecture.yaml` to exist. Used by the kit-change-request detour from `/screens` or builders.
+
+### 7. Supersession breadcrumb for §23 stage walkthrough
+
+Blueprint §23 L2765-2822 described the pre-refactor-003 stage order (analyze → skills-audit → architect → pm → mockups → …). That walkthrough is now historical. Read 035's `STAGES` array + this appendix for current pipeline order. The blueprint's principles text (§10 / §11 / §13 / §14) still applies; only the stage sequence changed.
+
+When reading §10 / §11 / §23 above, treat this appendix + the scaffolding tasks (020, 021, 023, 024, 025, 035, 036, 038, 041, 018b) as the implementation spec; the blueprint's earlier walkthrough is principle-preserving but chronologically outdated.

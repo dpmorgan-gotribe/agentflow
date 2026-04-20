@@ -165,7 +165,11 @@ model: inherit
 - Sign-off received (`docs/signoff-{timestamp}.json` with `approved: true`)
 - `packages/ui-kit/` populated; `.native.tsx` variants present for every platform-sensitive primitive
 - `docs/screens/mobile/*.html` exists
-- `architecture.yaml.apps.mobile` block filled
+- `architecture.yaml.apps.mobile` block filled (produced by `/architect` post-signoff per refactor-003)
+- **`.env` populated by user at gate 5** — refactor-003. Mobile has two distinct `.env` consumption paths:
+  - **`EXPO_PUBLIC_*` prefixed keys** (e.g., `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY`, `EXPO_PUBLIC_MAPBOX_TOKEN`) → baked into the bundle at `expo build` / EAS Build time. Read by the app at runtime via `process.env.EXPO_PUBLIC_*`.
+  - **EAS Build-secrets** (non-prefixed keys like `SENTRY_AUTH_TOKEN`, `APPLE_SHARED_SECRET`) → NOT bundled; supplied to EAS Build jobs at build time only via `eas.json` → `build.production.env` or `eas secret:create`. The builder emits an `eas-secrets-setup.sh` helper into `apps/mobile/` documenting which secrets the user needs to register with `eas secret:create` — reading each secret name from `.env.example`. The builder NEVER reads or embeds the secret values; it only documents the names.
+  - Reviewer (task 032) scans the mobile bundle for leaked non-prefixed secret-prefixed keys per "no secrets in code" criterion. Missing required public keys surface at `expo build` as loud failures.
 
 ### Steps
 

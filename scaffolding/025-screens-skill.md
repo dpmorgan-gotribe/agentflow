@@ -101,9 +101,9 @@ When stopping, emit a `kit-change-request.md` at `docs/screens/kit-change-reques
 - Why this screen needs it
 - Suggested API shape (e.g., `<Button variant="danger-outline">`)
 
-The orchestrator (task 035) halts `/screens`, invokes PM agent to formalize the request, bumps the kit (via /stylesheet re-run), and resumes `/screens` once the kit is at a new minor version.
+The orchestrator (task 035) halts `/screens`, invokes **PM agent in `--mode=kit-change-request`** (refactor-003 dual-mode — see task 021), bumps the kit (via /stylesheet re-run), and resumes `/screens` once the kit is at a new minor version.
 
-**Cross-task dependency:** this detour flow must be implemented in 035 (orchestrator sequencing: detect `kit-change-requests/` directory, pause, delegate to PM, resume) and 021 (PM agent: accept a `kit-change-request.md` input and open a mini-plan to update the kit). Neither task's scope currently describes this flow; refactor-001 follow-up work tracks that gap.
+**Kit-change-request under refactor-003.** When `/screens` emits a kit-change-request during design, the orchestrator invokes PM in `--mode=kit-change-request` (writes `plans/active/kit-change-request-{id}.md` mini-plan), NOT the main PM tasks-graph mode. PM in kit-change-request mode reads only the emitted request + current kit version; it does NOT require `architecture.yaml` to exist yet. The main PM stage (post-architect) later subsumes any mini-plans that landed during design — each becomes a "Kit v1.X.Y: implement primitive Z per plans/active/kit-change-request-{id}.md" task entry in `docs/tasks.yaml`. Orchestrator (035 §Kit-change-request detour) owns the flow; 025 only needs to emit the request file.
 ```
 
 ### Batching strategy for large apps (450+ screens)

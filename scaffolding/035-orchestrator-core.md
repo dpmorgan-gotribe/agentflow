@@ -36,7 +36,9 @@ interface PipelineStage {
 }
 ```
 
-### Stage sequence — MUST match blueprint §23 L2765-2822 exactly
+### Stage sequence — refactor-003 order (canonical)
+
+Refactor-003 reordered the pipeline so architect + PM run **after** design sign-off. Design stages run directly after analyze + skills-audit-design. Gate 5 (credentials, file-drop) sits between architect and PM. Blueprint Appendix C records the reasoning; this array is the source of truth.
 
 ```typescript
 const STAGES: PipelineStage[] = [
@@ -49,18 +51,11 @@ const STAGES: PipelineStage[] = [
     agent: "analyst",
   },
   {
-    name: "skills-audit",
-    slashCommand: "/skills-audit",
+    name: "skills-audit-design", // refactor-003: split from the old "skills-audit" single stage
+    slashCommand: "/skills-audit --scope=design",
     gateEnabled: false,
     agent: "skills",
-  }, // §23 step 7 — DO NOT OMIT
-  {
-    name: "architect",
-    slashCommand: "/architect",
-    gateEnabled: false,
-    agent: "architect",
   },
-  { name: "pm", slashCommand: "/pm", gateEnabled: false, agent: "pm" },
   // ─── DESIGN PHASE ───
   {
     name: "mockups",
@@ -83,19 +78,49 @@ const STAGES: PipelineStage[] = [
     agent: "ui-designer",
   },
   {
-    name: "visual-review", // NEW per refactor-001 / task 025b
+    name: "visual-review", // refactor-001 addition / task 025b
     slashCommand: "/visual-review",
     gateEnabled: false,
     agent: "ui-designer", // invokes html-verifier + Playwright MCP
     dependsOn: ["screens"],
   },
   {
-    name: "user-flows", // NEW separate stage per refactor-001
+    name: "user-flows",
     slashCommand: "/user-flows-generator",
     gateEnabled: true,
-    gateType: "signoff", // THE FINAL GATE — never disable
+    gateType: "signoff", // design sign-off — binds screens + review + uiKitVersion
     agent: "ui-designer",
     dependsOn: ["visual-review"],
+  },
+  // ─── POST-DESIGN PLANNING (refactor-003) ───
+  {
+    name: "architect",
+    slashCommand: "/architect",
+    gateEnabled: true,
+    gateType: "credentials", // gate 5 — file-drop; never disable (builders have no .env otherwise)
+    agent: "architect",
+    dependsOn: ["user-flows"],
+  },
+  {
+    name: "pm",
+    slashCommand: "/pm --mode=tasks", // refactor-003 dual-mode; main run is tasks.yaml
+    gateEnabled: false,
+    agent: "pm",
+    dependsOn: ["architect"],
+  },
+  {
+    name: "skills-audit-build", // refactor-003: second scope — vendor SDKs from architecture.yaml
+    slashCommand: "/skills-audit --scope=build",
+    gateEnabled: false,
+    agent: "skills",
+    dependsOn: ["pm"],
+  },
+  {
+    name: "register-mcp-build", // refactor-003: usually no-op; preserved for architect MCP extensions
+    slashCommand: "/register-mcp-servers --scope=build",
+    gateEnabled: false,
+    agent: "orchestrator",
+    dependsOn: ["skills-audit-build"],
   },
   // ─── BUILD PHASE ───
   {
@@ -103,6 +128,7 @@ const STAGES: PipelineStage[] = [
     slashCommand: "/build-backend",
     gateEnabled: false,
     agent: "backend-builder",
+    dependsOn: ["register-mcp-build"],
   },
   {
     name: "build-web",
@@ -130,7 +156,9 @@ const STAGES: PipelineStage[] = [
 ];
 ```
 
-**Critical:** `skills-audit` at index 1 is the Skills Agent stage from §23 step 7 — it runs BEFORE architect so any skill the pipeline needs is authored before its owning stage executes. Omitting it means pipeline stages can fail due to missing skills with no recovery.
+**Critical: design-stage MCP servers are NOT registered here.** The fixed design-stage MCP default set (playwright, icons8, unsplash, chrome-devtools, and optional image-generator behind `--flags=nanobanana`) is registered at `/new-project` time from `mcp-defaults-design.json` via `/register-mcp-servers --scope=design`. By the time the orchestrator runs, those servers are already in `.mcp.json`. The `register-mcp-build` stage only appends vendor-specific MCP servers if the architect added any — usually zero, since vendor SDKs are NPM packages, not MCP servers. The stage is retained in the array so the registration contract is uniform.
+
+**Refactor-003 ordering rationale:** Design stages (022–025b) are framework-agnostic by contract — they emit HTML + CSS + CVA variants, not React/Vue/Svelte. Nothing in the design flow reads architect output. Moving architect post-signoff means (a) vendor decisions reflect what the user actually approved, (b) credentials get captured at a gate where the user has full context, (c) the architect sees composed screens when scoping SDK imports. Blueprint §23 L2765-2822 is superseded by this array and by blueprint Appendix C.
 
 **Refactor-001 design-phase note:** `screens` and `visual-review` are distinct stages with `visual-review` gating the user-flows sign-off. `screens` itself has no gate — its work always flows into `/visual-review`. If visual-review flags a screen, the orchestrator re-invokes `screens` in single-screen mode (see "Visual-review retry loop" below), not the whole design pipeline.
 
@@ -190,20 +218,22 @@ Visual retries are **independent** of Layer 5 retries:
 
 A screen can theoretically consume up to 6 retries total (3 Layer 5 on `/screens` producing it + 3 visual-review re-generations), but in practice 3+3 is the extreme case; screens flagged `needsHumanReview` move the decision to the human reviewer at gate 4.
 
-### Kit-change-request detour (refactor-001)
+### Kit-change-request detour (refactor-001 + refactor-003 PM dual-mode)
 
 `/screens`, `/build-web`, and `/build-mobile` can all emit `docs/screens/kit-change-requests/{screen-id}.md` when a required primitive / pattern / layout doesn't exist in the kit. On detection:
 
 1. Halt the emitting stage (no retry; this is a structural gap, not a generation failure)
-2. Invoke PM agent (task 021) with the kit-change-request as input; PM writes a mini-plan describing the needed kit update
-3. Re-run `/stylesheet` (task 024) with the PM's plan injected so the kit bumps to a new minor version (e.g., `1.0.0 → 1.1.0`); the kit's CHANGELOG.md gets a new entry
+2. **Invoke PM agent in `--mode=kit-change-request`** (refactor-003 dual-mode; see task 021). PM reads the kit-change-request file + current `packages/ui-kit/package.json` version, writes `plans/active/kit-change-request-{id}.md` mini-plan describing the needed kit update. PM in this mode does NOT require `architecture.yaml` to exist — crucially important since design-phase detours fire BEFORE the main architect stage has run.
+3. Re-run `/stylesheet` (task 024) with the PM's mini-plan injected so the kit bumps to a new minor version (e.g., `1.0.0 → 1.1.0`); the kit's CHANGELOG.md gets a new entry
 4. **If the detour was triggered DURING the design phase** (from `/screens`): resume `/screens`, then `/visual-review`, then `/user-flows-generator`. Sign-off is NOT yet bound — re-running is clean.
 5. **If the detour was triggered AFTER sign-off** (from `/build-web` or `/build-mobile`): this is catastrophic — the kit bump breaks `signoff.uiKitVersion`, invalidating the sign-off. The orchestrator:
    - Surfaces a red-flag warning to the human
    - Reverts to `/screens` (regenerate with the new kit)
    - Re-runs `/visual-review`
-   - Re-opens the sign-off gate
-   - Once a fresh sign-off lands, resumes the build phase
+   - Re-opens the sign-off gate (gate 4) — and since the sign-off is invalidated, gate 5's captured credentials may also need re-validation if the kit change altered vendor decisions. The orchestrator re-runs `/architect` in this case; the architect's re-run will emit `docs/credentials-diff.md` if vendor decisions changed, and gate 5 re-opens. If no vendor decisions changed, the existing `.env` stays valid and gate 5 auto-advances without re-prompting.
+   - Once fresh sign-off + credentials land, resumes the build phase
+
+**Main PM stage is unaffected.** The post-architect `pm` stage in STAGES still runs in `--mode=tasks` and produces `docs/tasks.yaml`. Detour PM invocations produce mini-plans only; the main stage subsumes them into tasks.yaml as "Kit v{1.1.0}: implement primitive X per plans/active/kit-change-request-{id}.md" task entries.
 
 Either way, the detour is automated but transparent — the human sees the design-pipeline restart in the log. Max 2 kit-change detours per pipeline run before escalating to manual human-review (otherwise a circular kit-incomplete bug could burn unlimited budget).
 
@@ -303,8 +333,14 @@ Display per-stage breakdown + total + markup-adjusted worst case BEFORE starting
 ## Acceptance Criteria
 
 - [ ] `orchestrator/` package exists with TypeScript source
-- [ ] Stage sequence matches blueprint §23 L2765-2822 EXACTLY, including `skills-audit` at index 1, plus the refactor-001 additions: `visual-review` and `user-flows` as separate stages between `screens` and `build-backend`
-- [ ] `screens` has `gateEnabled: false`; `user-flows` is where the final sign-off gate lives (`gateType: "signoff"`)
+- [ ] Stage sequence matches the refactor-003 `STAGES` array above EXACTLY (blueprint §23 L2765-2822 is historical; blueprint Appendix C is canonical)
+- [ ] Pipeline order: `analyze → skills-audit-design → mockups → stylesheet → screens → visual-review → user-flows → architect → pm → skills-audit-build → register-mcp-build → build-backend → (build-web || build-mobile) → test → review → git`
+- [ ] Architect runs POST-signoff, not pre-design; `architect.dependsOn` is `["user-flows"]`
+- [ ] Gate 5 (credentials, file-drop, `gateType: "credentials"`) sits between `architect` and `pm`; `pm.dependsOn` is `["architect"]`
+- [ ] `skills-audit-design` runs once pre-mockups (scope=design); `skills-audit-build` runs once post-PM (scope=build)
+- [ ] `register-mcp-build` stage is present between `skills-audit-build` and `build-backend`; may be no-op when architect added no build-stage MCP servers
+- [ ] Design-stage MCP servers are NOT registered by the orchestrator at runtime; they're pre-registered at `/new-project` time from `mcp-defaults-design.json`
+- [ ] `screens` has `gateEnabled: false`; `user-flows` is where the design sign-off gate lives (`gateType: "signoff"`)
 - [ ] `build-web` and `build-mobile` schedule in parallel (both `dependsOn: ["build-backend"]`)
 - [ ] Model config reader merges global + project YAML with `ANTHROPIC_MODEL` env override
 - [ ] Cost estimation displayed with per-stage breakdown + 20% safety markup; typed `yes` required
@@ -316,8 +352,9 @@ Display per-stage breakdown + total + markup-adjusted worst case BEFORE starting
 - [ ] Gates 2 and 4 receive a dynamically-assigned `CLAUDE_GATE_API_BASE` env var; producing skills replace `{{GATE_API_BASE}}` placeholder at render time
 - [ ] Visual-review retry loop: per-screen counter (max 3 per screen) separate from Layer 5 stage-retry counter; re-invokes `/screens` in `--screen {id}` mode
 - [ ] Screens that exhaust visual retries land in `VisualReviewOutput.needsHumanReview` and surface at gate 4 for manual decision
-- [ ] Kit-change-request detour triggers when `/screens`, `/build-web`, or `/build-mobile` emits `docs/screens/kit-change-requests/`: halts emitting stage, invokes PM (021), re-runs `/stylesheet` (bumps kit minor version), resumes
-- [ ] Post-sign-off kit-change-request is flagged red and reopens gate 4 (signoff invalidated by kit version drift)
+- [ ] Kit-change-request detour triggers when `/screens`, `/build-web`, or `/build-mobile` emits `docs/screens/kit-change-requests/`: halts emitting stage, invokes PM with `--mode=kit-change-request` (refactor-003 dual-mode), re-runs `/stylesheet` (bumps kit minor version), resumes
+- [ ] PM in `--mode=kit-change-request` does NOT require `architecture.yaml` to exist (design-phase detours fire before main architect stage)
+- [ ] Post-sign-off kit-change-request is flagged red, reopens gate 4 (signoff invalidated by kit version drift), AND re-runs `/architect` if the kit change altered vendor decisions (gate 5 reopens only when architect's new decisions produce a non-empty credentials-diff.md)
 - [ ] Max 2 kit-change detours per pipeline run before escalating to human
 - [ ] `pnpm generate [project-name] [--flags=...]` resolves the correct `projects/<name>/` working directory
 - [ ] Post-run hook archives plans and invokes Lessons Agent (§23 step 22)

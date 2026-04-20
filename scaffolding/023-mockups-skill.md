@@ -45,8 +45,8 @@ argument-hint: "[count] [--nanobanana]"
 - `/analyze` completed successfully; `docs/analysis/shared/{styles,assets,inspirations}.md` and `docs/analysis/{platform}/screens.json` exist
 - `docs/brief-summary.json` exists and lists detected platforms (M)
 - `docs/asset-inventory.json` catalogs user assets (from `/scan-assets`)
-- Task 020 (Architect) has set `tooling.design_dials` defaults and `tooling.icon_library`
-- Task 041 (MCP registration) has provisioned `icons8`, `unsplash`, and (when `--nanobanana` is active) `image-generator`
+- **Per-style `design_dials` come from `docs/analysis/shared/styles.md`** (refactor-002 Dials block). Each mockup card surfaces the dials inline; gate 2's backing server persists user edits to `docs/mockups/{styleId}/dials.yaml` and writes the winning style's final dials into `docs/selected-style.json.dials` at HITL commit. **No architect output is read at this stage** — refactor-003 moved architect post-design, so `architecture.yaml.tooling.design_dials` does not yet exist when `/mockups` runs. (Architect later mirrors `selected-style.json.dials` into `architecture.yaml.tooling.design_dials` for downstream consumers; it does not decide them fresh.)
+- Task 041 (MCP registration) has provisioned `icons8`, `unsplash`, `playwright`, `chrome-devtools`, and (when `--nanobanana` is active) `image-generator`. Refactor-003 moves this registration to `/new-project` step 5b (factory-default list); by the time `/mockups` runs these servers are already in `.mcp.json`.
 
 ### Inputs (explicit paths)
 
@@ -160,7 +160,7 @@ These checks are in addition to Layer 4 (`.claude/hooks/validate-html-write.sh`)
 
 ### Per-style `dials.yaml`
 
-At `docs/mockups/style-{K}/dials.yaml`. Seeded from the style's block in `styles.md` (which the Analyst populates per style) falling back to `architecture.yaml.tooling.design_dials` defaults.
+At `docs/mockups/style-{K}/dials.yaml`. Seeded from the style's block in `styles.md` (which the Analyst populates per style per refactor-002). If a style block lacks a Dials field, that's a refactor-002 compliance bug — abort with a clear error rather than falling back to architecture.yaml (which doesn't exist yet at this pipeline position per refactor-003).
 
 ```yaml
 # docs/mockups/style-02/dials.yaml
@@ -288,7 +288,7 @@ Generated from a template at `.claude/templates/mockups-index-template.html` (ne
 - `{{PROJECT_NAME}}` — from brief.md §1
 - `{{MANIFEST_JSON}}` — inlined JSON of all styles with name, refs, palette, dials, and archetype mockup paths (one entry per (style, app, archetype) cell when `count > 1`)
 - `{{NANOBANANA_STATE}}` — `"on"` or `"off"`
-- `{{IMAGE_BUDGET}}` — budget ceiling from `architecture.yaml.tooling.budget.total_image_gen_calls` when nanobanana is on; shown as a static ceiling in the footer (not real-time remaining). Omitted when off.
+- `{{IMAGE_BUDGET}}` — budget ceiling when nanobanana is on; shown as a static ceiling in the footer (not real-time remaining). Omitted when off. Per refactor-003 the ceiling comes from `models.yaml.stages.mockups.imageGenCallsCap` (orchestrator-resolved), not `architecture.yaml` (which doesn't exist yet at this pipeline position).
 - `{{GATE_API_BASE}}` — base URL for the HITL gate server (e.g., `http://localhost:8733`). Written by the orchestrator (task 035) at render time; the skill receives it as an input argument alongside `--nanobanana`.
 
 The backing HTTP endpoints (`/api/dials/*`, `/api/select`) are the responsibility of task 036 (HITL gates); this skill only emits the static HTML that calls them.
@@ -325,7 +325,7 @@ The skill does not parse the flag itself; it trusts the MCP registry. Record the
 
 This is the FIRST of two MCP download waves (§14 L2231-2237). The boundary between "partial" and "full" is defined by **what HTML is produced at each stage**, not by pre-computed asset lists.
 
-- **Scope:** only MCP servers whose `scoped_to[]` includes `ui-designer` in `architecture.yaml.tooling.mcp_servers`, further filtered by `feature_flag`
+- **Scope:** only MCP servers whose `scoped_to[]` includes `ui-designer` in `.mcp.json` (populated from `mcp-defaults-design.json` at `/new-project` time per refactor-003, NOT from `architecture.yaml` which doesn't exist yet), further filtered by `feature_flag`
 - **Order of operations (two-pass per style):**
   1. Generate the `N × M × C` representative mockup HTML using token placeholders / `{{ICON:name}}` / `{{FONT:family}}` markers where external assets would go
   2. Parse each written HTML file for those markers; collect the distinct set of assets needed across this style's mockups
@@ -390,7 +390,7 @@ After the skill completes, the orchestrator (task 035) invokes `/verify-html` (t
 
 - **Task 018** (/scan-assets): produces `docs/asset-inventory.json` — prerequisite
 - **Task 019** (/analyze): produces all `docs/analysis/shared/*` and per-platform files — prerequisite
-- **Task 020** (Architect): sets `tooling.design_dials` defaults and `tooling.icon_library` — read at generation time
+- **Task 020** (Architect): no dependency. Architect runs POST-design per refactor-003; /mockups reads design_dials from styles.md and icon_library from assets.md (per-style), not from architect output.
 - **Task 022** (UI Designer agent): provides the opinionated identity + hard bans + named references — this skill is invoked by the ui-designer agent
 - **Task 022b** (UI Kit contract): the CONTRACT.md is not yet active (mockups are HTML, not kit-composing code) but the anti-slop rules are shared; re-use the anti-slop pattern list
 - **Task 024** (/stylesheet): reads `docs/selected-style.json` + `docs/mockups/style-{K}/manifest.json` after this skill's gate; de-dupes assets against the manifest
@@ -412,7 +412,7 @@ After the skill completes, the orchestrator (task 035) invokes `/verify-html` (t
 - [ ] Multi-style path exits WITHOUT writing `docs/selected-style.json` (task 036 writes it)
 - [ ] `docs/mockups/index.html` rendered from the template is an interactive N × M grid with modal viewer
 - [ ] Modal viewer supports the three viewport sizes (390×844, 820×1180, 1400×900) with a switcher
-- [ ] Per-style `dials.yaml` emitted with values from styles.md → `tooling.design_dials` fallback
+- [ ] Per-style `dials.yaml` emitted with values from `styles.md` style block's Dials field (refactor-002 per-style dials). Missing Dials field = abort with refactor-002 compliance error; no architect fallback since architect runs post-design per refactor-003.
 - [ ] Per-style `manifest.json` emitted with `mockups[]` + `assets[]` + image-count fields + `nanobananaUsed`
 - [ ] `count=1` default produces N × M × 1 mockups (one archetype per app per style)
 - [ ] `count=C` with `C > 1` produces up to N × M × C; caps per app with warning when available archetypes < C

@@ -148,7 +148,8 @@ argument-hint: "[--app web|admin|both]"
 - `/screens` completed and `/user-flows-generator` sign-off received (`docs/signoff-{timestamp}.json` exists with `approved: true`)
 - `packages/ui-kit/` populated by `/stylesheet` (24); version pinned in signoff
 - `docs/screens/webapp/*.html` exists; `docs/screens/admin/*.html` exists if admin is in the target platform list
-- `architecture.yaml.apps.web` and/or `apps.admin` blocks filled
+- `architecture.yaml.apps.web` and/or `apps.admin` blocks filled (produced by `/architect` post-signoff per refactor-003)
+- **`.env` populated by user at gate 5** — refactor-003. Runtime public vars (e.g., `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`, `NEXT_PUBLIC_MAPBOX_TOKEN`) get baked into the Next.js client bundle at `next build` time. The builder reads `.env` to know which public keys to wire into the build config. **Never wires `*_SECRET_KEY` or `*_SECRET` keys into the client bundle** — those are backend-only. Reviewer (task 032) scans built output for leaked secret-prefixed keys per its "no secrets in code" criterion. Missing required public keys surface at `next build` as loud failures.
 
 ### Steps
 

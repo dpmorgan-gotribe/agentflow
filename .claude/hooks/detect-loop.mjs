@@ -61,17 +61,31 @@ const hash = hashAction({
   // Bash → command; Write/Edit/Read → file_path. Either is fine as the
   // signature input as long as it's stable for identical actions.
   file: toolInput.file_path || toolInput.path || toolInput.command,
-  // Write → content; Edit → new_string; Bash/Read → (nothing extra beyond
-  // command or file_path).
-  content: toolInput.content || toolInput.new_string,
+  // Write → content; Edit → new_string; Agent → prompt (each subagent
+  // spawn has a task-specific prompt and should not collide with sibling
+  // spawns). Bash/Read → (nothing extra beyond command or file_path).
+  content: toolInput.content || toolInput.new_string || toolInput.prompt,
   // Per-tool discriminators. Without these, three Reads of different
   // offsets into the same file would hash identically and trip the loop.
   // Likewise two Edits to different regions of the same file.
+  // Agent calls need subagent_type + description too — without them, a
+  // parallel multi-agent orchestration (e.g., /analyze phase 3 spawning
+  // 3 analyst subagents) trips the loop even when each has a distinct
+  // task-specific prompt.
+  // TaskCreate/TaskUpdate/TaskGet have no file/command/content — they
+  // discriminate on taskId, status, subject. Without these, running a
+  // task list (TaskUpdate three times in a row for three different
+  // tasks) trips the loop even when each call targets a distinct task.
   extra: [
     toolInput.offset,
     toolInput.limit,
     toolInput.old_string,
     toolInput.pattern,
+    toolInput.subagent_type,
+    toolInput.description,
+    toolInput.taskId,
+    toolInput.status,
+    toolInput.subject,
   ]
     .filter((v) => v !== undefined && v !== null)
     .join("|"),

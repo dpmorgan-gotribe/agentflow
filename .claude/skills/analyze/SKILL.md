@@ -2,7 +2,7 @@
 name: analyze
 description: First pipeline stage. Analyzes brief.md, user assets, and the competitive landscape. Produces research + N style options + asset recommendations + mood board + per-platform flows + per-platform screens.json + requirements + brief-summary. Orchestrates phase-3 and phase-4 workers in parallel via the Agent tool.
 when_to_use: start of every new project after brief.md is validated; re-run when brief changes materially
-argument-hint: [--style-count N] [--use-assets] [--platforms webapp,mobile,admin] [--skip-research]
+argument-hint: [--style-count N] [--use-assets] [--platforms webapp,mobile,admin] [--skip-research] [--skip-integrations]
 allowed-tools: Read Write Bash Grep Glob WebSearch WebFetch Agent Skill
 ---
 
@@ -27,6 +27,9 @@ From `$ARGUMENTS` extract (defaults in parens):
   list. If omitted, detect from brief.md §2/§8/§11 and companion files.
 - `--skip-research` (false) — skip phase 2 (dev mode). Produces a stub
   `competitors.md` with a warning.
+- `--skip-integrations` (false) — skip phase 2.5 (dev mode). Produces a
+  stub `integrations-options.md` with a warning. Downstream architect
+  stage will then work from brief alone to decide vendors.
 
 Validate:
 
@@ -103,6 +106,55 @@ Invoke the Agent tool with:
 
 The worker returns markdown. Write its output to
 `docs/analysis/shared/competitors.md`.
+
+### 3.5 Phase 2.5 — Integrations research (sequential, single worker)
+
+Research-only. Produces `docs/analysis/shared/integrations-options.md` —
+a menu of 2–3 vendor candidates per integration category the project
+needs. The architect (task 020, post-design) reads this file and picks
+one per slot. This phase does NOT pick vendors.
+
+If `--skip-integrations`: write a stub
+`docs/analysis/shared/integrations-options.md`:
+
+```markdown
+# Integration Options — Research Menu
+
+<!-- NEEDS CLARIFICATION: integrations research skipped via --skip-integrations.
+     /architect will fall back to brief-only vendor picks. -->
+```
+
+Record `integrationsResearched: 0` in the return JSON.
+
+Otherwise: invoke a single sub-worker using the `integrations.md` sub-skill.
+
+**Construct the worker prompt:**
+
+1. Read `.claude/skills/analyze/integrations.md` (sub-skill spec)
+2. Read `brief.md` (full) — focus on §7.3, §8, §12, §13, §14
+3. Read `docs/analysis/shared/competitors.md` (phase 2 output — reveals
+   vendor picks competitors use that the brief may not name)
+4. Read `docs/asset-inventory.json` (sometimes hints at assumed stack)
+
+Invoke the Agent tool with:
+
+- `subagent_type: analyst`
+- `description: "Integrations research"`
+- `prompt`: the integrations.md content + brief.md excerpts + competitors.md
+
+The worker returns markdown + a structured trailer reporting the category
+count:
+
+```
+<!-- integrationsResearched: N -->
+```
+
+Parse N from the trailer (or count `^## Category:` headings if missing)
+and record it for the stage-return JSON. Write the body to
+`docs/analysis/shared/integrations-options.md`.
+
+Budget note: ~$0.30–0.80 per run (WebSearch + WebFetch heavy). Tracked by
+orchestrator (036) against the analyze-stage budget cap.
 
 ### 4. Phase 3 — Shared analysis (3 workers IN PARALLEL)
 
@@ -255,10 +307,14 @@ markers.
 
 ## Integrations
 
-- auth: {provider} (from brief §13 + competitors.md)
-- payments: {provider}
-- analytics: {provider}
-- ai: {provider or "none"}
+See `docs/analysis/shared/integrations-options.md` for the full research
+menu. The analyst does NOT pick vendors — that's the architect's job at
+post-signoff stage (refactor-003). This section lists the integration
+CATEGORIES the project needs, each with a brief signal (what the brief
+says / what competitors use / what the feature set implies):
+
+- {category}: {brief signal — e.g. "brief §7.3 names ThirdWeb" or
+  "competitor Hylo uses Stripe Connect" or "inferred from §12 email flows"}
 
 ## Compliance Flags
 
@@ -339,7 +395,7 @@ Before reporting complete, verify:
 
 - All required output files exist and non-empty:
   - `docs/asset-inventory.json`
-  - `docs/analysis/shared/{competitors,styles,assets,inspirations}.md`
+  - `docs/analysis/shared/{competitors,integrations-options,styles,assets,inspirations}.md`
   - `docs/analysis/{platform}/{flows.md,navigation-schema.md,screens.json,coverage.md}` per detected platform
   - `docs/requirements.md`
   - `docs/brief-summary.json`
@@ -348,6 +404,10 @@ Before reporting complete, verify:
 - Each `screens.json` validates against `schemas/screens.schema.json`
   (run `node scripts/validate-screens.mjs <path>`)
 - `docs/brief-summary.json` is valid JSON
+- `integrations-options.md` is research-only — grep for forbidden decision
+  language ("we recommend", "best choice", "pick X") should return zero
+  matches (unless `--skip-integrations` was used, in which case the file
+  is a stub)
 - Coverage is ≥80% per platform (else abort-level failure)
 - All `[NEEDS CLARIFICATION]` markers are listed in requirements.md's
   Open Questions section
@@ -367,12 +427,15 @@ Emit structured JSON to stdout (one line per key for readability):
   "skillsNeeded": ["expo-eas-ota", "neon-rls"],
   "mcpHints": ["icons8", "unsplash", "image-generator"],
   "openQuestions": 3,
+  "integrationsResearched": 9,
   "warnings": ["mobile coverage is 97% — 1 orphaned screen: about.html"]
 }
 ```
 
 This shape is what `AnalyzeOutput` (task 034b) validates. Keys of the
-per-platform records use `PlatformId` values.
+per-platform records use `PlatformId` values. `integrationsResearched`
+is the count of `## Category:` headings in `integrations-options.md`
+(0 if `--skip-integrations`).
 
 Then append a human-readable summary:
 
@@ -380,7 +443,7 @@ Then append a human-readable summary:
 Analysis complete for {projectName}.
 
 Artifacts:
-  Shared: docs/analysis/shared/{competitors,styles,assets,inspirations}.md
+  Shared: docs/analysis/shared/{competitors,integrations-options,styles,assets,inspirations}.md
   Per-platform: docs/analysis/{platform}/{flows.md, navigation-schema.md, screens.json, coverage.md}
   Synthesis: docs/requirements.md, docs/brief-summary.json
   Asset directories: assets/styles/style-{0..N-1}/
@@ -388,6 +451,8 @@ Artifacts:
 Coverage:
   webapp: 100% (42 screens)
   mobile: 97% (28 screens) — 1 orphan: about.html
+
+Integrations researched: 9 categories (see integrations-options.md)
 
 Next: HITL gate reviews outputs, then /mockups.
 ```
@@ -409,6 +474,7 @@ STYLE_COUNT=1
 ASSET_MODE="standard"
 PLATFORMS=""          # empty = auto-detect
 SKIP_RESEARCH="false"
+SKIP_INTEGRATIONS="false"
 
 # Parse $ARGUMENTS
 args="$ARGUMENTS"
@@ -429,6 +495,10 @@ while [[ -n "$args" ]]; do
     --skip-research*)
       SKIP_RESEARCH="true"
       args="${args#*--skip-research}"
+      ;;
+    --skip-integrations*)
+      SKIP_INTEGRATIONS="true"
+      args="${args#*--skip-integrations}"
       ;;
     *)
       args="${args# }"
@@ -457,7 +527,8 @@ reference shape.)
 
 ## Related skills / files
 
-- `.claude/skills/analyze/research.md` — phase 2 sub-skill
+- `.claude/skills/analyze/research.md` — phase 2 sub-skill (competitors)
+- `.claude/skills/analyze/integrations.md` — phase 2.5 sub-skill (integrations-options research menu)
 - `.claude/skills/analyze/styles.md` — phase 3a sub-skill
 - `.claude/skills/analyze/assets.md` — phase 3b sub-skill
 - `.claude/skills/analyze/inspirations.md` — phase 3c sub-skill

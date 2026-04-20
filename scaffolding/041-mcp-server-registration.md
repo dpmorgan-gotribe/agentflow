@@ -1,20 +1,25 @@
 ---
 task-id: "041"
-title: "MCP Server Registration & .mcp.json Generation"
+title: "MCP Server Registration & .mcp.json Generation (scope-split)"
 status: pending
 priority: P2
 tier: 7 — Build Pipeline
-depends-on: ["020"]
+depends-on: ["020", "018b"]
 estimated-scope: small
 ---
 
-# 041: MCP Server Registration & .mcp.json Generation
+# 041: MCP Server Registration & .mcp.json Generation (refactor-003 scope split)
 
 ## What This Task Produces
 
-A skill at `.claude/skills/register-mcp-servers/SKILL.md` that reads `architecture.yaml` and produces the project's `.mcp.json`, plus updates every agent's YAML frontmatter `mcp_servers` list per the Toolshed scoping pattern.
+A skill at `.claude/skills/register-mcp-servers/SKILL.md` that registers MCP servers into `.mcp.json` and updates every agent's YAML frontmatter `mcp_servers` list per the Toolshed scoping pattern.
 
-This is the operational counterpart to task 020 (Architect), which specifies the `tooling` section of `architecture.yaml`. 020 decides WHAT MCP servers the project needs; this task PROVISIONS them.
+Refactor-003 splits invocation into two scopes matching the pipeline split:
+
+- **`--scope=design`** (runs once at `/new-project` time, task 018b): reads `mcp-defaults-design.json` — a fixed factory-default file — and registers design-stage MCP servers (playwright, icons8, unsplash, chrome-devtools, and optional image-generator gated behind `feature_flag: nanobanana`). Does NOT read `architecture.yaml` (which doesn't exist yet at `/new-project` time). Idempotent on identical inputs.
+- **`--scope=build`** (runs once post-architect, task 035): reads `architecture.yaml.tooling.mcp_servers` filtered to entries NOT already registered at design-scope time — i.e., build-stage additions the architect introduced. Usually zero entries since most vendor SDKs are NPM packages, not MCP servers. The stage remains in the orchestrator pipeline so any custom MCP additions flow through consistently.
+
+This is the operational counterpart to task 020 (Architect). Architect DECIDES vendor integrations + any build-stage MCP needs; this task PROVISIONS them. Design-stage MCP servers are a fixed factory choice, not an architect decision.
 
 ## Why This Exists
 
@@ -34,22 +39,36 @@ Without this task:
 ```yaml
 ---
 name: register-mcp-servers
-description: Generate .mcp.json and update agent MCP scoping from architecture.yaml. Run after /architect and any time architecture.yaml tooling section changes.
-when_to_use: after /architect produces architecture.yaml; after mid-project MCP additions
+description: Register MCP servers into .mcp.json and sync per-agent MCP scoping. Accepts --scope=design|build. Design-scope runs at /new-project (reads mcp-defaults-design.json); build-scope runs post-architect (reads architecture.yaml tooling block).
+when_to_use: --scope=design at /new-project time; --scope=build after /architect completes OR when architecture.yaml tooling section changes mid-project
+argument-hint: --scope=design | --scope=build
 allowed-tools: Read Write Bash Grep Glob
 ---
 ```
 
-### Inputs
+### Inputs by scope
 
-- `.claude/architecture.yaml` — especially the `tooling.mcp_servers` section (structure defined in task 020)
-- `.claude/agents/*.md` — frontmatter of each agent gets updated in place
-- `.env.example` (if exists) — checked for referenced env vars; missing vars added as empty placeholders
-- **Active pipeline flag set** — passed in from the orchestrator (task 035) as a CLI argument or env var (e.g., `--flags=nanobanana` or `CLAUDE_PIPELINE_FLAGS=nanobanana`). Used to filter servers by `feature_flag`.
+**`--scope=design`**:
+
+- `mcp-defaults-design.json` (at project root, copied from factory during `/new-project` step 5b) — fixed list of design-stage MCP servers
+- `.claude/agents/*.md` — frontmatter updated for design-stage agents (ui-designer, html-verifier)
+- `.env.example` — referenced env vars get empty placeholders added (e.g., `UNSPLASH_ACCESS_KEY=`)
+- **Active pipeline flag set** — `--flags=nanobanana` or `CLAUDE_PIPELINE_FLAGS=nanobanana` env var; used to filter `image-generator` by its `feature_flag: nanobanana` marker
+
+**`--scope=build`**:
+
+- `.claude/architecture.yaml` — especially `tooling.mcp_servers` (structure defined in task 020)
+- Existing `.mcp.json` — design-scope entries preserved; build-scope entries additively merged
+- `.claude/agents/*.md` — frontmatter updated for build-stage agents (backend-builder, web-frontend-builder, mobile-frontend-builder, tester, reviewer, git)
+- `.env.example` — referenced env vars get empty placeholders added
+- **Active pipeline flag set** — same filtering mechanic
+
+Both scopes: abort with clear error if the relevant input file is missing or malformed.
 
 ### Steps
 
-1. **Read architecture.yaml**; abort with clear error if `tooling.mcp_servers` is missing or malformed
+0. **Parse `--scope` arg.** Reject invocations without `--scope` (clear error: `"--scope is required: --scope=design (at /new-project time) or --scope=build (post-architect)"`). Resolve input file by scope: `mcp-defaults-design.json` for design, `.claude/architecture.yaml` (reading `tooling.mcp_servers`) for build.
+1. **Read the scope-specific input**; abort with clear error if missing or malformed. For build-scope, also read the existing `.mcp.json` so the design-scope entries are preserved in the merged output.
 2. **Validate each server entry** has `name`, `purpose`, `scoped_to[]`, `config{}`. Optional: `feature_flag`, `budget`, `env_refs`.
 3. **Filter by `feature_flag`**: for each server that declares a `feature_flag`, if that flag is NOT in the active pipeline flag set, mark the server as `inactive-for-run`. Inactive servers are:
    - Omitted from `.mcp.json`
@@ -142,10 +161,14 @@ allowed-tools: Read Write Bash Grep Glob
 
 ### Mid-project re-runs
 
-This skill is idempotent. Running it again with no architecture.yaml changes must produce a no-op (zero agents updated, same `.mcp.json` bytes). Orchestrator (task 035) invokes it:
+This skill is idempotent per scope. Running either scope again with unchanged inputs produces a no-op (zero agents updated, same `.mcp.json` bytes).
 
-- Once after `/architect` during initial pipeline
-- Automatically when `architecture.yaml` mtime changes and a stage about to run depends on MCP
+Orchestrator + `/new-project` invocation points (refactor-003):
+
+- `/new-project` step 5b invokes `--scope=design` once at project bootstrap. Re-running `/new-project --force` re-invokes it and would be a no-op.
+- Orchestrator (task 035 STAGES array) invokes `--scope=build` once post-architect. Re-invoked only when `architecture.yaml.tooling.mcp_servers` changes (e.g., mid-pipeline kit-change-request detour or re-run).
+
+The merged `.mcp.json` is the union of design + build scopes. Running `--scope=build` never touches design-scope entries (and vice versa); each scope operates on a set of server names, and the merger preserves the other scope's entries untouched.
 
 ### Pre-flight validation
 
@@ -204,20 +227,26 @@ Architects and Skills Agent can reference this catalog when populating `tooling.
 ## Acceptance Criteria
 
 - [ ] `.claude/skills/register-mcp-servers/SKILL.md` exists with the frontmatter above
-- [ ] Skill validates architecture.yaml structure before writing anything
+- [ ] Skill accepts `--scope=design | --scope=build` and rejects invocations without a scope with a clear error
+- [ ] `--scope=design` reads `mcp-defaults-design.json` (copied from factory at `/new-project` time); does NOT read `architecture.yaml`
+- [ ] `--scope=build` reads `.claude/architecture.yaml.tooling.mcp_servers` AND existing `.mcp.json` (to preserve design-scope entries via additive merge)
+- [ ] Skill validates each server-entry structure before writing anything
 - [ ] Generated `.mcp.json` supports both stdio and SSE transports
 - [ ] Env vars interpolated as `${VAR}`, never hardcoded
-- [ ] Every agent's `mcp_servers` frontmatter synced from `scoped_to` — both additions AND removals
-- [ ] `.env.example` gets missing var placeholders added (including env_refs for feature-flagged-off servers, so enabling the flag later does not require re-running 020)
-- [ ] Re-running the skill with unchanged architecture.yaml AND unchanged flag set produces byte-identical `.mcp.json` and zero agent changes
+- [ ] Every agent's `mcp_servers` frontmatter synced from `scoped_to` — both additions AND removals; per-scope syncing touches only the agents that scope's servers are scoped to
+- [ ] `.env.example` gets missing var placeholders added (including env_refs for feature-flagged-off servers, so enabling the flag later does not require re-running registration)
+- [ ] Re-running a scope with unchanged input AND unchanged flag set produces byte-identical `.mcp.json` and zero agent changes
+- [ ] Running a different scope never touches the other scope's `.mcp.json` entries (design + build entries coexist via additive merge)
 - [ ] Running with a different flag set (e.g., toggling `nanobanana`) deterministically adds/removes the gated servers from `.mcp.json` and agent frontmatter
 - [ ] Aborts clearly when a `scoped_to` agent doesn't exist
+- [ ] Factory ships `mcp-defaults-design.json` at the factory root with the canonical design-stage server list (playwright, icons8, unsplash, chrome-devtools, image-generator-if-nanobanana). `/new-project` step 5b copies this into the new project.
 - [ ] `mcp-catalog.md` documents at least: icons8, unsplash, pexels, dalle, gemini-nano-banana, playwright, chrome-devtools, figma (8 entries)
 - [ ] `mcp-catalog.md` marks `image-generator` / `gemini-nano-banana` / `dalle` with `feature_flag: nanobanana`
 - [ ] `mcp-catalog.md` includes paste-ready `config` blocks for `gemini-nano-banana`, `playwright`, `chrome-devtools`
-- [ ] Task 020's `/architect` skill invokes this skill (or delegates to it explicitly)
-- [ ] Task 035's orchestrator wires this into the pipeline after `/architect` and passes the active pipeline flag set
-- [ ] Return JSON includes `activeFlags` and `featureFlagOmissions` so the orchestrator can log which servers were gated off
+- [ ] Task 018b `/new-project` invokes `--scope=design` from step 5b
+- [ ] Task 035's orchestrator wires `--scope=build` into the pipeline post-architect and passes the active pipeline flag set
+- [ ] Task 020's `/architect` skill invokes `--scope=build` after writing architecture.yaml (orchestrator and architect both invoke — idempotent guarantees this is safe)
+- [ ] Return JSON includes `scope`, `activeFlags`, `featureFlagOmissions` so the orchestrator can log which servers were gated off
 
 ## Human Verification
 

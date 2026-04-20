@@ -12,24 +12,25 @@ estimated-scope: medium
 
 ## What This Task Produces
 
-The four human-in-the-loop gates that sit between pipeline stages, each with a **backing HTTP server** that handles browser-originated POSTs (dials edits, style selection, final sign-off), plus the reserve-commit budget enforcer that caps MCP spend per stage.
+The **five** human-in-the-loop gates that sit between pipeline stages, plus the reserve-commit budget enforcer that caps MCP spend per stage. Gates 2 + 4 use backing HTTP servers; gates 1, 3, 5 are pure file-based (no server).
 
-Refactor-001 adds three endpoints, archive mechanics, hash recomputation, and uiKitVersion binding to the sign-off gate. The gate count stays at four — no `/style-direction` gate was introduced (mockups is the single style-selection gate).
+Refactor-001 added three endpoints, archive mechanics, hash recomputation, and uiKitVersion binding to the sign-off gate. Refactor-003 adds **gate 5 (credentials, file-drop)** between the late-running architect and PM — keeping the `.env` boundary clean by using the filesystem as the handoff rather than HTTP over localhost.
 
 ## Scope
 
-### Four gates
+### Five gates (refactor-003)
 
-From blueprint §11 + refactor-001:
+From blueprint §11 + refactor-001 + refactor-003:
 
-| #   | After stage             | `gateType`      | Writes                                               | Validates                                         |
-| --- | ----------------------- | --------------- | ---------------------------------------------------- | ------------------------------------------------- |
-| 1   | `/analyze`              | `requirements`  | (approval only — no artifact)                        | `AnalyzeOutput`                                   |
-| 2   | `/mockups`              | `mockups`       | `docs/selected-style.json` + archives losing styles  | `SelectedStyleSchema`                             |
-| 3   | `/stylesheet`           | `design-system` | (approval only — Storybook review)                   | `StylesheetOutput`                                |
-| 4   | `/user-flows-generator` | `signoff`       | `docs/signoff-{timestamp}.json` + locks uiKitVersion | `Signoff` (recomputes hashes, checks kit version) |
+| #     | After stage             | `gateType`        | Writes                                                         | Validates                                         |
+| ----- | ----------------------- | ----------------- | -------------------------------------------------------------- | ------------------------------------------------- |
+| 1     | `/analyze`              | `requirements`    | (approval only — no artifact)                                  | `AnalyzeOutput`                                   |
+| 2     | `/mockups`              | `mockups`         | `docs/selected-style.json` + archives losing styles            | `SelectedStyleSchema`                             |
+| 3     | `/stylesheet`           | `design-system`   | (approval only — Storybook review)                             | `StylesheetOutput`                                |
+| 4     | `/user-flows-generator` | `signoff`         | `docs/signoff-{timestamp}.json` + locks uiKitVersion           | `Signoff` (recomputes hashes, checks kit version) |
+| **5** | **`/architect`**        | **`credentials`** | **`docs/credentials-confirmed.txt`** (user-authored file-drop) | **`CredentialsGateOutput`**                       |
 
-Gate 4 is the FINAL gate — **never disable** in autonomous mode. Gates 1–3 can be toggled off for expert-driver runs.
+Gate 4 is the design sign-off — **never disable** in autonomous mode; builders have no `uiKitVersion` binding otherwise. Gate 5 is the credentials gate — **never disable** in autonomous mode; builders have no `.env` otherwise. Gates 1–3 can be toggled off for expert-driver runs.
 
 ### Gate decision shape
 
@@ -129,18 +130,88 @@ Orchestrator opens `packages/ui-kit/storybook-static/index.html` AND `docs/desig
 
 Optional future enhancement: a backing server that accepts design-system feedback + routes it into Layer 5 retry for `/stylesheet`. Out of scope for v1.
 
+### Gate 5 — Credentials gate (file-drop, no backing server)
+
+Refactor-003. Handles the `/architect` → `/pm` handoff. Architect has just written `.env.example`, `docs/credentials-checklist.md`, `docs/deployment-checklist.md`, and (on re-runs) `docs/credentials-diff.md`. User fills in `.env` in their own editor; gate 5 file-watches for a single confirmation file.
+
+**No HTTP server.** No backing port, no POST endpoints. The `.env` boundary stays clean — secrets never pass through Claude, never enter tool-call logs, never get reflected through a localhost form. `block-dangerous.sh` (task 007) keeps `.env` unreadable by every agent including the architect itself.
+
+**User flow** (orchestrator prints this in the terminal after architect completes):
+
+```
+/architect complete. Review these files:
+  - docs/credentials-checklist.md   (vendor services needing signup)
+  - docs/deployment-checklist.md    (self-hosted services needing config)
+  - docs/credentials-diff.md        (re-runs only — what changed since last run)
+  - .env.example                    (placeholder rows grouped by required-now / required-later / optional)
+
+To proceed, fill in .env and drop a confirmation:
+
+  cp .env.example .env
+  # edit .env in your own editor, paste real keys
+  echo proceed > docs/credentials-confirmed.txt          # all required-now keys are set
+  # OR
+  echo 'defer:ServiceA,ServiceB' > docs/credentials-confirmed.txt   # skip these services with rationale in checklist
+  # OR
+  echo abort > docs/credentials-confirmed.txt            # stop the pipeline (resumable checkpoint saved)
+
+Waiting for docs/credentials-confirmed.txt ...
+```
+
+Orchestrator re-prints the "Waiting ..." line every 60 seconds as a soft reminder; not spam.
+
+**File watch** — chokidar or built-in `fs.watch`, poll interval ~500ms:
+
+- Watches `docs/credentials-confirmed.txt`.
+- On write, reads the file (permitted — it's not `.env`), parses the directive.
+- Parses `proceed` / `defer:A,B` / `abort` (case-insensitive, whitespace-trimmed). Any other content = malformed; orchestrator logs warning + continues waiting.
+
+**Parsing + handler logic:**
+
+1. **`proceed`** (happy path):
+   - Optional sanity check: `fs.statSync('.env').isFile()` — stat only, never `readFileSync`. Missing `.env` = warn "\.env not found; /build-backend will fail loudly. Continuing anyway — you may have keys in your shell environment instead."
+   - Build `CredentialsGateOutput` (034b): `decision: "proceed"`, `servicesConfirmed: <all vendor deployment IDs from architecture.yaml>`, `servicesDeferred: []`, `deferralReasons: {}`, `envFileExists: <stat result>`, `warnings: []`.
+   - Write `docs/credentials-captured.json` with the serialized output (for audit / re-run diff baselines).
+   - File watcher closes; orchestrator advances to `/pm`.
+
+2. **`defer:SVC1,SVC2,...`**:
+   - Parse comma-separated service list. For each deferred service, look up the entry in architecture.yaml.apps.\*.integrations by id.
+   - Load reasons from `docs/credentials-checklist.md § Deferred` (user was expected to add one-line rationales there before confirming). If any deferred service has no rationale, warn but don't block — use placeholder `"no rationale provided"`.
+   - If any deferred service has `requiredNow: true`, log a RED warning: `"/build-backend will fail at runtime if SERVICE_X remains unset. Continuing anyway per user directive."`
+   - Build output with `decision: "defer"`, populate `servicesDeferred` + `deferralReasons`.
+   - Write `docs/credentials-captured.json` + advance.
+
+3. **`abort`**:
+   - Build output with `decision: "abort"`.
+   - Save resumable checkpoint (context snapshot at current state; task 013's `/save-context`) so re-running `/architect` onwards is cheap.
+   - Orchestrator exits with code 2 (user-initiated abort, not failure).
+
+**Security properties:**
+
+- Orchestrator NEVER reads `.env`. Stat-only (`fs.statSync`), which reveals existence but not contents.
+- Architect NEVER reads `.env`. Same posture, enforced by agent tool list + block-dangerous.sh.
+- `.env` is user-only from first creation through build. Reviewer (032) scans built code for leaked secret-prefixed keys, which is the final line of defense.
+- `.env.example` is world-readable (no secrets in it — just placeholders + comments). Best-effort chmod 0644 when the filesystem supports it; Windows NTFS default user-scoping is fine.
+- `.env` permissions are user's responsibility in their own filesystem. `.gitignore` in every project already excludes `.env` (018b scaffold guarantees this).
+
+**Windows permissions note:** On Windows, `fs.chmodSync(0o600)` on `.env` is a no-op (NTFS uses ACLs, not POSIX perms). Architect's `.env.example` chmod gets swallowed silently; `.env` ends up with default user-scope NTFS perms, which is fine for local dev. CI/CD environments typically run on Linux where POSIX perms do apply — relevant for future auto-deploy flows that inject secrets. Not a v1 concern.
+
 ### Gate toggling config
 
 ```yaml
-# config/pipeline.yaml
+# config/pipeline.yaml (refactor-003)
 stages:
   analyze: { gateEnabled: true } # gate 1
+  skills-audit-design: { gateEnabled: false }
   mockups: { gateEnabled: true } # gate 2
   stylesheet: { gateEnabled: true } # gate 3
   screens: { gateEnabled: false } # no gate — /visual-review runs directly after
   visual-review: { gateEnabled: false } # no gate — feeds user-flows
-  user-flows: { gateEnabled: true } # gate 4 — the FINAL sign-off; never disable in autonomous mode
-  architect: { gateEnabled: false }
+  user-flows: { gateEnabled: true } # gate 4 — design sign-off; never disable in autonomous mode
+  architect: { gateEnabled: true } # gate 5 — credentials file-drop; never disable in autonomous mode
+  pm: { gateEnabled: false }
+  skills-audit-build: { gateEnabled: false }
+  register-mcp-build: { gateEnabled: false }
   build-backend: { gateEnabled: false }
   build-web: { gateEnabled: false }
   build-mobile: { gateEnabled: false }
@@ -150,6 +221,8 @@ stages:
 ```
 
 Config keys match the stage names in 035's `STAGES` array exactly. Gate 4's key is `user-flows` (was `screens` in the pre-refactor blueprint); the sign-off gate moved to its own stage when `/visual-review` was inserted. The old `screens: { gateEnabled }` key is removed — keeping it would be an active foot-gun now that `screens` has no gate.
+
+Gate 5's key is `architect` (refactor-003). The credentials file-drop fires AFTER the architect stage completes; the orchestrator file-watches `docs/credentials-confirmed.txt` before advancing to `pm`. Setting `architect.gateEnabled: false` in autonomous mode would skip credential capture entirely — builders would run with no `.env`, fail loudly, and the pipeline would stop with no graceful remediation path. The config schema rejects this (see §Gate toggling validation below).
 
 ### Retry loop
 
@@ -188,9 +261,15 @@ When `--nanobanana` is inactive for the run, `image-generator` is omitted from `
 
 ### Sign-off Detection (file watcher)
 
-Orchestrator watches `docs/signoff-*.json` AND `docs/selected-style.json` paths during their respective gates. `chokidar` or built-in `fs.watch`; poll interval acceptable (~500ms) since these files are human-rate writes.
+Orchestrator watches three paths during their respective gates (refactor-003 adds the third):
 
-Orchestrator does NOT poll the HTTP servers — they push state to disk, orchestrator watches disk. This decoupling means the orchestrator survives an ephemeral HTTP-server crash (spin up a new one; the file watch still resolves when the user re-POSTs from the browser).
+1. `docs/selected-style.json` — gate 2 resolution
+2. `docs/signoff-*.json` — gate 4 resolution
+3. `docs/credentials-confirmed.txt` — gate 5 resolution (file-drop, no HTTP server)
+
+`chokidar` or built-in `fs.watch`; poll interval acceptable (~500ms) since these files are human-rate writes.
+
+Orchestrator does NOT poll the HTTP servers — they push state to disk, orchestrator watches disk. This decoupling means the orchestrator survives an ephemeral HTTP-server crash (spin up a new one; the file watch still resolves when the user re-POSTs from the browser). Gate 5 has no HTTP server at all — the file-watch is the entire gate mechanism.
 
 ## Integration Points
 
@@ -201,18 +280,27 @@ Orchestrator does NOT poll the HTTP servers — they push state to disk, orchest
 - **Task 034b** (schemas): `SelectedStyleSchema`, `Signoff`, `Dials` — all runtime-validated at gate endpoints
 - **Task 035** (orchestrator): invokes gates via `onGate` callbacks; manages retry counters; signals advance based on file watch
 - **Task 041** (MCP registration): passes active flag set to orchestrator; feature-flagged servers absent from `.mcp.json` when flag is off
+- **Task 020** (/architect — refactor-003): emits `.env.example` + `docs/credentials-checklist.md` + `docs/deployment-checklist.md` + (re-runs) `docs/credentials-diff.md` that gate 5 surfaces to the user in its "review these files" preamble
 
 ## Acceptance Criteria
 
-- [ ] Four gates implemented: `requirements`, `mockups`, `design-system`, `signoff`
+- [ ] **Five** gates implemented: `requirements`, `mockups`, `design-system`, `signoff`, `credentials` (refactor-003)
 - [ ] Gate 2 + gate 4 each spin a backing HTTP server (dynamic port) with the endpoints above
+- [ ] Gate 5 has NO backing HTTP server — pure file-drop via `docs/credentials-confirmed.txt`
 - [ ] Gate 2 `POST /api/dials/{styleId}` validates against `Dials`; fsync-writes dials.yaml; returns persisted values
 - [ ] Gate 2 `POST /api/select` validates → writes `docs/selected-style.json` (SelectedStyleSchema) → archives losing styles → returns payload → triggers server shutdown
 - [ ] Gate 4 `POST /api/signoff` validates Signoff → recomputes BOTH hashes → verifies uiKitVersion matches `packages/ui-kit/package.json` → writes signoff-{ts}.json
 - [ ] Gate 4 rejects with `stale: "screens" | "visual-review" | "ui-kit"` on any drift
+- [ ] Gate 5 file-watches `docs/credentials-confirmed.txt`; parses `proceed` / `defer:A,B` / `abort` directives
+- [ ] Gate 5 writes `docs/credentials-captured.json` (`CredentialsGateOutput` schema) with decision + services confirmed/deferred + `envFileExists` stat result
+- [ ] Gate 5 NEVER reads `.env` — uses `fs.statSync` for existence only; orchestrator + architect agents have no `.env` read path
+- [ ] Gate 5 prints terminal instructions including exact shell commands for `proceed` / `defer` / `abort`
+- [ ] Gate 5 re-prints "Waiting for docs/credentials-confirmed.txt..." every 60s as a soft reminder
+- [ ] Gate 5 `abort` path writes a resumable context checkpoint and exits with code 2
+- [ ] Gate 5 `defer` path warns in RED when a deferred service has `requiredNow: true` in architecture.yaml but allows advance per user directive
 - [ ] Gate 1 + gate 3 are pure CLI approvals (no HTTP server)
 - [ ] Gate 3 opens Storybook + design-system-preview.html in browser
-- [ ] Gate toggling via `config/pipeline.yaml`; gate 4 documented as "never disable in autonomous mode"
+- [ ] Gate toggling via `config/pipeline.yaml`; gate 4 documented as "never disable in autonomous mode"; gate 5 documented as "never disable in autonomous mode" — builders have no `.env` otherwise
 - [ ] Retry-with-feedback: max 3 retries per gate; retry counters independent across gates
 - [ ] Visual-review's per-screen retry budget (025b) runs inside the design loop and does NOT count against gate 4's outer retry budget
 - [ ] Budget reserve-commit pattern implemented per blueprint L2253-2271

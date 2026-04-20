@@ -33,18 +33,19 @@ packages/orchestrator-contracts/
 ├── src/
 │   ├── index.ts                # re-exports + StageSchemas lookup
 │   ├── common.ts               # Target, ScreenId, AssetRef, Sha256, Dials, PlatformId, FeatureFlag
-│   ├── analyze.ts
-│   ├── skills-audit.ts
-│   ├── architect.ts
-│   ├── pm.ts
+│   ├── analyze.ts              # EXTENDED — adds integrationsResearched (refactor-003)
+│   ├── skills-audit.ts         # EXTENDED — adds scope discriminator (refactor-003)
+│   ├── architect.ts            # EXTENDED — vendor/self-hosted/declined counts (refactor-003)
+│   ├── pm.ts                   # EXTENDED — mode discriminator (refactor-003)
 │   ├── mockups.ts              # EXTENDED
-│   ├── selected-style.ts       # NEW — validates docs/selected-style.json
+│   ├── selected-style.ts       # NEW — validates docs/selected-style.json; iconLibrary field (refactor-003)
 │   ├── stylesheet.ts           # EXTENDED
 │   ├── screens.ts              # EXTENDED — now a discriminated union
 │   ├── visual-review.ts        # NEW — validates docs/visual-review/report.json
 │   ├── user-flows.ts
 │   ├── signoff.ts              # EXTENDED — adds visualReviewReportHash + uiKitVersion
 │   ├── build.ts                # EXTENDED — BuildBackend, BuildWebFrontend, BuildMobileFrontend
+│   ├── credentials-gate.ts     # NEW — gate 5 file-drop output (refactor-003)
 │   ├── test.ts
 │   ├── review.ts
 │   └── git.ts
@@ -158,13 +159,24 @@ export const MockupsOutput = z.object({
 export type MockupsOutput = z.infer<typeof MockupsOutput>;
 ```
 
-### `selected-style.ts` — **NEW**
+### `selected-style.ts` — **NEW** (refactor-003 extends with `iconLibrary`)
 
 Validates `docs/selected-style.json`, the binding handshake written by the HITL mockup gate (task 036) or auto-populated by `/mockups` on the single-style fast path.
+
+Refactor-003 adds `iconLibrary` so design-stage consumers (task 024 `/stylesheet`) can read the winning style's icon library choice directly instead of via `architecture.yaml.tooling.icon_library` (which doesn't exist yet at stylesheet time — architect runs post-design now).
 
 ```ts
 import { z } from "zod";
 import { Dials, PlatformId } from "./common.js";
+
+export const IconLibrary = z.enum([
+  "lucide",
+  "phosphor",
+  "heroicons",
+  "iconoir",
+  "tabler",
+]);
+export type IconLibrary = z.infer<typeof IconLibrary>;
 
 export const SelectedStyleSchema = z.object({
   version: z.literal("1.0"),
@@ -173,6 +185,7 @@ export const SelectedStyleSchema = z.object({
   selectedAt: z.string().datetime({ offset: false }),
   selectedBy: z.enum(["human", "auto-single-style"]),
   dials: Dials,
+  iconLibrary: IconLibrary, // NEW (refactor-003) — sourced from winning style's assets.md block
   appsCovered: z.array(PlatformId).nonempty(),
   mockupsManifest: z.string(), // path to docs/mockups/style-{K}/manifest.json
   stylesSourceRef: z.string(), // e.g. "docs/analysis/shared/styles.md#style-03"
@@ -376,9 +389,9 @@ export type BuildMobileFrontendOutput = z.infer<
 >;
 ```
 
-### `analyze.ts` — **EXTENDED** (per refactor-002)
+### `analyze.ts` — **EXTENDED** (per refactor-002 + refactor-003)
 
-The prior `AnalyzeOutput` shape didn't match what `.claude/skills/analyze/SKILL.md` actually emits at phase 5. Refactor-002 aligns the schema to the analyst's real output and applies refactor-001's `PlatformId` canonicalization.
+The prior `AnalyzeOutput` shape didn't match what `.claude/skills/analyze/SKILL.md` actually emits at phase 5. Refactor-002 aligned the schema to the analyst's real output and applied refactor-001's `PlatformId` canonicalization. Refactor-003 adds `integrationsResearched` for the new phase 2.5 integrations-options.md research output.
 
 ```ts
 import { z } from "zod";
@@ -397,6 +410,7 @@ export const AnalyzeOutput = z.object({
   skillsNeeded: z.array(z.string()),
   mcpHints: z.array(z.string()),
   openQuestions: z.number().int().nonnegative(),
+  integrationsResearched: z.number().int().nonnegative(), // NEW (refactor-003) — count of services in integrations-options.md
   warnings: z.array(z.string()),
 });
 export type AnalyzeOutput = z.infer<typeof AnalyzeOutput>;
@@ -406,11 +420,109 @@ export type AnalyzeOutput = z.infer<typeof AnalyzeOutput>;
 
 **Note on `targets`.** The prior schema had `targets: Target[]`. The analyst's `docs/brief-summary.json` separately carries `targets: [{ platformId, appId, screenCount }]` (where `platformId` is `PlatformId`, not `Target`). The stage-return JSON used to return the schema's validation covers only `detectedPlatforms` — the richer per-app array stays in the on-disk artifact that downstream stages read by path.
 
+### `architect.ts` — **EXTENDED** (per refactor-003)
+
+Refactor-003 moves the architect from tier 5 (pre-design) to tier 6.5 (post-design-signoff) and introduces a three-way `deployment` enum for integrations (`vendor | self-hosted | declined`). The return schema now covers counts for each deployment bucket plus the env-var annotations that feed gate 5.
+
+```ts
+import { z } from "zod";
+
+export const ArchitectOutput = z.object({
+  success: z.literal(true),
+  appsCount: z.number().int().nonnegative(),
+  packagesCount: z.number().int().nonnegative(),
+  vendorDecisions: z.number().int().nonnegative(), // deployment=vendor count
+  selfHostedDecisions: z.number().int().nonnegative(), // deployment=self-hosted count
+  declinedDecisions: z.number().int().nonnegative(), // deployment=declined count
+  envVarsRequiredNow: z.number().int().nonnegative(), // blocks /build-backend
+  envVarsRequiredLater: z.number().int().nonnegative(), // for /deploy
+  envVarsOptional: z.number().int().nonnegative(), // feature-flag gated
+  credentialsDiffEmitted: z.boolean(), // true on re-runs (prior architecture.yaml existed)
+  buildMcpServersAdded: z.number().int().nonnegative(), // usually 0 — most vendor SDKs are NPM, not MCP
+  warnings: z.array(z.string()),
+});
+export type ArchitectOutput = z.infer<typeof ArchitectOutput>;
+```
+
+**Architect never reads `.env`.** The schema does not carry a `.env` key count — `.env` is user-authored at gate 5. The orchestrator's post-gate-5 `CredentialsGateOutput` carries the captured/deferred counts. Separation is load-bearing: `block-dangerous.sh` keeps `.env` unreadable by agents.
+
+### `credentials-gate.ts` — **NEW** (refactor-003)
+
+Validates the orchestrator's summary after gate 5 resolves. Gate 5 is a file-drop gate (no HTTP server); this schema is constructed by the orchestrator from the parsed `docs/credentials-confirmed.txt` directive + stat of the user's `.env` file.
+
+```ts
+import { z } from "zod";
+
+export const CredentialsGateOutput = z.object({
+  success: z.literal(true),
+  decision: z.enum(["proceed", "defer", "abort"]),
+  servicesConfirmed: z.array(z.string()), // vendor IDs user confirmed
+  servicesDeferred: z.array(z.string()), // vendor IDs user deferred with reason
+  deferralReasons: z.record(z.string(), z.string()), // { serviceId: reason }
+  envFileExists: z.boolean(), // orchestrator stat check; NEVER reads contents
+  warnings: z.array(z.string()),
+});
+export type CredentialsGateOutput = z.infer<typeof CredentialsGateOutput>;
+```
+
+**Note on `envFileExists`.** Stat-only. `block-dangerous.sh` prevents any read of `.env` — the orchestrator detects existence via `fs.statSync(envPath).isFile()` and treats the result as a coarse signal ("user has begun credential setup"). Required-now missing keys surface as loud build failures at `/build-backend`, which is the correct failure locus.
+
+### `pm.ts` — **EXTENDED** (per refactor-003)
+
+Refactor-003 splits PM invocation into two modes: main (`--mode=tasks`) produces `docs/tasks.yaml` post-architect; detour (`--mode=kit-change-request`) produces `plans/active/kit-change-request-{id}.md` on-demand during design. The output schema gains a `mode` discriminator.
+
+```ts
+import { z } from "zod";
+
+export const PmOutput = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("tasks"),
+    success: z.literal(true),
+    tasksCount: z.number().int().nonnegative(),
+    tasksYamlPath: z.string(), // docs/tasks.yaml
+    warnings: z.array(z.string()),
+  }),
+  z.object({
+    mode: z.literal("kit-change-request"),
+    success: z.literal(true),
+    miniPlanPath: z.string(), // plans/active/kit-change-request-{id}.md
+    requestedPrimitives: z.array(z.string()),
+    targetKitVersion: z.string(), // e.g. "1.1.0"
+    warnings: z.array(z.string()),
+  }),
+]);
+export type PmOutput = z.infer<typeof PmOutput>;
+```
+
+### `skills-audit.ts` — **EXTENDED** (per refactor-003)
+
+Refactor-003 splits the skills-audit by scope. Output schema gains a `scope` discriminator.
+
+```ts
+import { z } from "zod";
+
+export const SkillsAuditOutput = z.discriminatedUnion("scope", [
+  z.object({
+    scope: z.literal("design"),
+    success: z.literal(true),
+    skillsAudited: z.number().int().nonnegative(),
+    skillsAuthored: z.number().int().nonnegative(),
+    warnings: z.array(z.string()),
+  }),
+  z.object({
+    scope: z.literal("build"),
+    success: z.literal(true),
+    skillsAudited: z.number().int().nonnegative(),
+    skillsAuthored: z.number().int().nonnegative(),
+    vendorSdksAudited: z.number().int().nonnegative(),
+    warnings: z.array(z.string()),
+  }),
+]);
+export type SkillsAuditOutput = z.infer<typeof SkillsAuditOutput>;
+```
+
 ### Unchanged schemas (preserved from prior spec)
 
-- `skills-audit.ts` — `SkillsAuditOutput`
-- `architect.ts` — `ArchitectOutput`
-- `pm.ts` — `PmOutput`
 - `user-flows.ts` — `UserFlowsOutput` (shape unchanged; references signoff for hash bindings)
 - `test.ts` — `TestOutput`
 - `review.ts` — `ReviewOutput`
@@ -432,6 +544,7 @@ export * from "./visual-review.js";
 export * from "./user-flows.js";
 export * from "./signoff.js";
 export * from "./build.js";
+export * from "./credentials-gate.js";
 export * from "./test.js";
 export * from "./review.js";
 export * from "./git.js";
@@ -450,20 +563,23 @@ import {
   BuildWebFrontendOutput,
   BuildMobileFrontendOutput,
 } from "./build.js";
+import { CredentialsGateOutput } from "./credentials-gate.js";
 import { TestOutput } from "./test.js";
 import { ReviewOutput } from "./review.js";
 import { GitOutput } from "./git.js";
 
 export const StageSchemas = {
   analyze: AnalyzeOutput,
-  "skills-audit": SkillsAuditOutput,
-  architect: ArchitectOutput,
-  pm: PmOutput,
+  "skills-audit-design": SkillsAuditOutput, // scope discriminated internally
+  "skills-audit-build": SkillsAuditOutput,
   mockups: MockupsOutput,
   stylesheet: StylesheetOutput,
   screens: ScreensOutput,
   "visual-review": VisualReviewOutput,
   "user-flows": UserFlowsOutput,
+  architect: ArchitectOutput,
+  "credentials-gate": CredentialsGateOutput, // NEW (refactor-003)
+  pm: PmOutput, // mode discriminated internally
   "build-backend": BuildBackendOutput,
   "build-web": BuildWebFrontendOutput,
   "build-mobile": BuildMobileFrontendOutput,
@@ -474,6 +590,8 @@ export const StageSchemas = {
 
 export type StageName = keyof typeof StageSchemas;
 ```
+
+Stage-name ordering matches task 035's `STAGES` array (refactor-003 order). `skills-audit` appears twice in the lookup keyed by the orchestrator stage name (`skills-audit-design` / `skills-audit-build`), both sharing the `SkillsAuditOutput` schema which is discriminated on its `scope` field.
 
 ### JSON Schema export (for HTML form validators)
 
@@ -491,7 +609,13 @@ Task 025's sign-off form validator AND the mockup gate's `POST /api/select` hand
 - [ ] `common.ts` exports `Target`, `PlatformId`, `ScreenId`, `AssetRef`, `Sha256`, `Dials`, `FeatureFlag`, `SemverString`
 - [ ] `AssetRef.provenance` enum includes all six values: `user | researched | generated | hybrid | stock | vector`
 - [ ] `MockupsOutput` includes all refactor-001 fields: `styleCount`, `appsCovered`, `archetypesPerAppPerStyle`, `mockupsPerStyle`, `nanobananaUsed`, `imagesGeneratedCount`, `imagesStockCount`, `imagesVectorFallbackCount`, `selfCheckRegenerations`, `reviewIndexPath`, `warnings`
-- [ ] `SelectedStyleSchema` exists and validates `docs/selected-style.json`; `selectedBy` accepts both `"human"` and `"auto-single-style"`
+- [ ] `SelectedStyleSchema` exists and validates `docs/selected-style.json`; `selectedBy` accepts both `"human"` and `"auto-single-style"`; **`iconLibrary` field exists** (refactor-003) and uses the `IconLibrary` enum
+- [ ] `IconLibrary` enum exported from `selected-style.ts` with values `lucide | phosphor | heroicons | iconoir | tabler`
+- [ ] `AnalyzeOutput` includes `integrationsResearched: number` (refactor-003)
+- [ ] `ArchitectOutput` exists with the refactor-003 shape: `appsCount`, `packagesCount`, `vendorDecisions`, `selfHostedDecisions`, `declinedDecisions`, `envVarsRequiredNow`, `envVarsRequiredLater`, `envVarsOptional`, `credentialsDiffEmitted`, `buildMcpServersAdded`, `warnings`
+- [ ] `CredentialsGateOutput` exists with `decision: "proceed"|"defer"|"abort"`, `servicesConfirmed[]`, `servicesDeferred[]`, `deferralReasons`, `envFileExists`, `warnings`
+- [ ] `PmOutput` is a discriminated union on `mode: "tasks" | "kit-change-request"` (refactor-003)
+- [ ] `SkillsAuditOutput` is a discriminated union on `scope: "design" | "build"` (refactor-003)
 - [ ] `StylesheetOutput` includes `kitVersion`, primitives/patterns/layouts lists + counts (≥20 / ≥12 / ≥5), `noChange`, `budgetExhausted`, `gapsPath`
 - [ ] `ScreensOutput` is a discriminated union on `mode: "batch" | "single-screen"`
 - [ ] `ScreensOutput.batch` includes `uiKitVersion`, `kitChangeRequests`, image-count fields, `screensManifestHash`
@@ -499,7 +623,7 @@ Task 025's sign-off form validator AND the mockup gate's `POST /api/select` hand
 - [ ] `VisualReviewOutput` exists with `screensReviewed`, `passed`, `failed`, `retriesTriggered`, `needsHumanReview[]`, `violations[]`, `reportPath`
 - [ ] `Signoff` extended with `visualReviewReportHash` + `uiKitVersion` (nine fields total)
 - [ ] `BuildWebFrontendOutput` + `BuildMobileFrontendOutput` + `BuildBackendOutput` exist as separate schemas
-- [ ] `StageSchemas` lookup covers all 15 stages (planning 4, design 4, build 3, quality 2, ship 2)
+- [ ] `StageSchemas` lookup covers all 17 refactor-003 stages — keys: `analyze, skills-audit-design, mockups, stylesheet, screens, visual-review, user-flows, architect, credentials-gate, pm, skills-audit-build, build-backend, build-web, build-mobile, test, review, git`
 - [ ] `zod-to-json-schema` exports produce `signoff.schema.json` + `selected-style.schema.json` (draft-07)
 - [ ] Task 034 references this task for the Zod schema deliverable
 - [ ] Task 035 imports `StageSchemas` and validates every stage output against it

@@ -32,12 +32,25 @@ maxTurns: 30
 
 ### System Prompt
 
-- Read `.claude/architecture.yaml` focusing on backend sections
+- Read `.claude/architecture.yaml` focusing on backend sections (apps.api, integrations with `deployment: vendor | self-hosted`)
 - Read `docs/tasks.yaml` for assigned tasks
+- **Read `.env` for runtime secrets** — user-authored at gate 5 (refactor-003) after `/architect` emits `.env.example` with placeholder rows. `block-dangerous.sh` (task 007) blocks general agent `.env` reads; backend-builder inherits a sanctioned exception because runtime config is load-bearing for build-and-test. Missing required-now keys surface as loud failures at container startup / first API call — correct failure mode since the user was warned at gate 5 via `docs/credentials-checklist.md`.
 - Generate into `apps/api/`
 - Use `@repo/types` for shared Zod schemas
 - Run `pnpm typecheck` after every file created
 - Follow the universal prompt template from blueprint lines 2632-2658
+
+### Inputs
+
+| Input                                                    | Source                                                  | Purpose                                                                                                                                      |
+| -------------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.claude/architecture.yaml`                              | `/architect` output (refactor-003, post-signoff)        | Stack choices, integration vendors, data models, routing                                                                                     |
+| `docs/tasks.yaml`                                        | `/pm --mode=tasks` output                               | Assigned backend tasks with `integration-ref` pointers                                                                                       |
+| `.env`                                                   | User-authored at gate 5                                 | Runtime secrets: `STRIPE_SECRET_KEY`, `THIRDWEB_SECRET_KEY`, `RESEND_API_KEY`, etc. Must be filled before `/build-backend` runs.             |
+| `.env.example`                                           | `/architect` output                                     | Reference for which keys exist; used for sanity-checking env vars referenced in generated code match what the architect told the user to set |
+| `packages/types/`                                        | `/stylesheet` indirect + `@repo/orchestrator-contracts` | Shared Zod schemas                                                                                                                           |
+| `packages/orchestrator-contracts/`                       | Task 034b                                               | Output schemas the backend validates against                                                                                                 |
+| Self-hosted config templates in `docs/config/*.template` | `/architect` output for self-hosted integrations        | Pointers to deployment config, NOT built into the app                                                                                        |
 
 ### /build-backend Skill
 

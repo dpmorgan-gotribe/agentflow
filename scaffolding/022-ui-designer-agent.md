@@ -4,9 +4,14 @@ title: "UI Designer Agent Definition"
 status: pending
 priority: P2
 tier: 6 — Design Pipeline
-depends-on: ["020"]
+depends-on: ["019"]
 estimated-scope: medium
 ---
+
+<!-- refactor-003: depends-on was ["020"] pre-refactor; updated to ["019"] since UI
+     Designer now runs BEFORE architect. Its inputs are analyst outputs
+     (styles.md, assets.md, inspirations.md, screens.json) plus selected-style.json
+     at gate 2 — not architect-produced architecture.yaml. -->
 
 # 022: UI Designer Agent Definition
 

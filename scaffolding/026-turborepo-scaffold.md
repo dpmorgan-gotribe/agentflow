@@ -1,14 +1,20 @@
 ---
 task-id: "026"
-title: "Turborepo + pnpm Workspace Scaffold"
+title: "Turborepo + pnpm Workspace Scaffold (invoked from /new-project)"
 status: pending
 priority: P2
-tier: 7 — Build Pipeline
-depends-on: ["001"]
+tier: 4 — Brief System (invoked from /new-project step 5b, not a standalone pipeline stage)
+depends-on: ["001", "018b"]
 estimated-scope: medium
 ---
 
 # 026: Turborepo + pnpm Workspace Scaffold
+
+## Invocation Point (refactor-003)
+
+Invoked from `/new-project` step 5b (task 018b), NOT as a standalone pipeline stage. Refactor-003 reordered the pipeline so architect runs post-design; the monorepo skeleton must exist BEFORE `/stylesheet` runs (it writes into `packages/ui-kit/`). Since Turborepo + pnpm + shared-package layout is a factory-level decision (not per-project architectural freedom), it scaffolds at project-bootstrap time rather than requiring an architect call.
+
+Architect (task 020) later overlays `.claude/architecture.yaml` on top of this fixed skeleton — adding `apps/*` specifics and vendor-specific dependencies — but does NOT create the monorepo itself.
 
 ## What This Task Produces
 

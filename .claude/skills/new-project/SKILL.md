@@ -145,6 +145,32 @@ are re-copied in refresh mode with backup.
 Track what was preserved, overwritten, and backed up — the return payload
 needs these lists.
 
+### 5b. Scaffold the Turborepo + shared-package skeleton + design-stage MCPs (refactor-003)
+
+**INIT MODE ONLY** for the filesystem scaffold; `--scope=design` MCP registration runs in BOTH modes (idempotent on refresh — no-op when unchanged).
+
+Refactor-003 moved the monorepo scaffold + design-stage MCP registration here from the old tier-7 pipeline position. Design stages write into `packages/ui-kit/` and need design-stage MCP servers (playwright, icons8, unsplash, chrome-devtools) registered before they run. Since these are fixed factory-level decisions (not per-project architectural freedom), they scaffold at project-bootstrap time.
+
+Steps:
+
+1. **Turborepo + pnpm workspace** (task 026 content; run once in init mode):
+   - `pnpm init` at project root
+   - Write `turbo.json` with factory canonical task-graph config
+   - Write `pnpm-workspace.yaml` defining `apps/*` and `packages/*`
+   - Write root `tsconfig.json` (base TS config)
+2. **Shared-package skeletons** (task 027 content; run once in init mode):
+   - Create `packages/ui-kit/`, `packages/types/`, `packages/utils/`, `packages/api-client/`, `packages/orchestrator-contracts/` each with minimal `package.json` (name + version `0.0.0`) and README
+   - `packages/ui-kit/` gets placeholder directories for `tokens/`, `primitives/`, `patterns/`, `layouts/`, `stories/`
+   - `packages/ui-kit/CONTRACT.md` — copied from factory template at `.claude/templates/ui-kit-contract.md` with real content (not a placeholder). Task 022b owns that template; it's project-invariant.
+3. **Design-stage MCP defaults** (refactor-003 mechanic):
+   - Copy factory `mcp-defaults-design.json` into project root
+   - Invoke `/register-mcp-servers --scope=design --input=mcp-defaults-design.json` (task 041 contract). Safe to re-run — idempotent.
+   - `--scope=design` registers: `playwright`, `icons8`, `unsplash`, `chrome-devtools`, and (when `--flags=nanobanana` is active for the run) `image-generator`. Populates `.mcp.json` and the `ui-designer` + `html-verifier` agent frontmatters' `mcp_servers` arrays.
+
+Refresh mode (`--force`) re-invokes only step 3 (MCP registration); steps 1-2 preserve the existing monorepo state.
+
+Add to `filesCopied` tracker: `turbo.json`, `pnpm-workspace.yaml`, `tsconfig.json`, root `package.json`, `packages/ui-kit/{package.json, CONTRACT.md, README.md}`, `packages/{types,utils,api-client,orchestrator-contracts}/{package.json,README.md}`, `mcp-defaults-design.json`, `.mcp.json`.
+
 ### 6. Write project-level files (INIT MODE ONLY)
 
 **`projects/<name>/CLAUDE.md`** (root) — short file referencing factory

@@ -252,4 +252,3 @@ Completed in one pass. Six files touched (.claude/skills/analyze/SKILL.md, flows
 - `AnalyzeOutput` Zod schema rewritten with `detectedPlatforms: PlatformId[]`, `screensByPlatform`, `coverageByPlatform`, `styleCount`, `assetMode`, `skillsNeeded`, `mcpHints`, `openQuestions`, `warnings`. The removed `assetsFound` block is documented as living in `docs/asset-inventory.json` (produced by task 018).
 
 Commit: `ce8b2d8` on branch `refactor/analyst-refactor-001-alignment` (off `refactor/ui-designer-kit-pipeline`). 8 files, +411/−20.
-

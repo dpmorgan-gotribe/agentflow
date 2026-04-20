@@ -10,6 +10,10 @@ estimated-scope: medium
 
 # 040: App Store Compliance Layer
 
+## Position in pipeline (refactor-003)
+
+Runs AFTER `/architect` (task 020, now at tier 6.5 post-design per refactor-003). This ensures `architecture.yaml.compliance` — the block architect populates with GDPR / COPPA / Third-Party-AI / age-rating / privacy-manifest fields — is available when this compliance layer runs. Pre-refactor-003, architect ran pre-design so compliance was already populated by the time this stage would have run; post-refactor-003 the ordering still works out because this stage depends on `020` explicitly in its frontmatter.
+
 ## What This Task Produces
 
 1. Skill at `.claude/skills/app-store-compliance/SKILL.md`

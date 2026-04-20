@@ -1,5 +1,7 @@
 # Scaffolding Index — Multi-Agent App Generation System
 
+> **Refactor-003 (2026-04-20)** reordered the pipeline so the architect (020) and PM (021) run AFTER design sign-off, not before. 020 moved from tier 5 to tier 6.5; 021 followed. 026 + 027 (monorepo + shared packages) moved from tier 7 to "invoked from /new-project step 5b" at project-bootstrap time. 038 skills-agent split into design + build scopes. Gate 5 (credentials, file-drop) added between architect and PM. Blueprint Appendix C records the decision; 035's `STAGES` array is the canonical pipeline order.
+
 ## Build Philosophy
 
 - Each task is a self-contained unit you can understand completely
@@ -46,20 +48,20 @@ _The canonical input that drives everything._
 - [016 — Brief template (20-section structure)](archive/016-brief-template.md) ✓ complete
 - [017 — /validate-brief skill](archive/017-validate-brief-skill.md) ✓ complete
 - [018 — /scan-assets skill (asset scanner)](archive/018-scan-assets-skill.md) ✓ complete
-- [018b — /new-project skill (bootstrap projects/<name>/)](archive/018b-new-project-skill.md) ✓ complete
+- [018b — /new-project skill (bootstrap projects/<name>/ + step 5b monorepo scaffold + design-MCPs — refactor-003)](archive/018b-new-project-skill.md) ✓ complete
 - [018c — /draft-brief skill (proposal → filled-in brief.md)](archive/018c-draft-brief-skill.md) ✓ complete
+- [026 — Turborepo + pnpm workspace scaffold (invoked from /new-project step 5b — refactor-003)](026-turborepo-scaffold.md)
+- [027 — Shared packages skeleton (invoked from /new-project step 5b — refactor-003)](027-shared-packages.md)
 
-### Tier 5: Planning Agents (Tasks 019-021)
+### Tier 5: Planning Agents (Task 019)
 
-_The agents that turn a brief into actionable specs._
+_The analyst that turns a brief into actionable specs. Per refactor-003, architect (020) and PM (021) moved to tier 6.5 (post-design)._
 
 - [019 — Analyst agent + /analyze skill](archive/019-analyst-agent.md) ✓ complete
-- [020 — Architect agent + architecture.yaml template](020-architect-agent.md)
-- [021 — Project Manager agent + tasks.yaml](021-pm-agent.md)
 
 ### Tier 6: Design Pipeline (Tasks 022-025b)
 
-_From brief to mockup-grid style selection to UI Kit to composed screens to visual review to sign-off. Per refactor-001, this tier now covers the full six-stage design flow._
+_From brief to mockup-grid style selection to UI Kit to composed screens to visual review to sign-off. Per refactor-001, this tier covers the full six-stage design flow. Per refactor-003, design stages read analyst outputs + selected-style.json only — zero architect dependency._
 
 - [022 — UI Designer agent definition (opinionated identity + anti-slop)](022-ui-designer-agent.md)
 - [022b — UI Kit consumption contract (ESLint plugin + validate-consumer + CONTRACT.md)](022b-ui-kit-contract.md)
@@ -68,16 +70,24 @@ _From brief to mockup-grid style selection to UI Kit to composed screens to visu
 - [025 — /screens skill + /user-flows-generator (kit-only composition + single-screen retry mode)](025-screens-skill.md)
 - [025b — /visual-review skill (Layer 7 — LLM visual critique loop)](025b-visual-review-skill.md)
 
-### Tier 7: Build Pipeline (Tasks 026-030)
+### Tier 6.5: Post-Design Planning (Tasks 020-021, refactor-003)
 
-_Shared packages and builder agents._
+_Architect decides vendors + emits .env.example after the user has seen design sign-off. PM decomposes into tasks.yaml using concrete architecture decisions. Gate 5 (credentials file-drop) sits between architect and PM. Skills-audit-build runs here too (038 scope=build)._
 
-- [026 — Turborepo + pnpm workspace scaffold](026-turborepo-scaffold.md)
-- [027 — Shared packages skeleton (types, ui-kit, api-client, utils)](027-shared-packages.md)
+- [020 — Architect agent + architecture.yaml + .env.example + credentials/deployment checklists](020-architect-agent.md)
+- [021 — Project Manager agent + tasks.yaml (dual-mode: tasks + kit-change-request)](021-pm-agent.md)
+- [038 — Skills Agent (scope=build; also invoked at tier 6 with scope=design)](038-skills-agent.md)
+
+### Tier 7: Build Pipeline (Tasks 028-030, 041)
+
+_Builder agents that consume architecture.yaml + .env (populated at gate 5) + UI Kit + composed screens._
+
 - [028 — Backend Builder agent](028-backend-builder-agent.md)
 - [029 — Web Frontend Builder agent](029-web-frontend-builder.md)
 - [030 — Mobile Frontend Builder agent](030-mobile-frontend-builder.md)
-- [041 — MCP server registration & .mcp.json generation](041-mcp-server-registration.md)
+- [041 — MCP server registration & .mcp.json generation (scope=design at /new-project, scope=build post-architect)](041-mcp-server-registration.md)
+
+**Note:** per refactor-003, tasks 026 (Turborepo scaffold) and 027 (shared packages skeleton) moved OUT of this tier — they now run from `/new-project` step 5b at project-bootstrap time, not as pipeline stages. They're listed under Tier 4 alongside the bootstrap skills.
 
 ### Tier 8: Quality & Ship (Tasks 031-034)
 

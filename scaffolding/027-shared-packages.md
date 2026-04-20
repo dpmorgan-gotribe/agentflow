@@ -1,14 +1,24 @@
 ---
 task-id: "027"
-title: "Shared Packages Skeleton (types, ui-kit, api-client, utils)"
+title: "Shared Packages Skeleton (types, ui-kit, api-client, utils) — invoked from /new-project"
 status: pending
 priority: P2
-tier: 7 — Build Pipeline
-depends-on: ["026"]
+tier: 4 — Brief System (invoked from /new-project step 5b, not a standalone pipeline stage)
+depends-on: ["026", "018b"]
 estimated-scope: medium
 ---
 
 # 027: Shared Packages Skeleton
+
+## Invocation Point (refactor-003)
+
+Invoked from `/new-project` step 5b (task 018b) immediately after task 026 creates the monorepo root. This runs at project-bootstrap time because:
+
+1. `@repo/ui-kit` needs to exist as an empty scaffold before `/stylesheet` populates it with tokens/primitives/patterns
+2. `@repo/orchestrator-contracts` needs to exist before ANY pipeline stage runs (schemas are imported by the orchestrator)
+3. Package layout is a factory-level decision (not per-project), so no architect call needed
+
+Architect (task 020, post-design) later reads the kit's `package.json.version` (at signoff time the version is locked) and adds vendor-specific dependencies to `apps/*` but does NOT modify the package skeletons themselves.
 
 ## What This Task Produces
 
