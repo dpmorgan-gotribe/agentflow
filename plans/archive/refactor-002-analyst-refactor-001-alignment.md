@@ -1,12 +1,14 @@
 ---
 id: refactor-002-analyst-refactor-001-alignment
 type: refactor
-status: approved
+status: archived
 author-agent: claude
 created: 2026-04-20
 updated: 2026-04-20
 approved-at: 2026-04-20
 approved-by: human
+completed-at: 2026-04-20
+archived-at: 2026-04-20
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -239,3 +241,15 @@ Update the 034b task's acceptance-criteria list accordingly (add one line assert
 Single branch (`refactor/analyst-refactor-001-alignment` off `refactor/ui-designer-kit-pipeline`); single commit.
 
 ## Attempt Log
+
+### Attempt 1 — 2026-04-20
+
+Completed in one pass. Six files touched (.claude/skills/analyze/SKILL.md, flows.md, screens.md, styles.md, inspirations.md; scaffolding/034b). Self-review grep confirmed:
+
+- Zero remaining `"platforms": [...]` old-field-name hits
+- Only 2 `web` mentions in SKILL.md remain — both intentional (detection-signal note + argument-validation error message). Canonical outputs all use `webapp`.
+- `### Dials` and `### Named references` subsections appear twice in styles.md (Style 0 + Style 1 templates)
+- `AnalyzeOutput` Zod schema rewritten with `detectedPlatforms: PlatformId[]`, `screensByPlatform`, `coverageByPlatform`, `styleCount`, `assetMode`, `skillsNeeded`, `mcpHints`, `openQuestions`, `warnings`. The removed `assetsFound` block is documented as living in `docs/asset-inventory.json` (produced by task 018).
+
+Commit: `ce8b2d8` on branch `refactor/analyst-refactor-001-alignment` (off `refactor/ui-designer-kit-pipeline`). 8 files, +411/−20.
+
