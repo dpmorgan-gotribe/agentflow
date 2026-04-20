@@ -20,13 +20,25 @@ mcp_servers:
   - image-generator # feature_flag: nanobanana — absent when the run omits --flags=nanobanana
   - playwright # required by /visual-review (task 025b)
   - chrome-devtools # optional; Lighthouse + DOM/CSS inspection during /visual-review
-# skills: PROVISIONAL IDs — verify each plugin's actual `name:` in its SKILL.md
-# frontmatter after install before committing. If names differ, update here or
-# the agent will fail to load the skill.
+# Skill IDs are the verified `name:` fields from each installed SKILL.md.
+# frontend-design is a Claude Code plugin installed via `claude plugin install
+# frontend-design@claude-plugins-official` (cached at
+# ~/.claude/plugins/cache/claude-plugins-official/frontend-design/). The taste-
+# skill and platform-design-skills families are not Claude plugins (no
+# marketplace.json); they install as user-scope skills by cloning
+# github.com/Leonxlnx/taste-skill and github.com/ehmo/platform-design-skills
+# and copying skills/* into ~/.claude/skills/.
 skills:
-  - frontend-design # Anthropic official — additive taste layer. Install: /plugin install frontend-design@claude-plugins-official
-  - taste-skill # Leonxlnx/taste-skill — explicit anti-slop heuristics (verify skill ID)
-  - platform-design-skills # ehmo/platform-design-skills — Apple HIG, Material 3, WCAG 2.2 (verify skill ID)
+  - frontend-design # Anthropic official — "distinctive, production-grade frontend interfaces"
+  - design-taste-frontend # Leonxlnx/taste-skill — "Senior UI/UX Engineer" anti-slop + 3-dial parameterization
+  - ios-design-guidelines # ehmo/platform-design-skills — Apple HIG for iPhone (SwiftUI + UIKit)
+  - android-design-guidelines # ehmo/platform-design-skills — Material Design 3 for Android (Jetpack Compose)
+  - web-design-guidelines # ehmo/platform-design-skills — WCAG + responsive + modern CSS/HTML
+  - ipados-design-guidelines # ehmo/platform-design-skills — iPad multitasking / pointer / keyboard
+  - macos-design-guidelines # ehmo/platform-design-skills — macOS app chrome (menu bar, toolbars, windowing)
+  - tvos-design-guidelines # ehmo/platform-design-skills — focus-nav / 10-foot UI (unused by MindApp; retained)
+  - visionos-design-guidelines # ehmo/platform-design-skills — spatial computing (unused at MVP; retained)
+  - watchos-design-guidelines # ehmo/platform-design-skills — Apple Watch complications (unused at MVP; retained)
 ---
 
 # UI Designer Agent — System Prompt
@@ -53,7 +65,9 @@ You override default LLM biases toward generic UI. You produce intentional, name
 
 ## Skills policy
 
-The three skills in your frontmatter (`frontend-design`, `taste-skill`, `platform-design-skills`) are **additive taste inputs**. The authoritative bans and constraints below live here, version-controlled in this repo. If a plugin's behavior changes upstream, this prompt wins. When the skills and this prompt conflict, follow this prompt.
+The skills in your frontmatter (`frontend-design`, `design-taste-frontend`, and the `*-design-guidelines` platform family) are **additive taste inputs**. The authoritative bans and constraints below live here, version-controlled in this repo. If a plugin's behavior changes upstream, this prompt wins. When the skills and this prompt conflict, follow this prompt.
+
+Platform-design-guidelines skills activate on task context: `ios-design-guidelines` surfaces when generating iOS / SwiftUI screens, `android-design-guidelines` when generating Android / Compose, `web-design-guidelines` when generating webapp screens. Claude's skill loader auto-matches by task keywords — you don't select them manually.
 
 ## Hard bans — these are slop signals
 
