@@ -161,7 +161,14 @@ Steps:
 2. **Shared-package skeletons** (task 027 content; run once in init mode):
    - Create `packages/ui-kit/`, `packages/types/`, `packages/utils/`, `packages/api-client/`, `packages/orchestrator-contracts/` each with minimal `package.json` (name + version `0.0.0`) and README
    - `packages/ui-kit/` gets placeholder directories for `tokens/`, `primitives/`, `patterns/`, `layouts/`, `stories/`
-   - `packages/ui-kit/CONTRACT.md` — copied from factory template at `.claude/templates/ui-kit-contract.md` with real content (not a placeholder). Task 022b owns that template; it's project-invariant.
+   - **UI Kit consumption contract artifacts** (task 022b; factory templates under `.claude/templates/`):
+     - `packages/ui-kit/CONTRACT.md` ← `.claude/templates/ui-kit-contract.md` (the six-rule paste-ready block that consumer agents embed in their system prompts)
+     - `packages/ui-kit/tsconfig.consumer.json` ← `.claude/templates/ui-kit-tsconfig-consumer.json` (path aliases — exposes `@repo/ui-kit` barrel only; no subpath wildcards — consumer tsconfigs extend this)
+     - `packages/ui-kit/scripts/validate-consumer.ts` ← `.claude/templates/ui-kit-validate-consumer.ts` (standalone grep validator; CI layer)
+     - `packages/ui-kit/eslint-plugin/` ← `.claude/templates/ui-kit-eslint-plugin/` (four-rule ESLint plugin `@repo/eslint-plugin-ui-kit-contract`; copied as a tree incl. `package.json`, `index.js`, `rules/*.js`, `README.md`)
+   - Wire root `package.json`:
+     - Add `scripts['ui-kit:validate-consumer']: "tsx packages/ui-kit/scripts/validate-consumer.ts 'apps/*/src/**/*.{ts,tsx,js,jsx}'"`
+     - Add `devDependencies`: `tsx`, `glob` (runtime deps of `validate-consumer.ts`)
 3. **Design-stage MCP defaults** (refactor-003 mechanic):
    - Copy factory `mcp-defaults-design.json` into project root
    - Invoke `/register-mcp-servers --scope=design --input=mcp-defaults-design.json` (task 041 contract). Safe to re-run — idempotent.
@@ -169,7 +176,7 @@ Steps:
 
 Refresh mode (`--force`) re-invokes only step 3 (MCP registration); steps 1-2 preserve the existing monorepo state.
 
-Add to `filesCopied` tracker: `turbo.json`, `pnpm-workspace.yaml`, `tsconfig.json`, root `package.json`, `packages/ui-kit/{package.json, CONTRACT.md, README.md}`, `packages/{types,utils,api-client,orchestrator-contracts}/{package.json,README.md}`, `mcp-defaults-design.json`, `.mcp.json`.
+Add to `filesCopied` tracker: `turbo.json`, `pnpm-workspace.yaml`, `tsconfig.json`, root `package.json`, `packages/ui-kit/{package.json, CONTRACT.md, README.md, tsconfig.consumer.json, scripts/validate-consumer.ts, eslint-plugin/**}`, `packages/{types,utils,api-client,orchestrator-contracts}/{package.json,README.md}`, `mcp-defaults-design.json`, `.mcp.json`.
 
 ### 6. Write project-level files (INIT MODE ONLY)
 
