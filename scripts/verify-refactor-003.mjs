@@ -52,23 +52,23 @@ function doesNotContain(p, needle) {
 
 const AFFECTED_FILES = [
   "scaffolding/000-scaffolding-index.md",
-  "scaffolding/020-architect-agent.md",
-  "scaffolding/021-pm-agent.md",
-  "scaffolding/022-ui-designer-agent.md",
-  "scaffolding/023-mockups-skill.md",
-  "scaffolding/024-stylesheet-skill.md",
-  "scaffolding/025-screens-skill.md",
-  "scaffolding/026-turborepo-scaffold.md",
-  "scaffolding/027-shared-packages.md",
-  "scaffolding/028-backend-builder-agent.md",
-  "scaffolding/029-web-frontend-builder.md",
-  "scaffolding/030-mobile-frontend-builder.md",
-  "scaffolding/034b-output-contract-zod-schemas.md",
-  "scaffolding/035-orchestrator-core.md",
-  "scaffolding/036-hitl-gates.md",
-  "scaffolding/038-skills-agent.md",
-  "scaffolding/040-app-store-compliance.md",
-  "scaffolding/041-mcp-server-registration.md",
+  "scaffolding/07-020-architect-agent.md",
+  "scaffolding/08-021-pm-agent.md",
+  "scaffolding/01-022-ui-designer-agent.md",
+  "scaffolding/03-023-mockups-skill.md",
+  "scaffolding/04-024-stylesheet-skill.md",
+  "scaffolding/05-025-screens-skill.md",
+  "scaffolding/12-026-turborepo-scaffold.md",
+  "scaffolding/13-027-shared-packages.md",
+  "scaffolding/14-028-backend-builder-agent.md",
+  "scaffolding/15-029-web-frontend-builder.md",
+  "scaffolding/16-030-mobile-frontend-builder.md",
+  "scaffolding/09-034b-output-contract-zod-schemas.md",
+  "scaffolding/21-035-orchestrator-core.md",
+  "scaffolding/22-036-hitl-gates.md",
+  "scaffolding/23-038-skills-agent.md",
+  "scaffolding/25-040-app-store-compliance.md",
+  "scaffolding/11-041-mcp-server-registration.md",
   ".claude/skills/analyze/SKILL.md",
   ".claude/skills/analyze/integrations.md",
   ".claude/skills/new-project/SKILL.md",
@@ -83,7 +83,7 @@ for (const f of AFFECTED_FILES) {
 // CATEGORY 2: 034b Zod schema additions
 // ─────────────────────────────────────────────────────────────────────
 
-const SCH = "scaffolding/034b-output-contract-zod-schemas.md";
+const SCH = "scaffolding/09-034b-output-contract-zod-schemas.md";
 check("034b schema", "AnalyzeOutput.integrationsResearched added", () =>
   contains(SCH, "integrationsResearched: z.number().int().nonnegative()"),
 );
@@ -227,7 +227,7 @@ check("analyst", "Related skills list references integrations.md", () =>
 // CATEGORY 4: 020 Architect rewrite
 // ─────────────────────────────────────────────────────────────────────
 
-const ARC = "scaffolding/020-architect-agent.md";
+const ARC = "scaffolding/07-020-architect-agent.md";
 check("020 architect", "tier moved to 6.5", () => contains(ARC, "tier: 6.5"));
 check("020 architect", "depends-on includes analyst + visual-review", () =>
   contains(ARC, 'depends-on: ["019", "025b"]'),
@@ -280,7 +280,7 @@ check("020 architect", "invokes /register-mcp-servers --scope=build", () =>
 // CATEGORY 5: 035 Orchestrator STAGES array
 // ─────────────────────────────────────────────────────────────────────
 
-const ORC = "scaffolding/035-orchestrator-core.md";
+const ORC = "scaffolding/21-035-orchestrator-core.md";
 check("035 orchestrator", "STAGES includes skills-audit-design", () =>
   contains(ORC, 'name: "skills-audit-design"'),
 );
@@ -333,7 +333,7 @@ check(
 // CATEGORY 6: 036 HITL Gate 5 file-drop
 // ─────────────────────────────────────────────────────────────────────
 
-const GATES = "scaffolding/036-hitl-gates.md";
+const GATES = "scaffolding/22-036-hitl-gates.md";
 check("036 gate 5", "gates table expanded to 5 rows", () =>
   containsAll(GATES, [
     "Five gates (refactor-003)",
@@ -382,7 +382,7 @@ check("036 gate 5", "Acceptance criteria list all 5 gates", () =>
 // CATEGORY 7: 038 Skills-agent scope split
 // ─────────────────────────────────────────────────────────────────────
 
-const SKL = "scaffolding/038-skills-agent.md";
+const SKL = "scaffolding/23-038-skills-agent.md";
 check("038 skills", "title notes scope-split", () =>
   contains(SKL, "scope-split: design + build"),
 );
@@ -410,7 +410,7 @@ check("038 skills", "rejects invocations without --scope", () =>
 // CATEGORY 8: 041 MCP registration scope split
 // ─────────────────────────────────────────────────────────────────────
 
-const MCP = "scaffolding/041-mcp-server-registration.md";
+const MCP = "scaffolding/11-041-mcp-server-registration.md";
 check("041 mcp", "argument-hint supports --scope", () =>
   contains(MCP, "--scope=design | --scope=build"),
 );
@@ -433,7 +433,7 @@ check("041 mcp", "additive merge preserves other scope's entries", () =>
 // CATEGORY 9: 021 PM dual-mode
 // ─────────────────────────────────────────────────────────────────────
 
-const PM = "scaffolding/021-pm-agent.md";
+const PM = "scaffolding/08-021-pm-agent.md";
 check("021 pm", "tier moved to 6.5", () => contains(PM, "tier: 6.5"));
 check("021 pm", "depends-on includes architect (020)", () =>
   contains(PM, 'depends-on: ["019", "020"]'),
@@ -458,26 +458,26 @@ check("021 pm", "acceptance lists rejection on missing --mode", () =>
 // ─────────────────────────────────────────────────────────────────────
 
 check("position notes", "026 tier moved to 4 (invoked from /new-project)", () =>
-  contains("scaffolding/026-turborepo-scaffold.md", "tier: 4"),
+  contains("scaffolding/12-026-turborepo-scaffold.md", "tier: 4"),
 );
 check("position notes", "026 Invocation Point section added", () =>
   contains(
-    "scaffolding/026-turborepo-scaffold.md",
+    "scaffolding/12-026-turborepo-scaffold.md",
     "## Invocation Point (refactor-003)",
   ),
 );
 check("position notes", "027 tier moved to 4 (invoked from /new-project)", () =>
-  contains("scaffolding/027-shared-packages.md", "tier: 4"),
+  contains("scaffolding/13-027-shared-packages.md", "tier: 4"),
 );
 check("position notes", "027 Invocation Point section added", () =>
   contains(
-    "scaffolding/027-shared-packages.md",
+    "scaffolding/13-027-shared-packages.md",
     "## Invocation Point (refactor-003)",
   ),
 );
 check("position notes", "040 notes it runs after /architect", () =>
   contains(
-    "scaffolding/040-app-store-compliance.md",
+    "scaffolding/25-040-app-store-compliance.md",
     "## Position in pipeline (refactor-003)",
   ),
 );
@@ -537,14 +537,14 @@ check("mcp defaults", "image-generator has feature_flag: nanobanana", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 check("design-stage independence", '022 depends-on fixed to ["019"]', () =>
-  contains("scaffolding/022-ui-designer-agent.md", 'depends-on: ["019"]'),
+  contains("scaffolding/01-022-ui-designer-agent.md", 'depends-on: ["019"]'),
 );
 check(
   "design-stage independence",
   "023 removes architect prereq for design_dials",
   () =>
     doesNotContain(
-      "scaffolding/023-mockups-skill.md",
+      "scaffolding/03-023-mockups-skill.md",
       "Task 020 (Architect) has set `tooling.design_dials`",
     ),
 );
@@ -553,7 +553,7 @@ check(
   "023 reads design_dials from styles.md",
   () =>
     contains(
-      "scaffolding/023-mockups-skill.md",
+      "scaffolding/03-023-mockups-skill.md",
       "design_dials` come from `docs/analysis/shared/styles.md`",
     ),
 );
@@ -562,7 +562,7 @@ check(
   "024 reads iconLibrary from selected-style.json",
   () =>
     contains(
-      "scaffolding/024-stylesheet-skill.md",
+      "scaffolding/04-024-stylesheet-skill.md",
       "docs/selected-style.json.iconLibrary",
     ),
 );
@@ -571,7 +571,7 @@ check(
   "025 kit-change-request uses PM dual-mode",
   () =>
     contains(
-      "scaffolding/025-screens-skill.md",
+      "scaffolding/05-025-screens-skill.md",
       "PM in `--mode=kit-change-request`",
     ),
 );
@@ -582,24 +582,24 @@ check(
 
 check("builder .env", "028 backend documents .env as gate-5-captured", () =>
   contains(
-    "scaffolding/028-backend-builder-agent.md",
+    "scaffolding/14-028-backend-builder-agent.md",
     "user-authored at gate 5",
   ),
 );
 check("builder .env", "028 documents sanctioned .env read exception", () =>
   contains(
-    "scaffolding/028-backend-builder-agent.md",
+    "scaffolding/14-028-backend-builder-agent.md",
     "inherits a sanctioned exception",
   ),
 );
 check("builder .env", "029 web documents NEXT_PUBLIC_* boundary", () =>
-  containsAll("scaffolding/029-web-frontend-builder.md", [
+  containsAll("scaffolding/15-029-web-frontend-builder.md", [
     "NEXT_PUBLIC_",
     "Never wires `*_SECRET_KEY`",
   ]),
 );
 check("builder .env", "030 mobile documents EXPO_PUBLIC_* vs EAS secrets", () =>
-  containsAll("scaffolding/030-mobile-frontend-builder.md", [
+  containsAll("scaffolding/16-030-mobile-frontend-builder.md", [
     "EXPO_PUBLIC_",
     "EAS Build-secrets",
     "eas secret:create",
@@ -620,40 +620,62 @@ check("index", "refactor-003 banner at top", () => {
 });
 check(
   "index",
-  "Tier 5 bullet list contains only 019 (020 + 021 in prose only)",
+  "Phase B post-design planning includes 020 + 021 (architect moved out of tier 5)",
   () => {
     const txt = read(IDX);
-    const tier5 = txt.match(/### Tier 5: Planning Agents[\s\S]*?(?=### Tier)/);
-    if (!tier5) return false;
-    const bullets = tier5[0]
+    const phaseB = txt.match(/### Phase B[\s\S]*?(?=### Phase|## |---)/);
+    if (!phaseB) return false;
+    const bullets = phaseB[0]
       .split("\n")
       .filter((l) => l.trim().startsWith("- ["));
-    const bulletHasArch = bullets.some((b) => /\b020\b/.test(b));
-    const bulletHasPm = bullets.some((b) => /\b021\b/.test(b));
-    const bulletHasAnalyst = bullets.some((b) => /\b019\b/.test(b));
+    const hasArch = bullets.some((b) => /\b020\b/.test(b));
+    const hasPm = bullets.some((b) => /\b021\b/.test(b));
     return {
-      pass: bulletHasAnalyst && !bulletHasArch && !bulletHasPm,
-      detail: `bullets: analyst:${bulletHasAnalyst} architect:${bulletHasArch} pm:${bulletHasPm} (020+021 in descriptive prose only is expected)`,
+      pass: hasArch && hasPm,
+      detail: `Phase B bullets: architect(020):${hasArch} pm(021):${hasPm}`,
     };
   },
 );
-check("index", "Tier 6.5 exists with 020 + 021", () =>
-  containsAll(IDX, [
-    "Tier 6.5: Post-Design Planning",
-    "[020 — Architect",
-    "[021 — Project Manager",
-  ]),
+check(
+  "index",
+  "Phase A design pipeline contains 022-025b, zero architect refs",
+  () => {
+    const txt = read(IDX);
+    const phaseA = txt.match(/### Phase A[\s\S]*?(?=### Phase)/);
+    if (!phaseA) return false;
+    const bullets = phaseA[0]
+      .split("\n")
+      .filter((l) => l.trim().startsWith("- ["));
+    const ids = ["022", "022b", "023", "024", "025", "025b"];
+    const missing = ids.filter(
+      (id) => !bullets.some((b) => new RegExp(`\\b${id}\\b`).test(b)),
+    );
+    const hasArch = bullets.some((b) => /\b020\b/.test(b));
+    return {
+      pass: missing.length === 0 && !hasArch,
+      detail: missing.length
+        ? `missing design IDs: ${missing.join(",")}`
+        : hasArch
+          ? "architect(020) leaked into Phase A"
+          : null,
+    };
+  },
 );
-check("index", "026 + 027 listed in Tier 4 (Brief System)", () => {
-  const txt = read(IDX);
-  const tier4 = txt.match(/### Tier 4: Brief System[\s\S]*?(?=### Tier)/);
-  if (!tier4) return false;
-  return (
-    tier4[0].includes("026 — Turborepo") &&
-    tier4[0].includes("027 — Shared packages")
-  );
-});
-
+check(
+  "index",
+  "026 + 027 listed as /new-project-invoked (not standalone build stages)",
+  () => {
+    const txt = read(IDX);
+    const t4 = txt.match(/### Tier 4: Brief System[\s\S]*?(?=### |## |---)/);
+    const pc = txt.match(/### Phase C[\s\S]*?(?=### Phase|## |---)/);
+    const t4Mentions = t4 ? /026.*Turborepo|027.*Shared/i.test(t4[0]) : false;
+    const pcMentions = pc ? /026.*Turborepo|027.*Shared/i.test(pc[0]) : false;
+    return {
+      pass: t4Mentions || pcMentions,
+      detail: `Tier4:${t4Mentions} PhaseC:${pcMentions} (refactor-003 moved 026+027 to /new-project step 5b — either tier acceptable as long as not in build pipeline)`,
+    };
+  },
+);
 // ─────────────────────────────────────────────────────────────────────
 // CATEGORY 15: Blueprint Appendix C
 // ─────────────────────────────────────────────────────────────────────

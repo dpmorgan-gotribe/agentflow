@@ -13,23 +13,23 @@ superseded-by: null
 branch: refactor/pipeline-reorder-architect-credentials
 affected-files:
   - scaffolding/000-scaffolding-index.md
-  - scaffolding/020-architect-agent.md
-  - scaffolding/021-pm-agent.md
-  - scaffolding/022-ui-designer-agent.md
-  - scaffolding/023-mockups-skill.md
-  - scaffolding/024-stylesheet-skill.md
-  - scaffolding/025-screens-skill.md
-  - scaffolding/026-turborepo-scaffold.md
-  - scaffolding/027-shared-packages.md
-  - scaffolding/028-backend-builder-agent.md
-  - scaffolding/029-web-frontend-builder.md
-  - scaffolding/030-mobile-frontend-builder.md
-  - scaffolding/034b-output-contract-zod-schemas.md
-  - scaffolding/035-orchestrator-core.md
-  - scaffolding/036-hitl-gates.md
-  - scaffolding/038-skills-agent.md
-  - scaffolding/040-app-store-compliance.md
-  - scaffolding/041-mcp-server-registration.md
+  - scaffolding/07-020-architect-agent.md
+  - scaffolding/08-021-pm-agent.md
+  - scaffolding/01-022-ui-designer-agent.md
+  - scaffolding/03-023-mockups-skill.md
+  - scaffolding/04-024-stylesheet-skill.md
+  - scaffolding/05-025-screens-skill.md
+  - scaffolding/12-026-turborepo-scaffold.md
+  - scaffolding/13-027-shared-packages.md
+  - scaffolding/14-028-backend-builder-agent.md
+  - scaffolding/15-029-web-frontend-builder.md
+  - scaffolding/16-030-mobile-frontend-builder.md
+  - scaffolding/09-034b-output-contract-zod-schemas.md
+  - scaffolding/21-035-orchestrator-core.md
+  - scaffolding/22-036-hitl-gates.md
+  - scaffolding/23-038-skills-agent.md
+  - scaffolding/25-040-app-store-compliance.md
+  - scaffolding/11-041-mcp-server-registration.md
   - .claude/skills/analyze/SKILL.md
   - .claude/skills/analyze/integrations.md
   - .claude/skills/new-project/SKILL.md
@@ -268,7 +268,7 @@ Reshuffle tiers to match new order:
 
 Add a top-of-file note: "Refactor-003 (2026-04-20) reordered the pipeline so architect + PM run after design sign-off. Canonical stage order lives in 035's `STAGES` array; blueprint Appendix C records the decision."
 
-### UPDATE — `scaffolding/020-architect-agent.md` (substantial rewrite, single invocation)
+### UPDATE — `scaffolding/07-020-architect-agent.md` (substantial rewrite, single invocation)
 
 Current 020 bundles MCP-server selection + architecture-yaml authoring at tier 5. Rewrite as a single late-running stage at tier 6.5 with these concrete changes:
 
@@ -293,13 +293,13 @@ Current 020 bundles MCP-server selection + architecture-yaml authoring at tier 5
    - `.mcp.json` contains build-stage servers only (design-stage defaults merged in at /new-project time, not re-written by architect)
    - No secrets appear in any architect output file
 
-### UPDATE — `scaffolding/021-pm-agent.md`
+### UPDATE — `scaffolding/08-021-pm-agent.md`
 
 Update position note: "Runs AFTER `/architect`, not after `/analyze`." One-paragraph addition to §Scope noting that tasks.yaml now references concrete vendor decisions (e.g., "Task: wire Resend transactional-email templates") rather than abstract placeholders. No scope rewrite — PM still consumes requirements.md + architecture.yaml + brief §12 / §19.
 
 **Dual-invocation for kit-change-request mini-plans.** The existing kit-change-request detour (035) invokes PM mid-design when `/screens` or a builder flags a missing primitive. That invocation produces a _mini-plan_ (single kit-bump spec), not the pipeline's main `tasks.yaml`. In refactor-003, the main PM stage still runs post-architect, but PM remains on-call for mini-plans during design. Add to §Scope: "PM is an on-demand agent. Main invocation produces `docs/tasks.yaml` post-architect; detour invocations produce `plans/active/kit-change-request-{id}.md` mini-plans during design. Both modes share the same agent definition; the orchestrator passes a `--mode=tasks | --mode=kit-change-request` arg."
 
-### UPDATE — `scaffolding/022-ui-designer-agent.md`
+### UPDATE — `scaffolding/01-022-ui-designer-agent.md`
 
 One frontmatter edit:
 
@@ -307,7 +307,7 @@ One frontmatter edit:
 
 No body changes — 022's system prompt already reads from analyst outputs, not architect. The stale frontmatter dep is the only break.
 
-### UPDATE — `scaffolding/023-mockups-skill.md`
+### UPDATE — `scaffolding/03-023-mockups-skill.md`
 
 Two concrete edits targeting the architect dependency:
 
@@ -316,7 +316,7 @@ Two concrete edits targeting the architect dependency:
 
 Task 041 provisioning prereq (line 49) stays but is now satisfied by `/new-project` step 5b (factory-default design-scope MCPs), not architect.
 
-### UPDATE — `scaffolding/024-stylesheet-skill.md`
+### UPDATE — `scaffolding/04-024-stylesheet-skill.md`
 
 One concrete edit:
 
@@ -328,7 +328,7 @@ This inverts the old "architect decides project-level" stance to "user-pick-at-g
 
 Also: add `iconLibrary` to `SelectedStyleSchema` (034b addition — noted separately below).
 
-### UPDATE — `scaffolding/025-screens-skill.md`
+### UPDATE — `scaffolding/05-025-screens-skill.md`
 
 One §Cross-task note edit around lines 106-107 (kit-change-request detour):
 
@@ -338,7 +338,7 @@ Add a paragraph clarifying the detour flow under refactor-003:
 
 No other change to 025's scope.
 
-### UPDATE — `scaffolding/028-backend-builder-agent.md`
+### UPDATE — `scaffolding/14-028-backend-builder-agent.md`
 
 One §Inputs addition documenting `.env` as an authoritative input:
 
@@ -346,7 +346,7 @@ One §Inputs addition documenting `.env` as an authoritative input:
 
 No code-shape change — backend-builder would naturally read env vars via `process.env.*` anyway. This is a documentation update so the spec is consistent with refactor-003's `.env` lifecycle.
 
-### UPDATE — `scaffolding/029-web-frontend-builder.md` + `030-mobile-frontend-builder.md`
+### UPDATE — `scaffolding/15-029-web-frontend-builder.md` + `030-mobile-frontend-builder.md`
 
 Same one-paragraph `.env` addition as 028, adjusted for web/mobile runtime:
 
@@ -354,7 +354,7 @@ Same one-paragraph `.env` addition as 028, adjusted for web/mobile runtime:
 
 Mobile (030) also gets a note about `.env` keys destined for EAS Build secrets vs baked-into-bundle public vars — the mobile-specific distinction that web doesn't have.
 
-### UPDATE — `scaffolding/026-turborepo-scaffold.md` + `027-shared-packages.md`
+### UPDATE — `scaffolding/12-026-turborepo-scaffold.md` + `027-shared-packages.md`
 
 Move the invocation trigger. Both run as part of `/new-project` (see §`/new-project` edit below). Rationale: Turborepo + pnpm + package layout is a fixed factory-level decision, not per-project. No architectural freedom means no architect call needed.
 
@@ -379,7 +379,7 @@ Add a new step **5b** between existing step 5 (copy agentic resources) and step 
 
 Update the directory-tree diagram in step 3 to include `packages/`, `mcp-defaults-design.json`, `turbo.json`, root `package.json`. Update return-JSON `filesCopied` to track monorepo-scaffold files.
 
-### UPDATE — `scaffolding/041-mcp-server-registration.md`
+### UPDATE — `scaffolding/11-041-mcp-server-registration.md`
 
 `/register-mcp-servers` gains a `--scope` arg:
 
@@ -388,7 +388,7 @@ Update the directory-tree diagram in step 3 to include `packages/`, `mcp-default
 
 The 041 skill's underlying registration logic doesn't change; only the invocation surface does. `.mcp.json` ends up as the union of design-scope + build-scope registrations. Both invocations are safe to re-run.
 
-### UPDATE — `scaffolding/038-skills-agent.md`
+### UPDATE — `scaffolding/23-038-skills-agent.md`
 
 Add `--scope=design | --scope=build` arg; split the skill-audit responsibilities:
 
@@ -397,7 +397,7 @@ Add `--scope=design | --scope=build` arg; split the skill-audit responsibilities
 
 Shared underlying logic (research → author → validate → deposit); only the audit-target list differs. Update §Invocation Point to list both stages; update §Responsibilities to document the two scopes.
 
-### UPDATE — `scaffolding/034b-output-contract-zod-schemas.md`
+### UPDATE — `scaffolding/09-034b-output-contract-zod-schemas.md`
 
 Four schema changes:
 
@@ -440,7 +440,7 @@ Four schema changes:
 
 Note in §Notes: architect NEVER reads `.env` — `envFileExists` comes from orchestrator's file-stat check, not a read.
 
-### UPDATE — `scaffolding/035-orchestrator-core.md`
+### UPDATE — `scaffolding/21-035-orchestrator-core.md`
 
 Rewrite the STAGES array to match refactor-003 order:
 
@@ -571,7 +571,7 @@ Acceptance criteria updates:
 - `register-mcp-build` is a structural stage but often a no-op — still present so architect extensions (custom MCP servers) flow through registration consistently.
 - Kit-change-request detour logic unchanged; if fired post-signoff it re-opens gate 4 but **not** gate 5 (credentials persist across a re-opened design signoff unless architect re-runs AND a vendor decision changes — architect then emits credentials-diff.md and gate 5 re-opens).
 
-### UPDATE — `scaffolding/036-hitl-gates.md`
+### UPDATE — `scaffolding/22-036-hitl-gates.md`
 
 Extend to five gates and document gate 5 as file-drop-only:
 
@@ -609,7 +609,7 @@ Gate 5 is never disableable in autonomous mode — builders have no .env to work
 
 Remove the HTTP-server text from earlier drafts of this refactor. Gate 5's server endpoints are NOT implemented.
 
-### UPDATE — `scaffolding/040-app-store-compliance.md`
+### UPDATE — `scaffolding/25-040-app-store-compliance.md`
 
 One-line addition: "Runs after `/architect` so that `architecture.yaml.compliance` (populated by architect) is available." No other change — the compliance task reads the same fields as today.
 
@@ -709,29 +709,29 @@ No code runs in this refactor — all changes are spec + skill updates. Smoke-te
 
 ## Affected Consumers
 
-| Consumer                | File                                                                          | Change Required                                                                                                                      |
-| ----------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------- |
-| Analyst skill           | `.claude/skills/analyze/SKILL.md`                                             | Add phase 2.5 step + integrations.md sub-skill invocation; update return-JSON shape; stop naming vendors in requirements.md template |
-| NEW analyst sub-skill   | `.claude/skills/analyze/integrations.md`                                      | Create file — research menu producer                                                                                                 |
-| Architect task spec     | `scaffolding/020-architect-agent.md`                                          | Substantial rewrite: single late invocation; vendor/self-hosted/declined enum; credential emission contract                          |
-| Orchestrator spec       | `scaffolding/035-orchestrator-core.md`                                        | Rewrite STAGES array; document register-mcp-build no-op-OK stage                                                                     |
-| HITL gates spec         | `scaffolding/036-hitl-gates.md`                                               | Add gate 5 file-drop spec; no HTTP server for gate 5                                                                                 |
-| Zod schemas             | `scaffolding/034b-output-contract-zod-schemas.md`                             | Add AnalyzeOutput.integrationsResearched; extend ArchitectOutput; new CredentialsGateOutput                                          |
-| Skills agent            | `scaffolding/038-skills-agent.md`                                             | Split by --scope=design                                                                                                              | build; document dual invocation |
-| MCP registration        | `scaffolding/041-mcp-server-registration.md`                                  | Add --scope arg; design-scope runs at /new-project, build-scope runs post-architect                                                  |
-| PM agent                | `scaffolding/021-pm-agent.md`                                                 | Position note: now post-architect, not post-analyze; add dual-mode (`--mode=tasks` main run / `--mode=kit-change-request` detour)    |
-| UI Designer agent       | `scaffolding/022-ui-designer-agent.md`                                        | Frontmatter fix: `depends-on: ["020"] → ["019"]`. UI Designer runs before architect now.                                             |
-| /mockups skill          | `scaffolding/023-mockups-skill.md`                                            | Remove architect prereq; read `design_dials` from `styles.md` / `selected-style.json`, not `architecture.yaml`                       |
-| /stylesheet skill       | `scaffolding/024-stylesheet-skill.md`                                         | Read `icon_library` from `selected-style.json`, not `architecture.yaml`. Add `iconLibrary` field to SelectedStyleSchema (034b)       |
-| /screens skill          | `scaffolding/025-screens-skill.md`                                            | Document kit-change-request detour under refactor-003 (PM dual-mode invocation)                                                      |
-| Backend builder         | `scaffolding/028-backend-builder-agent.md`                                    | §Inputs addition documenting `.env` as a gate-5-captured authoritative input                                                         |
-| Web frontend builder    | `scaffolding/029-web-frontend-builder.md`                                     | §Inputs addition: `.env` (public-prefixed keys only for bundle); reviewer scans for leakage                                          |
-| Mobile frontend builder | `scaffolding/030-mobile-frontend-builder.md`                                  | §Inputs addition: `.env` + EAS Build-secrets vs public-vars distinction                                                              |
-| Monorepo scaffold       | `scaffolding/026-turborepo-scaffold.md`, `scaffolding/027-shared-packages.md` | Move invocation to /new-project step 5b                                                                                              |
-| /new-project skill      | `.claude/skills/new-project/SKILL.md`                                         | Add step 5b: monorepo scaffold + mcp-defaults-design.json registration                                                               |
-| App Store compliance    | `scaffolding/040-app-store-compliance.md`                                     | One-line note: runs after /architect                                                                                                 |
-| Scaffolding index       | `scaffolding/000-scaffolding-index.md`                                        | Reshuffle tiers; add Tier 6.5                                                                                                        |
-| Blueprint               | `multi-agent-app-generation-blueprint.md`                                     | Append Appendix C at EOF                                                                                                             |
+| Consumer                | File                                                                                | Change Required                                                                                                                      |
+| ----------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------- |
+| Analyst skill           | `.claude/skills/analyze/SKILL.md`                                                   | Add phase 2.5 step + integrations.md sub-skill invocation; update return-JSON shape; stop naming vendors in requirements.md template |
+| NEW analyst sub-skill   | `.claude/skills/analyze/integrations.md`                                            | Create file — research menu producer                                                                                                 |
+| Architect task spec     | `scaffolding/07-020-architect-agent.md`                                             | Substantial rewrite: single late invocation; vendor/self-hosted/declined enum; credential emission contract                          |
+| Orchestrator spec       | `scaffolding/21-035-orchestrator-core.md`                                           | Rewrite STAGES array; document register-mcp-build no-op-OK stage                                                                     |
+| HITL gates spec         | `scaffolding/22-036-hitl-gates.md`                                                  | Add gate 5 file-drop spec; no HTTP server for gate 5                                                                                 |
+| Zod schemas             | `scaffolding/09-034b-output-contract-zod-schemas.md`                                | Add AnalyzeOutput.integrationsResearched; extend ArchitectOutput; new CredentialsGateOutput                                          |
+| Skills agent            | `scaffolding/23-038-skills-agent.md`                                                | Split by --scope=design                                                                                                              | build; document dual invocation |
+| MCP registration        | `scaffolding/11-041-mcp-server-registration.md`                                     | Add --scope arg; design-scope runs at /new-project, build-scope runs post-architect                                                  |
+| PM agent                | `scaffolding/08-021-pm-agent.md`                                                    | Position note: now post-architect, not post-analyze; add dual-mode (`--mode=tasks` main run / `--mode=kit-change-request` detour)    |
+| UI Designer agent       | `scaffolding/01-022-ui-designer-agent.md`                                           | Frontmatter fix: `depends-on: ["020"] → ["019"]`. UI Designer runs before architect now.                                             |
+| /mockups skill          | `scaffolding/03-023-mockups-skill.md`                                               | Remove architect prereq; read `design_dials` from `styles.md` / `selected-style.json`, not `architecture.yaml`                       |
+| /stylesheet skill       | `scaffolding/04-024-stylesheet-skill.md`                                            | Read `icon_library` from `selected-style.json`, not `architecture.yaml`. Add `iconLibrary` field to SelectedStyleSchema (034b)       |
+| /screens skill          | `scaffolding/05-025-screens-skill.md`                                               | Document kit-change-request detour under refactor-003 (PM dual-mode invocation)                                                      |
+| Backend builder         | `scaffolding/14-028-backend-builder-agent.md`                                       | §Inputs addition documenting `.env` as a gate-5-captured authoritative input                                                         |
+| Web frontend builder    | `scaffolding/15-029-web-frontend-builder.md`                                        | §Inputs addition: `.env` (public-prefixed keys only for bundle); reviewer scans for leakage                                          |
+| Mobile frontend builder | `scaffolding/16-030-mobile-frontend-builder.md`                                     | §Inputs addition: `.env` + EAS Build-secrets vs public-vars distinction                                                              |
+| Monorepo scaffold       | `scaffolding/12-026-turborepo-scaffold.md`, `scaffolding/13-027-shared-packages.md` | Move invocation to /new-project step 5b                                                                                              |
+| /new-project skill      | `.claude/skills/new-project/SKILL.md`                                               | Add step 5b: monorepo scaffold + mcp-defaults-design.json registration                                                               |
+| App Store compliance    | `scaffolding/25-040-app-store-compliance.md`                                        | One-line note: runs after /architect                                                                                                 |
+| Scaffolding index       | `scaffolding/000-scaffolding-index.md`                                              | Reshuffle tiers; add Tier 6.5                                                                                                        |
+| Blueprint               | `multi-agent-app-generation-blueprint.md`                                           | Append Appendix C at EOF                                                                                                             |
 
 Design-stage tasks (025b, 022b, 032b) need no edits — they read analyst + selected-style + kit outputs only. 022, 023, 024, 025 DO need the edits listed above (discovered during the coherence audit — frontmatter/depends-on + three architect-field reads that had to be relocated to `selected-style.json`).
 

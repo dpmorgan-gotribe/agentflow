@@ -1,6 +1,8 @@
 # Scaffolding Index — Multi-Agent App Generation System
 
 > **Refactor-003 (2026-04-20)** reordered the pipeline so the architect (020) and PM (021) run AFTER design sign-off, not before. 020 moved from tier 5 to tier 6.5; 021 followed. 026 + 027 (monorepo + shared packages) moved from tier 7 to "invoked from /new-project step 5b" at project-bootstrap time. 038 skills-agent split into design + build scopes. Gate 5 (credentials, file-drop) added between architect and PM. Blueprint Appendix C records the decision; 035's `STAGES` array is the canonical pipeline order.
+>
+> **File-naming (2026-04-20):** pending scaffolding tasks are prefixed `NN-` where `NN` is build order (01–26). The original task-id (020, 022, 022b, 025b, etc.) is preserved inside the filename as the canonical reference — `depends-on` arrays, blueprint cross-refs, and plan records continue to use task-id strings verbatim. `ls scaffolding/` now sorts in implementation order.
 
 ## Build Philosophy
 
@@ -40,9 +42,9 @@ _Model config, context preservation, settings.json wiring._
 - [013 — /save-context skill](archive/013-save-context-skill.md) ✓ complete
 - [014 — /load-context-chain skill](archive/014-load-context-chain-skill.md) ✓ complete
 
-### Tier 4: Brief System (Tasks 015-018)
+### Tier 4: Brief System (Tasks 015-019 + monorepo bootstrap)
 
-_The canonical input that drives everything._
+_The canonical input that drives everything + project-bootstrap scaffolding that /new-project step 5b invokes at init time (refactor-003)._
 
 - [015 — Brief schema & frontmatter validation](archive/015-brief-schema.md) ✓ complete
 - [016 — Brief template (20-section structure)](archive/016-brief-template.md) ✓ complete
@@ -50,71 +52,74 @@ _The canonical input that drives everything._
 - [018 — /scan-assets skill (asset scanner)](archive/018-scan-assets-skill.md) ✓ complete
 - [018b — /new-project skill (bootstrap projects/<name>/ + step 5b monorepo scaffold + design-MCPs — refactor-003)](archive/018b-new-project-skill.md) ✓ complete
 - [018c — /draft-brief skill (proposal → filled-in brief.md)](archive/018c-draft-brief-skill.md) ✓ complete
-- [026 — Turborepo + pnpm workspace scaffold (invoked from /new-project step 5b — refactor-003)](026-turborepo-scaffold.md)
-- [027 — Shared packages skeleton (invoked from /new-project step 5b — refactor-003)](027-shared-packages.md)
-
-### Tier 5: Planning Agents (Task 019)
-
-_The analyst that turns a brief into actionable specs. Per refactor-003, architect (020) and PM (021) moved to tier 6.5 (post-design)._
-
 - [019 — Analyst agent + /analyze skill](archive/019-analyst-agent.md) ✓ complete
 
-### Tier 6: Design Pipeline (Tasks 022-025b)
+---
 
-_From brief to mockup-grid style selection to UI Kit to composed screens to visual review to sign-off. Per refactor-001, this tier covers the full six-stage design flow. Per refactor-003, design stages read analyst outputs + selected-style.json only — zero architect dependency._
+## Pending tasks — in implementation order
 
-- [022 — UI Designer agent definition (opinionated identity + anti-slop)](022-ui-designer-agent.md)
-- [022b — UI Kit consumption contract (ESLint plugin + validate-consumer + CONTRACT.md)](022b-ui-kit-contract.md)
-- [023 — /mockups skill (N styles × M apps style-selection gate)](023-mockups-skill.md)
-- [024 — /stylesheet skill (UI Kit assembly: tokens + primitives + patterns + layouts + Storybook)](024-stylesheet-skill.md)
-- [025 — /screens skill + /user-flows-generator (kit-only composition + single-screen retry mode)](025-screens-skill.md)
-- [025b — /visual-review skill (Layer 7 — LLM visual critique loop)](025b-visual-review-skill.md)
+Tasks below are in the exact order they should be built. Filenames prefixed `NN-` sort `ls scaffolding/` the same way. Task-id (e.g. `022`, `025b`, `020`) preserved inside the filename for cross-reference continuity.
 
-### Tier 6.5: Post-Design Planning (Tasks 020-021, refactor-003)
+### Phase A — Design pipeline (tier 6; refactor-001 scope, refactor-003 unchanged)
 
-_Architect decides vendors + emits .env.example after the user has seen design sign-off. PM decomposes into tasks.yaml using concrete architecture decisions. Gate 5 (credentials file-drop) sits between architect and PM. Skills-audit-build runs here too (038 scope=build)._
+_From analyst outputs to mockup grid → UI Kit → composed screens → visual review → sign-off. Framework-agnostic HTML + CSS + CVA. Tests directly against `projects/mindapp/` and `projects/gotribe-v1/` analyst outputs as each skill lands._
 
-- [020 — Architect agent + architecture.yaml + .env.example + credentials/deployment checklists](020-architect-agent.md)
-- [021 — Project Manager agent + tasks.yaml (dual-mode: tasks + kit-change-request)](021-pm-agent.md)
-- [038 — Skills Agent (scope=build; also invoked at tier 6 with scope=design)](038-skills-agent.md)
+- [01 / 022 — UI Designer agent definition (opinionated identity + anti-slop + named-references library)](01-022-ui-designer-agent.md)
+- [02 / 022b — UI Kit consumption contract (ESLint plugin + validate-consumer + CONTRACT.md template)](02-022b-ui-kit-contract.md)
+- [03 / 023 — /mockups skill (N styles × M apps style-selection grid)](03-023-mockups-skill.md)
+- [04 / 024 — /stylesheet skill (UI Kit assembly: tokens + primitives + patterns + layouts + Storybook)](04-024-stylesheet-skill.md)
+- [05 / 025 — /screens skill + /user-flows-generator (kit-only composition + single-screen retry mode)](05-025-screens-skill.md)
+- [06 / 025b — /visual-review skill (Layer 7 — LLM visual critique loop)](06-025b-visual-review-skill.md)
 
-### Tier 7: Build Pipeline (Tasks 028-030, 041)
+### Phase B — Post-design planning (tier 6.5; refactor-003)
 
-_Builder agents that consume architecture.yaml + .env (populated at gate 5) + UI Kit + composed screens._
+_Architect decides vendors + emits .env.example after design sign-off. PM decomposes to tasks.yaml using concrete architecture decisions. Gate 5 (credentials file-drop) sits between them._
 
-- [028 — Backend Builder agent](028-backend-builder-agent.md)
-- [029 — Web Frontend Builder agent](029-web-frontend-builder.md)
-- [030 — Mobile Frontend Builder agent](030-mobile-frontend-builder.md)
-- [041 — MCP server registration & .mcp.json generation (scope=design at /new-project, scope=build post-architect)](041-mcp-server-registration.md)
+- [07 / 020 — Architect agent + architecture.yaml + .env.example + credentials/deployment checklists](07-020-architect-agent.md)
+- [08 / 021 — Project Manager agent + tasks.yaml (dual-mode: --mode=tasks main / --mode=kit-change-request detour)](08-021-pm-agent.md)
 
-**Note:** per refactor-003, tasks 026 (Turborepo scaffold) and 027 (shared packages skeleton) moved OUT of this tier — they now run from `/new-project` step 5b at project-bootstrap time, not as pipeline stages. They're listed under Tier 4 alongside the bootstrap skills.
+### Phase C — Contracts + foundational infrastructure
 
-### Tier 8: Quality & Ship (Tasks 031-034)
+_Zod schemas + output-contract enforcement + MCP registration + monorepo scaffolds that Phase D builders consume. 034b before 035 (orchestrator imports StageSchemas). 026+027 are specs for the logic `/new-project` step 5b already invokes at init time._
 
-_Testing, review, git, output enforcement._
+- [09 / 034b — Output contract Zod schemas (`StageSchemas` lookup for all 17 stages)](09-034b-output-contract-zod-schemas.md)
+- [10 / 034 — Output contract enforcement (6 layers — prompt / file / Zod / hook / retry / verifier)](10-034-output-contracts.md)
+- [11 / 041 — MCP server registration (`/register-mcp-servers --scope=design|build`; dual-invocation per refactor-003)](11-041-mcp-server-registration.md)
+- [12 / 026 — Turborepo + pnpm workspace scaffold (invoked from /new-project step 5b)](12-026-turborepo-scaffold.md)
+- [13 / 027 — Shared packages skeleton — `@repo/{ui-kit, types, utils, api-client, orchestrator-contracts}` (invoked from /new-project step 5b)](13-027-shared-packages.md)
 
-- [031 — Tester agent](031-tester-agent.md)
-- [032 — Reviewer agent + output contract hooks](032-reviewer-agent.md)
-- [032b — HTML Verifier agent (Layer 6 defense-in-depth)](032b-html-verifier-agent.md)
-- [033 — Git Agent](033-git-agent.md)
-- [034 — Output contract enforcement (6 layers)](034-output-contracts.md)
-- [034b — Output contract Zod schemas](034b-output-contract-zod-schemas.md)
+### Phase D — Build pipeline (tier 7)
 
-### Tier 9: Orchestrator (Tasks 035-036)
+_Builder agents consuming architecture.yaml + `.env` (populated at gate 5) + UI Kit + composed screens._
 
-_The external TypeScript orchestrator that ties it all together._
+- [14 / 028 — Backend Builder agent (NestJS + tRPC + Drizzle)](14-028-backend-builder-agent.md)
+- [15 / 029 — Web Frontend Builder agent (Next.js)](15-029-web-frontend-builder.md)
+- [16 / 030 — Mobile Frontend Builder agent (Expo)](16-030-mobile-frontend-builder.md)
 
-- [035 — Orchestrator core (stage runner + SDK integration)](035-orchestrator-core.md)
-- [036 — HITL gates + budget enforcement](036-hitl-gates.md)
+### Phase E — Quality + ship (tier 8)
 
-### Tier 10: Meta & Compliance (Tasks 037-040)
+_Testing, review, git, HTML verification._
 
-_Self-improvement loop and App Store readiness._
+- [17 / 031 — Tester agent](17-031-tester-agent.md)
+- [18 / 032 — Reviewer agent + output contract hooks](18-032-reviewer-agent.md)
+- [19 / 032b — HTML Verifier agent (Layer 6 defense-in-depth)](19-032b-html-verifier-agent.md)
+- [20 / 033 — Git Agent](20-033-git-agent.md)
 
-- [037 — Lessons Agent](037-lessons-agent.md)
-- [038 — Skills Agent](038-skills-agent.md)
-- [039 — Agent Expert (meta-agent)](039-agent-expert.md)
-- [040 — App Store compliance layer](040-app-store-compliance.md)
+### Phase F — Orchestrator (tier 9)
+
+_The external TypeScript orchestrator + HITL gate mechanics that tie stages together for autonomous runs._
+
+- [21 / 035 — Orchestrator core (stage runner + SDK integration + kit-change-request detour)](21-035-orchestrator-core.md)
+- [22 / 036 — HITL gates (5 gates — requirements / mockups / design-system / signoff / credentials-file-drop) + budget enforcement](22-036-hitl-gates.md)
+
+### Phase G — Meta & compliance (tier 10)
+
+_Self-improvement loop, skills-audit split, App Store readiness, meta-agent._
+
+- [23 / 038 — Skills Agent (dual-scope: `--scope=design` runs pre-mockups, `--scope=build` runs post-architect)](23-038-skills-agent.md)
+- [24 / 037 — Lessons Agent](24-037-lessons-agent.md)
+- [25 / 040 — App Store compliance layer](25-040-app-store-compliance.md)
+- [26 / 039 — Agent Expert (meta-agent for authoring + editing other agents)](26-039-agent-expert.md)
 
 ---
 
@@ -126,3 +131,7 @@ After each task:
 2. Human reviews the output files
 3. Human signs off: `APPROVED` or `REVISE: [feedback]`
 4. Only then does the next task begin
+
+## Testing protocol (integration beds)
+
+Treat `projects/mindapp/` (5-style useAssets=false; mobile + webapp) and `projects/gotribe-v1/` (3-style useAssets=true; webapp + mobile + admin) as live integration test beds. Any stage that breaks on either gets a `plan-bug`. Any stage that works should round-trip on both before marking the scaffolding task complete.

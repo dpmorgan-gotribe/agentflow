@@ -3,23 +3,23 @@
 ## files (23/23)
 
 - [x] exists: scaffolding/000-scaffolding-index.md
-- [x] exists: scaffolding/020-architect-agent.md
-- [x] exists: scaffolding/021-pm-agent.md
-- [x] exists: scaffolding/022-ui-designer-agent.md
-- [x] exists: scaffolding/023-mockups-skill.md
-- [x] exists: scaffolding/024-stylesheet-skill.md
-- [x] exists: scaffolding/025-screens-skill.md
-- [x] exists: scaffolding/026-turborepo-scaffold.md
-- [x] exists: scaffolding/027-shared-packages.md
-- [x] exists: scaffolding/028-backend-builder-agent.md
-- [x] exists: scaffolding/029-web-frontend-builder.md
-- [x] exists: scaffolding/030-mobile-frontend-builder.md
-- [x] exists: scaffolding/034b-output-contract-zod-schemas.md
-- [x] exists: scaffolding/035-orchestrator-core.md
-- [x] exists: scaffolding/036-hitl-gates.md
-- [x] exists: scaffolding/038-skills-agent.md
-- [x] exists: scaffolding/040-app-store-compliance.md
-- [x] exists: scaffolding/041-mcp-server-registration.md
+- [x] exists: scaffolding/07-020-architect-agent.md
+- [x] exists: scaffolding/08-021-pm-agent.md
+- [x] exists: scaffolding/01-022-ui-designer-agent.md
+- [x] exists: scaffolding/03-023-mockups-skill.md
+- [x] exists: scaffolding/04-024-stylesheet-skill.md
+- [x] exists: scaffolding/05-025-screens-skill.md
+- [x] exists: scaffolding/12-026-turborepo-scaffold.md
+- [x] exists: scaffolding/13-027-shared-packages.md
+- [x] exists: scaffolding/14-028-backend-builder-agent.md
+- [x] exists: scaffolding/15-029-web-frontend-builder.md
+- [x] exists: scaffolding/16-030-mobile-frontend-builder.md
+- [x] exists: scaffolding/09-034b-output-contract-zod-schemas.md
+- [x] exists: scaffolding/21-035-orchestrator-core.md
+- [x] exists: scaffolding/22-036-hitl-gates.md
+- [x] exists: scaffolding/23-038-skills-agent.md
+- [x] exists: scaffolding/25-040-app-store-compliance.md
+- [x] exists: scaffolding/11-041-mcp-server-registration.md
 - [x] exists: .claude/skills/analyze/SKILL.md
 - [x] exists: .claude/skills/analyze/integrations.md
 - [x] exists: .claude/skills/new-project/SKILL.md
@@ -154,9 +154,9 @@
 ## index (4/4)
 
 - [x] refactor-003 banner at top
-- [x] Tier 5 bullet list contains only 019 (020 + 021 in prose only) — bullets: analyst:true architect:false pm:false (020+021 in descriptive prose only is expected)
-- [x] Tier 6.5 exists with 020 + 021
-- [x] 026 + 027 listed in Tier 4 (Brief System)
+- [x] Phase B post-design planning includes 020 + 021 (architect moved out of tier 5) — Phase B bullets: architect(020):true pm(021):true
+- [x] Phase A design pipeline contains 022-025b, zero architect refs
+- [x] 026 + 027 listed as /new-project-invoked (not standalone build stages) — Tier4:false PhaseC:true (refactor-003 moved 026+027 to /new-project step 5b — either tier acceptable as long as not in build pipeline)
 
 ## blueprint (3/3)
 
