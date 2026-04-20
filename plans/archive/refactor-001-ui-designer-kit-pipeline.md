@@ -473,7 +473,7 @@ actual-files-changed:
   - scaffolding/000-scaffolding-index.md (modified)
   - multi-agent-app-generation-blueprint.md (modified — addendum appended)
   - plans/active/refactor-001-style-grid-preview.html (created — demo)
-commits: []   # all work on fix/test-bug working tree; uncommitted at archive time
+commits: [] # all work on fix/test-bug working tree; uncommitted at archive time
 branch-note: "Plan nominally targeted refactor/ui-designer-kit-pipeline but work was done on the existing fix/test-bug branch working tree. No dedicated branch was created. Suggest squash-committing this refactor to a new branch named refactor/ui-designer-kit-pipeline before the next feature commit."
 attempts: 1
 lessons:

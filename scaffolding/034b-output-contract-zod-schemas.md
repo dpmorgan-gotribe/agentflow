@@ -376,9 +376,38 @@ export type BuildMobileFrontendOutput = z.infer<
 >;
 ```
 
+### `analyze.ts` — **EXTENDED** (per refactor-002)
+
+The prior `AnalyzeOutput` shape didn't match what `.claude/skills/analyze/SKILL.md` actually emits at phase 5. Refactor-002 aligns the schema to the analyst's real output and applies refactor-001's `PlatformId` canonicalization.
+
+```ts
+import { z } from "zod";
+import { PlatformId } from "./common.js";
+
+export const AssetMode = z.enum(["standard", "useAssets"]);
+export type AssetMode = z.infer<typeof AssetMode>;
+
+export const AnalyzeOutput = z.object({
+  success: z.literal(true),
+  detectedPlatforms: z.array(PlatformId).nonempty(),
+  screensByPlatform: z.record(PlatformId, z.number().int().nonnegative()),
+  coverageByPlatform: z.record(PlatformId, z.number().int().min(0).max(100)),
+  styleCount: z.number().int().positive(),
+  assetMode: AssetMode,
+  skillsNeeded: z.array(z.string()),
+  mcpHints: z.array(z.string()),
+  openQuestions: z.number().int().nonnegative(),
+  warnings: z.array(z.string()),
+});
+export type AnalyzeOutput = z.infer<typeof AnalyzeOutput>;
+```
+
+**Note on `assetsFound`.** The prior schema had an `assetsFound: { logos, icons, fonts, images, wireframes, brandGuides }` block. Those counts live in `docs/asset-inventory.json` (produced by `/scan-assets`, task 018) — the stage-return JSON does not duplicate them. Downstream consumers read the inventory file directly.
+
+**Note on `targets`.** The prior schema had `targets: Target[]`. The analyst's `docs/brief-summary.json` separately carries `targets: [{ platformId, appId, screenCount }]` (where `platformId` is `PlatformId`, not `Target`). The stage-return JSON used to return the schema's validation covers only `detectedPlatforms` — the richer per-app array stays in the on-disk artifact that downstream stages read by path.
+
 ### Unchanged schemas (preserved from prior spec)
 
-- `analyze.ts` — `AnalyzeOutput`
 - `skills-audit.ts` — `SkillsAuditOutput`
 - `architect.ts` — `ArchitectOutput`
 - `pm.ts` — `PmOutput`

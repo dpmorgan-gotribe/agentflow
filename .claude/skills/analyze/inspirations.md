@@ -92,11 +92,33 @@ concrete references and design-system precedents.
 
 ## Design Systems to Reference
 
-| Design System | URL                | What to Learn                             |
-| ------------- | ------------------ | ----------------------------------------- |
-| Linear        | https://linear.app | Keyboard-first interactions, compact data |
-| Stripe        | https://stripe.com | Dashboard density, tables, data viz       |
-| Notion        | https://notion.so  | Block-based layout, flexibility           |
+Canonical pool (aligned with task 022's UI Designer system prompt — analyst-proposed references are cited verbatim by the Designer when justifying style decisions, so picks should come from this set unless a brief explicitly requires an outlier):
+
+| Design System    | URL                                                           | What to Learn                                | Best For                |
+| ---------------- | ------------------------------------------------------------- | -------------------------------------------- | ----------------------- |
+| Linear           | https://linear.app                                            | Keyboard-first, compact data, sparse chrome  | Productivity / PM       |
+| Stripe Dashboard | https://stripe.com                                            | Dashboard density, tables, data viz          | B2B / finance / SaaS    |
+| Arc              | https://arc.net                                               | Tab UI, asymmetric chrome, playful motion    | Consumer / browser      |
+| Raycast          | https://raycast.com                                           | Command palette, zero-chrome, inline actions | Developer tools         |
+| Things 3         | https://culturedcode.com/things                               | Empty states, unhurried pacing, soft shadows | Productivity consumer   |
+| Vercel           | https://vercel.com                                            | Confident typography, restrained motion      | Marketing / landing     |
+| Notion           | https://notion.so                                             | Block-based layout flexibility               | Docs / knowledge work   |
+| Duolingo         | https://duolingo.com                                          | Progressive disclosure, celebration moments  | Consumer playful        |
+| Superhuman       | https://superhuman.com                                        | Keyboard-driven, density, inline validation  | Power-user SaaS         |
+| Height           | https://height.app                                            | Tables + spreadsheets hybrid, density        | PM / data-heavy         |
+| Figma            | https://figma.com                                             | Canvas-tool UX, panels + keyboard            | Creative / design tools |
+| Framer           | https://framer.com                                            | Editorial marketing, confident typography    | Marketing / creative    |
+| PostHog          | https://posthog.com                                           | Dashboards, clear information hierarchy      | Dashboard / analytics   |
+| Retool           | https://retool.com                                            | Dense data tables, admin chrome              | Admin / internal tools  |
+| Material 3       | https://m3.material.io                                        | Platform conventions (Android)               | Android-aware products  |
+| Apple HIG        | https://developer.apple.com/design/human-interface-guidelines | Platform conventions (iOS)                   | iOS-aware products      |
+
+After per-style mood-matching in `styles.md`, ensure each style's
+`namedReferences` field pulls from this table (or from a style-appropriate
+equivalent opinionated app). A style citing only obscure competitors as
+its inspiration anchors is a smell — competitors belong in
+`competitors.md` context, not as the UI Designer's justification
+references.
 
 ---
 

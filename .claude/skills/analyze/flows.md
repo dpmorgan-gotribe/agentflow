@@ -24,7 +24,8 @@ covers both deliverables).
 
 ## Inputs you receive
 
-- Platform name (`web` | `mobile` | `admin` | `desktop`)
+- Platform name (`webapp` | `mobile` | `admin` | `desktop`) — `PlatformId`
+  per 034b's common.ts
 - Brief slice for that platform (either section of brief.md or a
   companion `platform-briefs/{platform}.md`)
 - Full brief.md for context

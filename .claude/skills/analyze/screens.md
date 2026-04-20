@@ -20,7 +20,8 @@ components, icons, and flow memberships. This is the primary input to
 
 ## Inputs you receive
 
-- Platform name (`web` | `mobile` | `admin` | `desktop`)
+- Platform name (`webapp` | `mobile` | `admin` | `desktop`) — `PlatformId`
+  per 034b's common.ts
 - Brief slice for this platform
 - `docs/analysis/{platform}/flows.md` (just produced — sibling output)
 - `docs/analysis/{platform}/navigation-schema.md` (just produced)
@@ -102,7 +103,8 @@ components, icons, and flow memberships. This is the primary input to
 ## App-level fields
 
 - `appId` — platform-qualified identifier, e.g., `runclub-mobile`,
-  `runclub-web`, `runclub-admin`. Kebab-case.
+  `runclub-webapp`, `runclub-admin`. Kebab-case. Uses `PlatformId` as the
+  suffix (matches `appType`).
 - `appName` — human-readable app name.
 - `appType` — one of: `mobile` | `webapp` | `admin` | `desktop`.
 - `layoutSkill` — the skill key the layout primitive uses:

@@ -86,8 +86,50 @@ For each style block, specify:
 
 - `radius` — `none` | `subtle` (2-4px) | `rounded` (8-12px) | `pill` (999px)
 - `shadow` — `flat` | `subtle` (1-2 levels) | `raised` (3+ levels)
-- `density` — `compact` | `comfortable` | `spacious`
+- `density` — `compact` | `comfortable` | `spacious` (human-readable label;
+  the numeric `dials.visual_density` below is authoritative for downstream
+  computation — the categorical label must agree with the dial)
 - `characteristics` — array of 3 one-liners describing style personality
+
+**Dials (required; integer 1–10 each):**
+
+These three numbers calibrate every downstream generation decision. `/mockups`
+seeds `docs/mockups/style-{K}/dials.yaml` from them; `/stylesheet` reads them
+for token-scale choices (spacing defaults, motion durations, layout-template
+variance).
+
+- `design_variance` — 1 = perfectly symmetric / 10 = experimental, asymmetric
+- `motion_intensity` — 1 = static / 10 = cinematic / spring-heavy
+- `visual_density` — 1 = gallery-airy / 10 = cockpit-dense
+
+Choose deliberately. A style's personality is carried as much by the dials
+as by the palette. Recommended mapping:
+
+- Bold / editorial / creative → variance 6–9, motion 5–8, density 3–5
+- Corporate / productivity / B2B → variance 2–4, motion 2–4, density 6–8
+- Consumer / playful → variance 5–7, motion 6–9, density 3–5
+- Dashboard / data-heavy → variance 1–3, motion 1–3, density 7–9
+
+**Named references (required; 2–3 apps from the canonical pool):**
+
+A short list of concrete apps whose design language inspired this style.
+The UI Designer (task 022) cites these when justifying decisions — its system
+prompt includes the same pool, so analyst-proposed references are used verbatim.
+
+Canonical pool: Linear, Stripe Dashboard, Arc, Raycast, Things 3, Vercel,
+Notion, Duolingo, Superhuman, Height, Figma, Framer, PostHog, Retool,
+Airbnb, Robinhood, Instagram, Apple HIG-native.
+
+Prefer opinionated design-system references over obscure competitors. No
+style should cite only small-competitor apps as its inspiration anchors —
+those go in `competitors.md` context, not here.
+
+**Dark mode (optional):**
+
+If you know the style's dark-mode tokens a priori (from a brand guide or
+the style's inherent palette), emit a `darkMode:` subsection with the 9
+inverted color tokens. If omitted, `/stylesheet` (task 024) derives
+dark-mode values algorithmically from the light palette — safe default.
 
 ## Output structure
 
@@ -144,6 +186,18 @@ For each style block, specify:
   - generous whitespace to feel unhurried
   - subtle shadows — never flashy
 
+### Dials
+
+- design_variance: 3
+- motion_intensity: 3
+- visual_density: 5
+
+### Named references
+
+- Linear — calm data density; minimal chrome
+- Things 3 — friendly empty states; unhurried pacing
+- Notion — block-based layout flexibility
+
 ### Layout Patterns (Style 0 ONLY, from wireframes if present)
 
 {If wireframes exist in asset-inventory: describe navigation, header,
@@ -185,6 +239,21 @@ those are placeholders.}
 - radius: ...
 - shadow: ...
 - density: ...
+
+### Dials
+
+- design_variance: {1–10}
+- motion_intensity: {1–10}
+- visual_density: {1–10}
+
+### Named references
+
+- {App 1} — {specific thing to take}
+- {App 2} — {specific thing to take}
+- {App 3 (optional)} — {specific thing to take}
+
+### Visual (continued)
+
 - characteristics:
   - ...
 

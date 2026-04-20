@@ -2,7 +2,7 @@
 name: analyze
 description: First pipeline stage. Analyzes brief.md, user assets, and the competitive landscape. Produces research + N style options + asset recommendations + mood board + per-platform flows + per-platform screens.json + requirements + brief-summary. Orchestrates phase-3 and phase-4 workers in parallel via the Agent tool.
 when_to_use: start of every new project after brief.md is validated; re-run when brief changes materially
-argument-hint: [--style-count N] [--use-assets] [--platforms web,mobile,admin] [--skip-research]
+argument-hint: [--style-count N] [--use-assets] [--platforms webapp,mobile,admin] [--skip-research]
 allowed-tools: Read Write Bash Grep Glob WebSearch WebFetch Agent Skill
 ---
 
@@ -152,8 +152,21 @@ whole phase for one failure).
 - `companion/platform-briefs/*.md` files if present (phase 1 pattern for
   multi-platform briefs)
 
-Canonicalize to: `web` | `mobile` | `admin` | `desktop`. If nothing
-detected, default to `web`.
+**Canonicalize to:** `webapp` | `mobile` | `admin` | `desktop`. If
+nothing detected, default to `webapp`.
+
+Users commonly write `"web"` in their brief — that's a detection signal,
+not the canonical name. The analyst emits `webapp` in all outputs
+(`detectedPlatforms`, file paths like `docs/analysis/webapp/...`, screens
+manifest `appType`). This matches `PlatformId` from
+`@repo/orchestrator-contracts` (see 034b's `common.ts`). Build-time
+directory targets (`apps/web/`) are a separate Target enum derived later
+by the architect (020) via `platformIdToTarget()`.
+
+**Argument validation.** If `--platforms` is supplied, each value MUST
+match `PlatformId` (`webapp | mobile | admin | desktop`). If a user
+supplies `web`, reject with:
+`"--platforms: 'web' is not canonical. Use 'webapp' (PlatformId). See 034b common.ts."`
 
 **5b. Read the brief slice per platform.** For each platform, identify
 which section of the brief (or which companion file) describes that
@@ -269,8 +282,11 @@ index:
 ```json
 {
   "projectName": "...",
-  "platforms": ["web", "mobile"],
-  "targets": [{ "platform": "mobile", "appId": "...", "screenCount": 28 }],
+  "detectedPlatforms": ["webapp", "mobile"],
+  "targets": [
+    { "platformId": "mobile", "appId": "...", "screenCount": 28 },
+    { "platformId": "webapp", "appId": "...", "screenCount": 42 }
+  ],
   "personas": [{ "id": "casual-runner", "name": "...", "primaryGoal": "..." }],
   "integrations": ["apple-sign-in", "stripe", "expo-eas-updates"],
   "compliance": ["gdpr", "coppa-under-13-exclusion"],
@@ -281,6 +297,14 @@ index:
   "mcpHints": ["icons8", "unsplash", "image-generator"]
 }
 ```
+
+**Field naming:** `detectedPlatforms` uses `PlatformId` values (design-side:
+`webapp | mobile | admin | desktop`). `targets[].platformId` is the same
+enum. The architect (task 020) later reads this and applies
+`platformIdToTarget()` to produce build-side `Target` values (`web |
+mobile | admin | api`) for the `architecture.yaml.apps.*` block and the
+actual `apps/{target}/` directory names. Design-side vs build-side split
+is documented in 034b's `common.ts`.
 
 **6d. Scaffold per-style asset directories.** For K in 0..styleCount-1:
 
@@ -335,9 +359,9 @@ Emit structured JSON to stdout (one line per key for readability):
 ```json
 {
   "success": true,
-  "platforms": ["web", "mobile"],
-  "screensByPlatform": { "web": 42, "mobile": 28 },
-  "coverageByPlatform": { "web": 100, "mobile": 97 },
+  "detectedPlatforms": ["webapp", "mobile"],
+  "screensByPlatform": { "webapp": 42, "mobile": 28 },
+  "coverageByPlatform": { "webapp": 100, "mobile": 97 },
   "styleCount": 1,
   "assetMode": "standard",
   "skillsNeeded": ["expo-eas-ota", "neon-rls"],
@@ -346,6 +370,9 @@ Emit structured JSON to stdout (one line per key for readability):
   "warnings": ["mobile coverage is 97% — 1 orphaned screen: about.html"]
 }
 ```
+
+This shape is what `AnalyzeOutput` (task 034b) validates. Keys of the
+per-platform records use `PlatformId` values.
 
 Then append a human-readable summary:
 
@@ -359,7 +386,7 @@ Artifacts:
   Asset directories: assets/styles/style-{0..N-1}/
 
 Coverage:
-  web: 100% (42 screens)
+  webapp: 100% (42 screens)
   mobile: 97% (28 screens) — 1 orphan: about.html
 
 Next: HITL gate reviews outputs, then /mockups.
