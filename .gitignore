@@ -36,3 +36,8 @@ Thumbs.db
 
 # Local settings (per-developer, not shared)
 .claude/settings.local.json
+
+# Generated projects live here. Each project is its own git repo.
+# Keep the directory itself (.gitkeep) but ignore its contents.
+projects/*
+!projects/.gitkeep

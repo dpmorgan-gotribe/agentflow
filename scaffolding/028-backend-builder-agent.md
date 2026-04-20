@@ -11,12 +11,14 @@ estimated-scope: medium
 # 028: Backend Builder Agent
 
 ## What This Task Produces
+
 1. Agent definition at `.claude/agents/backend-builder.md`
 2. Skill at `.claude/skills/build-backend/SKILL.md`
 
 ## Scope
 
 ### Agent Definition
+
 ```yaml
 ---
 name: backend-builder
@@ -29,6 +31,7 @@ maxTurns: 30
 ```
 
 ### System Prompt
+
 - Read `.claude/architecture.yaml` focusing on backend sections
 - Read `docs/tasks.yaml` for assigned tasks
 - Generate into `apps/api/`
@@ -37,7 +40,9 @@ maxTurns: 30
 - Follow the universal prompt template from blueprint lines 2632-2658
 
 ### /build-backend Skill
+
 Steps:
+
 1. Read architecture.yaml backend section
 2. Generate Prisma schema from data models
 3. Generate tRPC routers per module
@@ -48,6 +53,7 @@ Steps:
 8. Report files created and any issues
 
 ## Acceptance Criteria
+
 - [ ] `.claude/agents/backend-builder.md` exists
 - [ ] `.claude/skills/build-backend/SKILL.md` exists
 - [ ] System prompt references architecture.yaml
@@ -56,4 +62,5 @@ Steps:
 - [ ] `model: inherit` used (orchestrator assigns model)
 
 ## Human Verification
+
 Is the scope right? Should backend building be split further (e.g., schema generation separate from route generation)?

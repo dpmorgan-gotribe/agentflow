@@ -1,0 +1,27 @@
+# .claude/models.yaml — Project-level override.
+#
+# This file extends ~/.claude/models.yaml. Keys set here win; keys omitted
+# fall through to the system config. The orchestrator merges both at the
+# start of every pipeline run (see task 035).
+#
+# Typical uses:
+#   - Pin an agent to a higher tier when the project is unusually complex
+#     (e.g., bump backend-builder to planning for a heavy-auth project)
+#   - Downgrade an agent to mechanical when the work is repetitive
+#     (e.g., ui-designer for a CRUD-only app)
+#   - Raise the per-pipeline budget for a large project
+#
+# Leave sections empty to inherit system defaults verbatim.
+
+extends: ~/.claude/models.yaml
+
+# Per-agent overrides go here. Example:
+#   agents:
+#     backend-builder: { tier: planning, effort: max }
+#     ui-designer:     { tier: mechanical, effort: medium }
+agents: {}
+
+# Budget overrides. Leave empty to inherit.
+# budget:
+#   perPipelineMaxUsd: 250.00
+budget: {}

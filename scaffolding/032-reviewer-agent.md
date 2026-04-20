@@ -11,12 +11,14 @@ estimated-scope: medium
 # 032: Reviewer Agent
 
 ## What This Task Produces
+
 1. Agent definition at `.claude/agents/reviewer.md`
 2. Skill at `.claude/skills/review/SKILL.md`
 
 ## Scope
 
 ### Agent Definition
+
 ```yaml
 ---
 name: reviewer
@@ -29,7 +31,9 @@ effort: high
 ```
 
 ### Review Checklist
+
 From blueprint Section 20 (generator-verifier pattern):
+
 - Architecture adherence: does code match `.claude/architecture.yaml`?
 - Code quality: TypeScript strict, no `any`, proper error handling
 - Security: no secrets in code, proper auth checks, input validation
@@ -38,6 +42,7 @@ From blueprint Section 20 (generator-verifier pattern):
 - Compliance: check items from architecture.yaml compliance section
 
 ### /review Skill
+
 1. Read architecture.yaml as the reference spec
 2. Check each generated app against spec
 3. Run `pnpm typecheck`, `pnpm lint`, `pnpm test`
@@ -47,9 +52,11 @@ From blueprint Section 20 (generator-verifier pattern):
 7. If issues found, trigger builders to fix (max 3 iterations)
 
 ### Key: Explicit Criteria
+
 The blueprint warns: "Without explicit criteria, the verifier becomes theater." Every check must be specific and testable.
 
 ## Acceptance Criteria
+
 - [ ] `.claude/agents/reviewer.md` exists
 - [ ] `.claude/skills/review/SKILL.md` exists with explicit checklist
 - [ ] Max 3 iteration fix loop documented
@@ -57,4 +64,5 @@ The blueprint warns: "Without explicit criteria, the verifier becomes theater." 
 - [ ] Placeholder text detection included
 
 ## Human Verification
+
 Is the review checklist comprehensive enough? Any quality criteria missing?
