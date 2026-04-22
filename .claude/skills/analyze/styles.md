@@ -44,15 +44,31 @@ mockups + a comprehensive stylesheet.
 
 ### Mode B — `useAssets`
 
-- ALL styles use the SAME colors from the brief (copy exactly).
-- ALL styles use the user's icons from `assets/icons/`.
+- ALL styles use the SAME colors from the brief (copy exactly across all N styles).
+- ALL styles use the user's icons from `assets/icons/` (functional identity is constant).
+- ALL styles use the user's logo (identity is constant).
+- ALL styles treat `assets/wireframes/` as the authoritative layout blueprint (applied at /mockups stage). Wireframe colors are placeholders only.
 - Variations come ONLY from:
   - Typography (different font pairings)
   - Spacing (compact vs airy base unit)
   - Corner radius (sharp vs rounded)
   - Shadow depth (flat vs elevated)
   - Density (dense vs spacious)
+  - Accent-pattern (where/how the accent colour appears — fills vs underlines vs dots vs borders)
 - Never use competitor colors in this mode.
+
+**Diversity guardrails for useAssets mode** — without these, the N styles collapse into near-identical clones:
+
+- **Heading fonts**: N distinct families across the N styles. Zero repeats. No two styles may share a heading font.
+- **Body fonts**: at least `ceil(N/2)` distinct families (e.g. 3 distinct body families across 5 styles).
+- **Radius**: N distinct treatments — e.g. for N=5: `0px sharp` / `4px subtle` / `8px soft` / `16px rounded` / `pill on CTAs only`. Each style picks one.
+- **Shadow**: N distinct treatments — e.g. `flat (hairline borders)` / `subtle (1 level, small)` / `layered (inset white + drop)` / `colored-offset (duotone)` / `elevated (multi-level)`. Each style picks one.
+- **Density**: N-wise spread across the categorical scale — at least one style `compact`, at least one `spacious`.
+- **`design_variance` dial**: spread ≥4 points between min and max across the N styles (e.g. one at 2 and one at ≥6).
+- **Accent pattern**: N distinct treatments for where/how the accent colour appears — e.g. `fill on buttons only` / `2px underline on links` / `dotted border on focused inputs` / `colored metric-badge pills` / `full-bleed band CTA`.
+- **Named references**: each style's 3 named references must include at least 2 that differ from every other style's references. Prevents all 5 styles from citing the same "Linear / Notion / Stripe" trinity.
+
+These guardrails apply IN ADDITION to the locked palette + locked icons + locked logo + locked layouts. The point is to make "5 typography-and-spatial directions on the same brand" legibly different when viewed side-by-side.
 
 ## Per-style required fields
 

@@ -1,6 +1,10 @@
 # Runtime state (transient, session-specific)
 .claude/state/
 .claude/worktrees/
+.claude/scheduled_tasks.lock
+
+# Playwright MCP runtime cache (console logs + page snapshots per session)
+.playwright-mcp/
 
 # Pipeline stage outputs (regenerated each run)
 pipeline/

@@ -64,12 +64,12 @@ Tasks below are in the exact order they should be built. Filenames prefixed `NN-
 
 _From analyst outputs to mockup grid → UI Kit → composed screens → visual review → sign-off. Framework-agnostic HTML + CSS + CVA. Tests directly against `projects/mindapp/` and `projects/gotribe-v1/` analyst outputs as each skill lands._
 
-- [01 / 022 — UI Designer agent definition (opinionated identity + anti-slop + named-references library)](01-022-ui-designer-agent.md)
-- [02 / 022b — UI Kit consumption contract (ESLint plugin + validate-consumer + CONTRACT.md template)](02-022b-ui-kit-contract.md)
-- [03 / 023 — /mockups skill (N styles × M apps style-selection grid)](03-023-mockups-skill.md)
-- [04 / 024 — /stylesheet skill (UI Kit assembly: tokens + primitives + patterns + layouts + Storybook)](04-024-stylesheet-skill.md)
-- [05 / 025 — /screens skill + /user-flows-generator (kit-only composition + single-screen retry mode)](05-025-screens-skill.md)
-- [06 / 025b — /visual-review skill (Layer 7 — LLM visual critique loop)](06-025b-visual-review-skill.md)
+- [01 / 022 — UI Designer agent definition (opinionated identity + anti-slop + named-references library)](archive/01-022-ui-designer-agent.md) ✓ complete
+- [02 / 022b — UI Kit consumption contract (ESLint plugin + validate-consumer + CONTRACT.md template)](archive/02-022b-ui-kit-contract.md) ✓ complete
+- [03 / 023 — /mockups skill (N styles × M apps style-selection grid)](archive/03-023-mockups-skill.md) ✓ complete
+- [04 / 024 — /stylesheet skill (UI Kit assembly: tokens + primitives + patterns + layouts + Storybook)](archive/04-024-stylesheet-skill.md) ✓ complete
+- [05 / 025 — /screens skill + /user-flows-generator (kit-only composition + single-screen retry mode)](archive/05-025-screens-skill.md) ✓ complete
+- [06 / 025b — /visual-review skill (Layer 7 — LLM visual critique loop)](archive/06-025b-visual-review-skill.md) ✓ complete
 
 ### Phase B — Post-design planning (tier 6.5; refactor-003)
 

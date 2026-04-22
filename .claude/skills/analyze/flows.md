@@ -34,6 +34,21 @@ covers both deliverables).
 
 ## Flows process
 
+**A flow is a TASK, not a person.** A user flow is the path a user takes
+to complete ONE specific job — sign up, make a purchase, submit a
+contact form, configure a setting. A persona may participate in multiple
+flows; a flow may serve multiple personas. Do NOT produce one-flow-per-
+persona "touchpoint dumps" (e.g., "Sophia's journey → every screen
+Sophia ever visits"). That's a persona profile, not a user flow, and the
+downstream `/user-flows-generator` will produce confusing viewer sections
+if you do it.
+
+**Good flow**: "Flow 3: Evaluate sector fit — home → service-visual →
+case-study-detail → contact. Primary persona: Sophia."
+**Bad flow**: "Sophia's journey — home → service-visual → work-index →
+case-study-detail → about → contact." (This is her touchpoint dump, not
+a task.)
+
 1. **Enumerate screens in this platform's slice.** Find every screen
    referenced — in markdown tables, JSON blocks, YAML trees, prose, or
    companion navigation schema. Normalize to `kebab-case-id.html`
@@ -43,18 +58,24 @@ covers both deliverables).
    brief §6 with platform-specific features. Not every persona uses
    every platform.
 
-3. **Group screens into flows** per persona. Each flow is a goal-driven
-   journey. Example: "As a new user, I want to create my first tribe,
-   navigating: onboarding → create-tribe → invite → tribe-feed."
+3. **Enumerate the tasks users do on this platform.** Think in jobs-to-
+   be-done, not in people. Example tasks: onboarding, lead-capture,
+   search, purchase, settings management, content browsing,
+   evaluation-then-conversion, returning-user daily engagement.
+   Each task becomes one flow.
 
-4. **100% coverage rule.** Every screen from step 1 MUST appear in at
+4. **Map screens to each task.** A single screen may appear in multiple
+   flows (home.html is usually in several). Tag each flow with its
+   `primary persona` — the audience most likely to run this exact task.
+
+5. **100% coverage rule.** Every screen from step 1 MUST appear in at
    least one flow. If a screen fits nowhere, create a catch-all flow:
    - "Settings & Profile Flow" → settings-_, profile-_, account-\*
    - "Financial Management Flow" → wallet-_, transaction-_
    - "Admin Operations Flow" → admin-\*
    - "Miscellaneous Flow" → last resort for true orphans
 
-5. **Write each flow with explicit screen sequences.** Use the screen
+6. **Write each flow with explicit screen sequences.** Use the screen
    IDs, not paraphrases.
 
 ## Navigation-schema process

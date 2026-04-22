@@ -56,6 +56,22 @@ try {
 }
 
 const toolInput = payload.tool_input || {};
+// Playwright MCP capture tools are inherently iterative: a /visual-review
+// batch over N screens × 3 viewports makes N copies of each resize /
+// navigate / take_screenshot call. The hook's deny-on-3rd-identical rule
+// was tuned for Write/Edit/Bash where a repeat IS a retry; for capture-loop
+// tools it misfires on the 3rd+ screen. Scope narrow — only the 5 capture
+// tools, not the broader mcp__playwright__* namespace.
+const CAPTURE_TOOLS = new Set([
+  "mcp__playwright__browser_resize",
+  "mcp__playwright__browser_navigate",
+  "mcp__playwright__browser_wait_for",
+  "mcp__playwright__browser_take_screenshot",
+  "mcp__playwright__browser_close",
+]);
+if (CAPTURE_TOOLS.has(payload.tool_name || "")) {
+  process.exit(0);
+}
 const hash = hashAction({
   tool: payload.tool_name,
   // Bash → command; Write/Edit/Read → file_path. Either is fine as the
@@ -76,6 +92,15 @@ const hash = hashAction({
   // discriminate on taskId, status, subject. Without these, running a
   // task list (TaskUpdate three times in a row for three different
   // tasks) trips the loop even when each call targets a distinct task.
+  // ToolSearch has no file/command/content either — it discriminates
+  // solely on `query`. Without it, three distinct schema-loads (e.g.,
+  // Playwright MCP + TaskCreate + a later lookup) hash identically and
+  // the 3rd is wrongly denied, bricking MCP-heavy skills like /visual-review.
+  // Playwright MCP tools discriminate on `url` (browser_navigate),
+  // `width`/`height` (browser_resize), `time`/`text`/`textGone` (browser_wait_for),
+  // and `filename` (browser_take_screenshot). Without these, the three
+  // sequential viewport captures per screen collide on a single hash and
+  // the 3rd viewport is wrongly denied — same failure class as the query case.
   extra: [
     toolInput.offset,
     toolInput.limit,
@@ -86,6 +111,14 @@ const hash = hashAction({
     toolInput.taskId,
     toolInput.status,
     toolInput.subject,
+    toolInput.query,
+    toolInput.url,
+    toolInput.width,
+    toolInput.height,
+    toolInput.filename,
+    toolInput.time,
+    toolInput.text,
+    toolInput.textGone,
   ]
     .filter((v) => v !== undefined && v !== null)
     .join("|"),

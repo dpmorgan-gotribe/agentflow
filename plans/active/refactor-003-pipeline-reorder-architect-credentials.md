@@ -1,12 +1,13 @@
 ---
 id: refactor-003-pipeline-reorder-architect-credentials
 type: refactor
-status: approved
+status: completed
 author-agent: claude
 created: 2026-04-20
-updated: 2026-04-20
+updated: 2026-04-22
 approved-at: 2026-04-20
 approved-by: human
+completed: 2026-04-22
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -788,12 +789,78 @@ Tester (031), Reviewer (032), Git Agent (033), Lessons Agent (037), Agent Expert
 
 ## Attempt Log
 
-<!-- Populated automatically by agents.
+### Attempt 1 — 2026-04-20 · Scaffolding spec updates
 
-RETRY POLICY:
-  Attempt 1-2: Try different approaches
-  Attempt 3: Run /plan-investigation
-  Attempt 4: Try investigation's recommendation
-  Attempt 5: STOP and escalate to human
-  NEVER exceed 5 attempts on the same error
--->
+**Scope:** all scaffolding tasks in `affected-files` received refactor-003 amendments — architect post-signoff, dual-mode PM, split skills-audit scopes, dual-mode `/register-mcp-servers`, gate 5 file-drop mechanic, three-way deployment enum (vendor / self-hosted / declined), design-stage MCP pre-registration at `/new-project` time.
+
+Blueprint Appendix C appended explaining the reorder reasoning. Scaffolding index (`000-scaffolding-index.md`) renumbered to reflect the new tier ordering.
+
+### Attempt 2 — 2026-04-20 to 2026-04-22 · Pipeline skills + templates + schemas implemented
+
+The scaffolding spec changes alone weren't enough — the design-stage skills named in the new order had to actually exist for the orchestrator to route through them. Work landed iteratively over three sessions:
+
+**New skills** (each matching its refactor-003-amended scaffolding task):
+
+- `.claude/skills/mockups/` (task 023) — N styles × M apps HTML grid + interactive review index
+- `.claude/skills/stylesheet/` (task 024) — @repo/ui-kit assembly from winning style
+- `.claude/skills/screens/` (task 025) — kit-only screen composition with `data-kit-*` attrs
+- `.claude/skills/visual-review/` (task 025b) — 28-rule rubric × 3 viewports
+- `.claude/skills/user-flows-generator/` — gate-4 viewer with sign-off form
+- `.claude/skills/pick-style/` — CLI-equivalent of HITL gate 2 (task 036 is the production-path full HTTP server; pick-style unblocks testing)
+
+**Templates** (factory-owned, copied into projects at `/new-project` step 5b):
+
+- `.claude/templates/mockups-index-template.html` — the gate-2 review shell with viewport switcher + dial editor
+- `.claude/templates/user-flows-template.html` — the gate-4 sign-off viewer shell
+- `.claude/templates/ui-kit-*.{md,json,ts}` + `.claude/templates/ui-kit-eslint-plugin/` — task 022b UI Kit consumption contract templates
+
+**Schemas** (factory `schemas/`, copied into projects at `/new-project` step 4):
+
+- `schemas/signoff.schema.json` — gate-4 sign-off body (task 036 contract)
+- `schemas/visual-review-report.schema.json` — aggregate report validator (task 025b)
+
+**MCP registration mechanic**:
+
+- `mcp-defaults-design.json` at factory root — the design-stage MCP default set (playwright, icons8, unsplash, chrome-devtools; image-generator behind `--flags=nanobanana`)
+- `.mcp.json` at factory — the active registration (populated by `/register-mcp-servers --scope=design`)
+- `/new-project` step 5b invokes `--scope=design` at project-bootstrap time so design stages have MCPs from the start
+
+**Skill-level refinements** (walkthrough-derived):
+
+- `.claude/skills/analyze/flows.md` — task-oriented flows structure (`## Flow N: Name`) replacing persona-narrative touchpoint dumps
+- `.claude/skills/analyze/styles.md` — dials-per-style discipline + aesthetic-territory anti-convergence
+- `.claude/skills/mockups/SKILL.md` — `--style-count` rejection (it's an analyze-only arg); per-style dials validation; archetype-selection algorithm fallback
+- `.claude/hooks/detect-loop.mjs` — narrow exemption for Playwright capture tools + additional discriminators (url, query, width, height, filename, time, text, textGone)
+
+**Scripts** (factory `scripts/`, copied into projects for local validation + build):
+
+- `aggregate-components.mjs` — cross-platform component catalog aggregator (called from `/analyze` phase 6e)
+- `build-screens-manifest.mjs` — screens-manifest canonical-hash builder
+- `build-user-flows.mjs` — user-flows viewer builder
+- `verify-024.mjs`, `verify-025.mjs`, `verify-025b.mjs` — per-stage verification scripts
+- `visual-review-preflight.mjs` — static-server spawner/teardown for /visual-review
+- `visual-review-aggregate.mjs`, `visual-review-inline-emit.mjs` — rubric report aggregation
+
+### Attempt 3 — 2026-04-22 · End-to-end walkthrough on mindapp-v2 (refactor-003 validation)
+
+Full pipeline run through the new order validated the refactor end-to-end:
+
+- `/new-project mindapp-v2` (refactor-003 step 5b — Turborepo scaffold + shared packages + design-stage MCPs registered at bootstrap time) ✅
+- `/analyze --style-count=10` (refactor-002 per-style dials + integrations-options.md menu from phase 2.5) ✅
+- `/mockups` (10 styles × 2 apps = 20 mockups; `--style-count` correctly rejected as analyze-only) ✅
+- `/pick-style 3` (Forest Hush) → `docs/selected-style.json` written with iconLibrary binding ✅
+- `/stylesheet` → `@repo/ui-kit` at v0.1.0-tokens-only with 52 components bound + design-system-preview.html ✅
+- `/screens` (78 screens × 5 ui-designer waves in parallel; 0 anti-slop violations) ✅
+- `/visual-review` (240 PNGs × 28-rule rubric × 5 general-purpose agents; 41/80 pass, 39 fail on two clustered root causes) ✅
+- `/user-flows-generator` (24 flows, 73 unique screens linked, dual-source parser handling mobile brackets vs webapp backticks) ✅
+
+The walkthrough confirmed:
+
+- Design-stage MCPs available from `/new-project` onward (no need to re-register post-signoff)
+- `/stylesheet` reads `selected-style.json.iconLibrary` (refactor-003 `tooling.stack` shift validated)
+- `/visual-review` report.json dual shape (screens[] + violations[]) consumed correctly by `/user-flows-generator` for per-step badges
+- Signoff contract (screensManifestHash + visualReviewReportHash + uiKitVersion) binds atomically; all hashes in place
+
+**Status:** refactor-003 spec is implemented in full + validated end-to-end. `/architect` through gate 5 remains pending (tasks 020 + 036 haven't shipped yet — blocked on separate plans) but that's expected: the architect + gate 5 were always "post-design" in refactor-003, and validation of those stages depends on the upstream design path being live (which it now is).
+
+**Ready to mark completed.**

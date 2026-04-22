@@ -148,8 +148,8 @@
 
 - [x] 028 backend documents .env as gate-5-captured
 - [x] 028 documents sanctioned .env read exception
-- [x] 029 web documents NEXT_PUBLIC_* boundary
-- [x] 030 mobile documents EXPO_PUBLIC_* vs EAS secrets
+- [x] 029 web documents NEXT*PUBLIC*\* boundary
+- [x] 030 mobile documents EXPO*PUBLIC*\* vs EAS secrets
 
 ## index (4/4)
 
@@ -171,4 +171,3 @@
 - [x] plan listed in active manifest
 
 ## Total: 119/119
-

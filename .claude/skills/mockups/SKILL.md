@@ -44,7 +44,7 @@ Two positional, both optional:
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
 | `1` (default)                | `N × M × 1` — one archetype per app per style                                                              | Cheapest complete grid for style selection      |
 | `C > 1`                      | Up to `N × M × C` — C archetypes per app per style (capped per-app when fewer are available; emit warning) | Richer comparison when styles are close to tied |
-| `0` / negative / non-integer | Reject with error: `/mockups expects a positive integer archetypes-per-app or no argument`                | —                                               |
+| `0` / negative / non-integer | Reject with error: `/mockups expects a positive integer archetypes-per-app or no argument`                 | —                                               |
 
 ### Rejected arguments
 
@@ -330,13 +330,13 @@ Provenance enum: `user` / `researched` / `generated` / `hybrid` / `stock` / `vec
 
 Read `.claude/templates/mockups-index-template.html` + replace placeholders:
 
-| Placeholder            | Value                                                                                                                             |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `{{PROJECT_NAME}}`     | from `brief.md` §1                                                                                                                |
-| `{{MANIFEST_JSON}}`    | inlined JSON of all styles (same shape as top-level manifest.json, one entry per (style, app, archetype) cell when archetypesPerApp > 1)     |
-| `{{NANOBANANA_STATE}}` | `"on"` or `"off"`                                                                                                                 |
-| `{{IMAGE_BUDGET}}`     | static ceiling from `models.yaml.stages.mockups.imageGenCallsCap` (orchestrator-resolved) when nanobanana is on; omitted when off |
-| `{{GATE_API_BASE}}`    | base URL for the HITL gate server (e.g., `http://localhost:8733`); orchestrator (task 035) passes this as input at render time    |
+| Placeholder            | Value                                                                                                                                    |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `{{PROJECT_NAME}}`     | from `brief.md` §1                                                                                                                       |
+| `{{MANIFEST_JSON}}`    | inlined JSON of all styles (same shape as top-level manifest.json, one entry per (style, app, archetype) cell when archetypesPerApp > 1) |
+| `{{NANOBANANA_STATE}}` | `"on"` or `"off"`                                                                                                                        |
+| `{{IMAGE_BUDGET}}`     | static ceiling from `models.yaml.stages.mockups.imageGenCallsCap` (orchestrator-resolved) when nanobanana is on; omitted when off        |
+| `{{GATE_API_BASE}}`    | base URL for the HITL gate server (e.g., `http://localhost:8733`); orchestrator (task 035) passes this as input at render time           |
 
 Write to `docs/mockups/index.html`. No build step — the template is self-contained HTML + inline CSS/JS.
 
