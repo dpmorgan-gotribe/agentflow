@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "validate-brief": "node scripts/validate-brief.mjs --all",
-    "generate": "pnpm --filter orchestrator start",
+    "generate": "pnpm --filter orchestrator start generate",
     "typecheck:all": "pnpm -r typecheck",
     "test:all": "pnpm -r test"
   },
