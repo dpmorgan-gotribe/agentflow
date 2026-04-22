@@ -39,6 +39,14 @@ Items here are **explicitly NOT on that path**. Return after:
 - [brief-delivery-validation-depth.md](./brief-delivery-validation-depth.md) — Option B: reviewer boots dev server + walks every brief §12 P0 feature (concern f)
 - [runtime-signoff-gate.md](./runtime-signoff-gate.md) — gate-7: capture running-app screenshots after build for final human sign-off (concern g)
 
+### From investigate-003 (punted without executing)
+
+All three land as a coupled bundle — multi-env is meaningless without cloud deploy; CI/CD deploy automation is meaningless without multi-env.
+
+- [iac-stack-shelf.md](./iac-stack-shelf.md) — cloud provider selection + IaC tool (Terraform/Pulumi/CDK) + `.claude/skills/agents/infra/{slug}/SKILL.md` shelf
+- [multi-env-deploy.md](./multi-env-deploy.md) — dev/test/prod separation + gate-5 evolution into 5.a/5.b/5.c per env
+- [ci-cd-deploy-automation.md](./ci-cd-deploy-automation.md) — deploy-on-merge staging + prod approval gate-7 + PR preview deploys
+
 ## When to promote from here to active
 
 Each file is a **stub**, not a full plan. When it's time to address one:

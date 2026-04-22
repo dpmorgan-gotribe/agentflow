@@ -277,14 +277,27 @@ MVP is complete when **all 8 critical-path plans are archived with outcome: succ
 
 ## Things we're explicitly NOT targeting for MVP
 
-- Deploy-to-production automation (PR merges to main; human deploys)
-- Mobile App Store submission (handled by `post-mvp-scaffolding/app-store-compliance.md`)
-- Multi-project concurrent builds
-- Factory self-upgrade + in-flight project protection
-- Stack skills beyond the shipped 5 (react-next / svelte-kit / node-trpc-nest / python-fastapi / expo-rn)
-- Mutation testing / axe-core / ASVS L1 full security checklist (starter variants land in MVP; depth in post-MVP)
-- Runtime sign-off gate (gate 7 concept deferred)
-- Factory marketing / onboarding UX (`/quickstart`)
+### Deploy + infrastructure (bundle — punted per investigate-003 2026-04-22)
+
+- **Cloud deploy automation**: PR merges to main; human deploys to their cloud manually. No Vercel push / Fly deploy / Terraform apply in MVP. See `post-mvp-scaffolding/iac-stack-shelf.md`.
+- **Multi-env separation (dev / test / prod)**: single `.env` via gate 5; no staging environment; no per-env secrets config. Local dev via docker-compose. See `post-mvp-scaffolding/multi-env-deploy.md`.
+- **IaC tooling (Terraform / Pulumi / CDK / Ansible / Helm)**: feat-005 emits only `docker-compose.yml` + `.github/workflows/ci.yml`. No cloud resource provisioning. See `post-mvp-scaffolding/iac-stack-shelf.md`.
+- **CI/CD deploy automation beyond PR checks**: CI runs typecheck + lint + test on PR. No deploy-on-merge, no PR preview deploys, no gate-7 prod approval. See `post-mvp-scaffolding/ci-cd-deploy-automation.md`.
+- **Client-supplied infrastructure** (on-prem k8s, existing Terraform stacks): architect surfaces in credentials-checklist as "manual deploy required; not automated for MVP"; human handles.
+- **Production secrets management**: beyond single `.env.example`. No Doppler / AWS Secrets Manager / Vault integration.
+- **Infra-level monitoring** (CloudWatch hosts / Datadog agents / uptime checks): feat-007 wires SDK-level observability (Sentry / PostHog in code); infra-level belongs with IaC.
+- **DNS / certs / CDN provisioning**: part of the deferred IaC bundle.
+- **Compliance-driven infrastructure** (SOC2 VPC isolation / HIPAA encrypted backups / GDPR data residency): reviewer flags in playbook output; architect doesn't auto-configure.
+
+### Other non-targets (from earlier scoping)
+
+- **Mobile App Store submission**: handled by `post-mvp-scaffolding/app-store-compliance.md`
+- **Multi-project concurrent builds**: handled by `post-mvp-scaffolding/multi-project-concurrency.md`
+- **Factory self-upgrade** + in-flight project protection
+- **Stack skills beyond the shipped 5** (react-next / svelte-kit / node-trpc-nest / python-fastapi / expo-rn)
+- **Mutation testing / axe-core / ASVS L1 full security checklist**: starter variants land in MVP; depth in post-MVP
+- **Runtime sign-off gate (gate 7 concept)**: static sign-off via gate 4 is sufficient for MVP
+- **Factory marketing / onboarding UX** (`/quickstart`)
 
 ## Next step
 
@@ -292,5 +305,6 @@ Begin `task-035-orchestrator-runtime` implementation. First write the full plan 
 
 ## Approval record
 
-- 2026-04-22: 5 open questions resolved by user; 4 must-have acceptance criteria assigned to host plans; 13 post-MVP items stubbed; this roadmap authored.
-- Next approval needed: promote task-035-orchestrator-runtime plan to draft → approved before implementation begins.
+- **2026-04-22 v1.0**: 5 open questions resolved by user; 4 must-have acceptance criteria assigned to host plans; 13 post-MVP items stubbed; this roadmap authored.
+- **2026-04-22 v1.1** (this patch): investigate-003-infrastructure-as-code drafted + punted to post-MVP without executing. 3 new stubs added (`iac-stack-shelf.md` + `multi-env-deploy.md` + `ci-cd-deploy-automation.md`) — bundle together when revisited. §Things we're explicitly NOT targeting extended with a "Deploy + infrastructure" sub-section. task-035 scope unchanged.
+- **Next approval needed**: promote task-035-orchestrator-runtime plan draft → approved; begin Phase 1 implementation.

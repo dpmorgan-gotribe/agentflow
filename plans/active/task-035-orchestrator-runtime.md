@@ -1,7 +1,9 @@
 ---
 id: task-035-orchestrator-runtime
 type: feature
-status: draft
+status: approved
+approved-at: 2026-04-22
+approved-by: human
 author-agent: human
 created: 2026-04-22
 updated: 2026-04-22
