@@ -1,7 +1,8 @@
 ---
 id: refactor-004-task-driven-orchestration
 type: refactor
-status: draft
+status: completed
+completed: 2026-04-22
 author-agent: human
 created: 2026-04-22
 updated: 2026-04-22
@@ -150,4 +151,36 @@ Blueprint commits to the opposite direction (stage-linear), so the blueprint rev
 
 ## Attempt Log
 
-<!-- Populated by executing agent. -->
+### Attempt 1 — 2026-04-22 · Scaffolding landed
+
+**Scope:** scaffolding spec-only (no runtime implementation). Every file change is a normative spec downstream tasks bind to.
+
+**Files changed / created:**
+
+- `schemas/feature.schema.json` (NEW) — per-feature validator with `id / worktree / branch / priority / depends_on / skip / agent_sequence / tasks[]` and the nested task shape. Enum-locked agent IDs + kebab-case regex on IDs + `additionalProperties: false` throughout.
+- `schemas/tasks.schema.json` (NEW) — top-level tasks.yaml v2 validator with `version: "2.0"` required + `features[]` + optional `summary_counts` + `warnings[]`. References feature.schema.json.
+- `scaffolding/09-034b-output-contract-zod-schemas.md` — added `tasks.ts` section with `TasksV2Schema` + `FeatureSchema` + `TaskSchema` Zod mirrors + cross-field invariant commentary (5 invariants orchestrator enforces at load time).
+- `scaffolding/08-021-pm-agent.md` — rewrote tasks.yaml template with v2 shape (full example: 2 features with 5 tasks + summary_counts); added §v2 field reference, §Feature-grouping heuristic (5-rule), §v1 → v2 migration note; updated §Key Responsibilities (--mode=tasks) with v2 emission steps; updated §Acceptance Criteria (9 v2-specific checks).
+- `scaffolding/21-035-orchestrator-core.md` — introduced "Two-phase pipeline" framing replacing "Stage sequence"; trimmed `STAGES[]` to end at `git-agent-bootstrap` (removed build-backend / build-web / build-mobile / test / review / git — now per-feature); added §Feature-graph phase with `runFeature()` + `runFeatureGraph()` pseudocode + merge-conflict routing + agent surface mapping for `skip[]` logic; rewrote §runStage()+runPipeline() into §runStage()+runPipeline()+runFeatureGraph() with 5-tier independent retry-counter table; updated kit-change-request detour references (builders inside worktrees, not stages).
+- `multi-agent-app-generation-blueprint.md` — appended **Appendix D — Refactor-004 Task-Driven Orchestration** (7 subsections: Two modes, tasks.yaml v2 shape, what moved vs stayed, git-agent as first-class operator, retry models, stack-skill dispatch cross-reference, supersession breadcrumb).
+
+**Not changed — intentional deferrals:**
+
+- Builder specs (028 / 029 / 030) — will be rewritten by `feat-002-stack-skill-shelf` (per-stack dispatch) which is the correct home for their v2 changes. Tester (031) + reviewer specs similarly deferred.
+- git-agent spec (033) — rewritten by `feat-003-git-agent-worktrees`; this refactor only LOCKS the contract (agent_sequence[], feature.worktree/branch fields, git-agent-bootstrap Mode A stage) that git-agent must satisfy.
+- Runtime orchestrator TypeScript (`orchestrator/index.ts`) — still pending on task 035 itself; this refactor updates the scaffolding (spec) not the implementation.
+
+**Cross-field invariants documented (orchestrator enforces, schema can't):**
+
+1. Every `task.agent` ∈ parent `feature.agent_sequence`
+2. `feature.depends_on[]` resolves + no cycles (DFS at load)
+3. `task.depends_on[]` within same feature only
+4. `summary_counts` disagreement → warning (not hard fail)
+
+**Supersession flags added:**
+
+- Blueprint §23 BUILD+SHIP subsections marked as superseded in Appendix D §7
+- Blueprint §17 (React/NestJS/Expo stack lock) flagged for feat-002 follow-up
+- Task 035 STAGES[] trimmed from 17 entries to 11 (removed 6 build-phase stages now handled per-feature)
+
+**Ready to mark completed + commit.**

@@ -3159,11 +3159,11 @@ Five gates total (was four). Gate 5 is new.
 
 Every integration in `architecture.yaml.apps.*.integrations[]` carries a `deployment` enum: `vendor | self-hosted | declined`. Emission paths differ by deployment:
 
-| deployment | Emits row in `.env.example`? | Emits entry in `credentials-checklist.md`? | Emits config template? |
-| --- | --- | --- | --- |
-| `vendor` | yes (with signup URL comment) | yes | no |
-| `self-hosted` | no (unless API key also needed) | no | yes — `docs/config/{service}.template` + entry in `deployment-checklist.md` |
-| `declined` | no | no | no — `declinedRationale` field only |
+| deployment    | Emits row in `.env.example`?    | Emits entry in `credentials-checklist.md`? | Emits config template?                                                      |
+| ------------- | ------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------- |
+| `vendor`      | yes (with signup URL comment)   | yes                                        | no                                                                          |
+| `self-hosted` | no (unless API key also needed) | no                                         | yes — `docs/config/{service}.template` + entry in `deployment-checklist.md` |
+| `declined`    | no                              | no                                         | no — `declinedRationale` field only                                         |
 
 ### 3. Gate 5 file-drop mechanic
 
@@ -3201,3 +3201,105 @@ Same underlying logic, two different audit-target lists keyed to pipeline positi
 Blueprint §23 L2765-2822 described the pre-refactor-003 stage order (analyze → skills-audit → architect → pm → mockups → …). That walkthrough is now historical. Read 035's `STAGES` array + this appendix for current pipeline order. The blueprint's principles text (§10 / §11 / §13 / §14) still applies; only the stage sequence changed.
 
 When reading §10 / §11 / §23 above, treat this appendix + the scaffolding tasks (020, 021, 023, 024, 025, 035, 036, 038, 041, 018b) as the implementation spec; the blueprint's earlier walkthrough is principle-preserving but chronologically outdated.
+
+---
+
+## Appendix D — Refactor-004 Task-Driven Orchestration (2026-04-22)
+
+This addendum extends Appendix C. Refactor-003 reordered the linear pipeline; refactor-004 changes what happens **after** the linear pipeline ends.
+
+Refactor-004 (see `plans/active/refactor-004-task-driven-orchestration.md` + `plans/active/investigate-001-post-design-pipeline-architecture.md` §Q4) introduces a **two-mode orchestrator**: stage-linear through design + planning, then feature-graph through build. Post-PM the orchestrator no longer walks a fixed `build-backend → build-web → build-mobile → test → review → git` sequence — it loads `docs/tasks.yaml` v2 and executes per-feature.
+
+### 1. Two modes — when each applies
+
+**Mode A — stage-linear** (identical for every project). The `STAGES[]` array in task 035:
+
+```
+/new-project → /analyze → /skills-audit --scope=design → /mockups → /stylesheet →
+/screens → /visual-review → /user-flows-generator →
+(gate 4: design sign-off) →
+/architect → (gate 5: credentials file-drop) →
+/pm --mode=tasks → /skills-audit --scope=build →
+/register-mcp-servers --scope=build → /git-agent bootstrap
+```
+
+Mode A is framework-agnostic by contract and produces the same artefacts regardless of project shape. Gates 1–5 are HITL decision points embedded in this mode.
+
+**Mode B — feature-graph** (per-project shape, driven by tasks.yaml). After `git-agent-bootstrap`:
+
+```
+for each feature in tasks.yaml.features:       # ordered by feature.depends_on
+  git-agent: checkout worktree feat/{slug}     # .claude/worktrees/{slug}/
+  for agent in feature.agent_sequence:
+    agent executes its feature.tasks[] subset inside the worktree
+  git-agent: merge → main, destroy worktree    # conflicts bounce back to last writing agent
+```
+
+Features with no shared ancestor run in parallel up to `maxConcurrentFeatures` (default 4). Mode B has no fixed agent set — features declare which agents they need.
+
+### 2. tasks.yaml v2 shape
+
+The PM (`/pm --mode=tasks`) produces `docs/tasks.yaml` with first-class `features[]`. See `schemas/tasks.schema.json` + `schemas/feature.schema.json` for the normative definition; `scaffolding/08-021-pm-agent.md` for the full template. Key fields:
+
+- **`version: "2.0"`** — required. v1 (flat tasks[] with single agent per task) is deprecated.
+- **`features[].id`** — stable `feat-{slug}` identifier.
+- **`features[].worktree`** / **`features[].branch`** — `.claude/worktrees/{slug}/` + `feat/{slug}`.
+- **`features[].depends_on[]`** — cross-feature dependencies for DAG scheduling.
+- **`features[].skip[]`** — `web | mobile | backend` surfaces the feature doesn't touch.
+- **`features[].agent_sequence[]`** — ordered list of agents (never includes `git-agent` — worktree lifecycle is orchestrator-owned).
+- **`features[].tasks[]`** — concrete work; each task's `agent` field MUST appear in the parent feature's `agent_sequence`.
+
+Cross-field invariants enforced by `TasksV2Schema` + load-time checks (task 034b + task 035):
+
+1. Every `task.agent` ∈ parent `feature.agent_sequence`.
+2. `feature.depends_on[]` references resolve to other features in same file; no cycles.
+3. `task.depends_on[]` references another task within the SAME feature (cross-feature task deps expressed at feature level).
+
+### 3. What moved vs what stayed
+
+**Moved from Mode A (STAGES[]) to Mode B (per-feature):**
+
+- `build-backend` → `backend-builder` invocation inside a feature worktree
+- `build-web` → `web-frontend-builder` invocation inside a feature worktree
+- `build-mobile` → `mobile-frontend-builder` invocation inside a feature worktree
+- `test` → `tester` invocation inside a feature worktree
+- `review` → `reviewer` invocation inside a feature worktree
+- `git` → the orchestrator invokes `git-agent` at feature boundaries (never as a standalone stage)
+
+**Unchanged — stays in Mode A:**
+
+- All design stages (analyze through user-flows-generator)
+- Gates 1–4 (requirements, mockups, design-system, sign-off)
+- `/architect` + gate 5 credentials
+- `/pm --mode=tasks`
+- `/skills-audit --scope=build` + `/register-mcp-servers --scope=build`
+- `/git-agent bootstrap` — the final Mode A stage that confirms clean main branch before Mode B starts
+
+### 4. git-agent as first-class operator
+
+The git-agent (task 033 — rewritten per `plans/active/feat-003-git-agent-worktrees.md` Q1) gains four operations:
+
+- `bootstrap` — final Mode A stage; confirms main branch clean + at `origin/main`
+- `checkout-feature` — `git worktree add .claude/worktrees/{slug} -b feat/{slug} origin/main`; writes `.feature-context.json` lockfile tracking `{feature_id, branch, opened_at, agent_sequence}`
+- `close-feature` — merges feature branch to main + removes worktree; on conflict, preserves the worktree + emits a conflict event
+- `resolve-conflict-handoff` — re-invokes the last writing agent with the conflict context; max 3 resolution attempts before `emergency-abort`
+- `emergency-abort` — destroys worktree + deletes branch + records failure in tasks.yaml
+
+The orchestrator never invokes `git` CLI directly inside feature work — all git operations flow through the git-agent. This centralizes merge-conflict routing in one place.
+
+### 5. Retry models — independent counters
+
+Layer 5 (stage retry) / visual-review (per-screen) / feature-graph task retry / feature-graph merge-conflict retry / kit-change-request detour budget are **all independent**. Exhausting one doesn't spend budget from another. A single feature could theoretically consume 12 retry attempts across categories, but the hard ceiling per category prevents runaway loops. See task 035 §`runStage()` + `runPipeline()` + `runFeatureGraph()` for the full retry table.
+
+### 6. Stack-skill dispatch (refactor-004 + feat-002 bundle)
+
+Refactor-004's feature-graph model is the foundation for `feat-002-stack-skill-shelf` (separate plan): once builders are invoked per-feature, making them stack-agnostic is a prompt-composition concern (load the right stack SKILL.md based on `architecture.yaml.tooling.stack`), not a pipeline-architecture concern. §17 of this blueprint (React/NestJS/Expo hardcode) is superseded by feat-002 when it ships — refactor-004 doesn't touch stack choice, only orchestration shape.
+
+### 7. Supersession breadcrumb
+
+- **§23 stage walkthrough**: superseded by refactor-003 (Appendix C) AND refactor-004 (this appendix). The post-design portion (lines 2895-2910: "BUILD PHASE" through "SHIP PHASE") is fully replaced by Mode B.
+- **§3 orchestration model**: principle-preserving ("stage-linear with dependencies + parallelism") but the build-phase concretization is now feature-graph, not stage-linear.
+- **Task 035 orchestrator spec**: source of truth for both Mode A and Mode B.
+- **Tasks 028 / 029 / 030 / 031 / 032 / 033 (builders + tester + reviewer + git-agent)**: to be updated per feat-002 (builders) and feat-003 (git-agent) follow-up plans.
+
+When reading §3 / §10 / §11 / §23 / §17 / §18, treat this appendix + Appendix C + the scaffolding tasks (020, 021, 035, 036, 038, 041, 018b) as the implementation spec. The pipeline shape documented in Appendix C is refined here — refactor-003 gave the linear sequence its current order; refactor-004 makes the post-PM portion task-driven.

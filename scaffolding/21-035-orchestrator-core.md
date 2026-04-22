@@ -36,9 +36,17 @@ interface PipelineStage {
 }
 ```
 
-### Stage sequence — refactor-003 order (canonical)
+### Two-phase pipeline — refactor-004 canonical shape
 
-Refactor-003 reordered the pipeline so architect + PM run **after** design sign-off. Design stages run directly after analyze + skills-audit-design. Gate 5 (credentials, file-drop) sits between architect and PM. Blueprint Appendix C records the reasoning; this array is the source of truth.
+The orchestrator runs in **two modes** per refactor-004:
+
+- **Mode A — stage-linear** (design + post-design-planning). A fixed sequential array that every project walks through identically: analyze → design → architect → pm → skills-audit-build → register-mcp-build → git-agent-bootstrap. These stages are framework-agnostic by contract and produce the same artefacts regardless of project shape.
+
+- **Mode B — feature-graph** (build phase). Post-PM, the orchestrator loads `docs/tasks.yaml` v2 and walks `features[]`. Each feature opens its own git worktree; its declared `agent_sequence[]` runs inside that worktree; completion merges the feature back to `main`. Features with no interdependencies run concurrently up to `maxConcurrentFeatures`.
+
+The split means the post-design pipeline is **task-driven**, not stage-linear. A feature that touches only backend skips web + mobile builders entirely; a feature with no UI skips the tester's visual checks but still runs unit tests. The orchestrator's `STAGES[]` array no longer includes build-backend / build-web / build-mobile / test / review / git as separate stages — those agents are invoked per-feature instead.
+
+Refactor-003 established the ordering (architect + PM post-signoff, gate 5 credentials file-drop); refactor-004 changes what happens **after** PM. Blueprint Appendix C records the refactor-003 reasoning; this section + Feature-graph phase (below) is the source of truth for refactor-004.
 
 ```typescript
 const STAGES: PipelineStage[] = [
@@ -122,39 +130,21 @@ const STAGES: PipelineStage[] = [
     agent: "orchestrator",
     dependsOn: ["skills-audit-build"],
   },
-  // ─── BUILD PHASE ───
+  // ─── FEATURE-GRAPH BOOTSTRAP (refactor-004) ───
   {
-    name: "build-backend",
-    slashCommand: "/build-backend",
+    name: "git-agent-bootstrap",
+    slashCommand: "/git-agent bootstrap",
     gateEnabled: false,
-    agent: "backend-builder",
+    agent: "git-agent",
     dependsOn: ["register-mcp-build"],
+    // Last stage in Mode A. Confirms the main working tree is clean + at origin/main,
+    // then the orchestrator transitions to Mode B (feature-graph) for the rest of the
+    // pipeline. See §Feature-graph phase below.
   },
-  {
-    name: "build-web",
-    slashCommand: "/build-web",
-    gateEnabled: false,
-    agent: "web-frontend-builder",
-    dependsOn: ["build-backend"],
-  },
-  {
-    name: "build-mobile",
-    slashCommand: "/build-mobile",
-    gateEnabled: false,
-    agent: "mobile-frontend-builder",
-    dependsOn: ["build-backend"],
-  },
-  { name: "test", slashCommand: "/test", gateEnabled: false, agent: "tester" },
-  {
-    name: "review",
-    slashCommand: "/review",
-    gateEnabled: false,
-    agent: "reviewer",
-  },
-  // ─── SHIP PHASE ───
-  { name: "git", slashCommand: "/git", gateEnabled: false, agent: "git" },
 ];
 ```
+
+**Removed from STAGES[] in refactor-004**: `build-backend`, `build-web`, `build-mobile`, `test`, `review`, `git`. These agents are now invoked per-feature inside the feature-graph phase (Mode B). The stage-linear array only runs **once** per pipeline; the feature-graph runs **per feature**, potentially many features concurrently.
 
 **Critical: design-stage MCP servers are NOT registered here.** The fixed design-stage MCP default set (playwright, icons8, unsplash, chrome-devtools, and optional image-generator behind `--flags=nanobanana`) is registered at `/new-project` time from `mcp-defaults-design.json` via `/register-mcp-servers --scope=design`. By the time the orchestrator runs, those servers are already in `.mcp.json`. The `register-mcp-build` stage only appends vendor-specific MCP servers if the architect added any — usually zero, since vendor SDKs are NPM packages, not MCP servers. The stage is retained in the array so the registration contract is uniform.
 
@@ -162,7 +152,168 @@ const STAGES: PipelineStage[] = [
 
 **Refactor-001 design-phase note:** `screens` and `visual-review` are distinct stages with `visual-review` gating the user-flows sign-off. `screens` itself has no gate — its work always flows into `/visual-review`. If visual-review flags a screen, the orchestrator re-invokes `screens` in single-screen mode (see "Visual-review retry loop" below), not the whole design pipeline.
 
-`build-web` and `build-mobile` run in parallel (both depend only on `build-backend`). The orchestrator respects `dependsOn` to schedule parallelism.
+Design-phase parallelism within a stage (e.g. /screens batches, /visual-review batches) is internal to each skill. Post-PM parallelism is handled by the **Feature-graph phase** described below, not by the STAGES array.
+
+### Feature-graph phase (Mode B — refactor-004)
+
+After `git-agent-bootstrap` (the final Mode A stage) completes, the orchestrator switches to feature-graph execution:
+
+1. **Load `docs/tasks.yaml`** — parse against `TasksV2Schema` (task 034b). Reject v1 or missing-version with a migration-guidance error. Enforce the cross-field invariants documented in `tasks.ts`:
+   - Every `task.agent` is a member of its parent `feature.agent_sequence`
+   - Every `feature.depends_on[]` reference resolves to another feature in the same file
+   - `feature.depends_on` forms no cycle (DFS at load)
+   - Every `task.depends_on[]` references another task within the SAME feature
+
+   Any failure aborts the phase with a precise error pointing at the offending feature/task ID — PM must regenerate.
+
+2. **Build the feature DAG** — topological sort of `features[]` honoring `feature.depends_on`. Features with no incoming edges start immediately. Concurrency capped by `maxConcurrentFeatures` (default 4, configurable in `.claude/models.yaml.stages.feature-graph.maxConcurrentFeatures`).
+
+3. **For each ready feature, invoke `runFeature(feature)`.** Pseudocode:
+
+   ```ts
+   async function runFeature(feature: Feature): Promise<FeatureResult> {
+     const ctx = { feature, attempts: 0, startedAt: new Date() };
+
+     // 1. Worktree lifecycle: git-agent opens a new worktree off origin/main
+     await invokeAgent("git-agent", {
+       op: "checkout-feature",
+       worktree: feature.worktree,
+       branch: feature.branch,
+     });
+
+     const worktreeCwd = `.claude/worktrees/${feature.worktree}`;
+
+     // 2. Walk agent_sequence[]. Each agent executes with CWD = worktreeCwd, filtering
+     //    tasks to those assigned to it, respecting task.depends_on within the feature.
+     for (const agentName of feature.agent_sequence) {
+       // Skip agents whose surface is in feature.skip (e.g., web if skip: [web])
+       const surfaceOfAgent = agentSurface(agentName); // "web" | "mobile" | "backend" | null
+       if (surfaceOfAgent && feature.skip.includes(surfaceOfAgent)) continue;
+
+       const agentTasks = feature.tasks.filter((t) => t.agent === agentName);
+       if (agentTasks.length === 0) continue; // agent listed but no tasks — skip silently
+
+       const result = await invokeAgent(agentName, {
+         cwd: worktreeCwd,
+         tasks: agentTasks,
+         featureContext: {
+           id: feature.id,
+           branch: feature.branch,
+           priority: feature.priority,
+         },
+       });
+
+       // Per-task retry: agents signal success/failure per task.id; orchestrator
+       // retries failing tasks up to 3 times before marking feature failed.
+       for (const t of agentTasks) {
+         if (result.taskStatus[t.id] === "failed") {
+           if (getTaskAttempts(t.id) >= 3) {
+             return abortFeature(ctx, `Task ${t.id} failed after 3 attempts`);
+           }
+           incrementTaskAttempts(t.id);
+           // Re-invoke just this agent with the failing task. Agent reads the
+           // failure context + attempts additional approach. If task is stuck
+           // at attempt 3, orchestrator escalates to a /plan-investigation
+           // (per CLAUDE.md retry policy) rather than burning another attempt.
+           await invokeAgent(agentName, {
+             cwd: worktreeCwd,
+             tasks: [t],
+             retryContext: result.errors[t.id],
+           });
+         }
+       }
+     }
+
+     // 3. Merge back: git-agent closes the feature (push branch, merge --no-ff into main,
+     //    remove worktree on clean merge). Conflicts fire resolve-conflict-handoff.
+     const closeResult = await invokeAgent("git-agent", {
+       op: "close-feature",
+       worktree: feature.worktree,
+     });
+
+     if (closeResult.conflict) {
+       return handleMergeConflict(feature, closeResult);
+     }
+
+     return {
+       feature: feature.id,
+       status: "completed",
+       durationMs: Date.now() - ctx.startedAt.getTime(),
+     };
+   }
+   ```
+
+4. **`runFeatureGraph(features)`** drives the DAG:
+
+   ```ts
+   async function runFeatureGraph(
+     features: Feature[],
+   ): Promise<FeatureGraphResult> {
+     const concurrency = resolveConcurrency(); // from models.yaml, default 4
+     const completed = new Set<string>();
+     const failed = new Set<string>();
+     const pool: Promise<FeatureResult>[] = [];
+
+     while (completed.size + failed.size < features.length) {
+       const ready = features.filter(
+         (f) =>
+           !completed.has(f.id) &&
+           !failed.has(f.id) &&
+           !pool.some((p) => p.featureId === f.id) &&
+           f.depends_on.every((d) => completed.has(d)),
+       );
+
+       while (pool.length < concurrency && ready.length > 0) {
+         const next = ready.shift()!;
+         pool.push(
+           runFeature(next).then((r) => {
+             if (r.status === "completed") completed.add(r.feature);
+             else failed.add(r.feature);
+             return r;
+           }),
+         );
+       }
+
+       await Promise.race(pool);
+       // prune resolved promises from pool
+     }
+
+     return { completed: [...completed], failed: [...failed] };
+   }
+   ```
+
+5. **Merge-conflict routing** (`handleMergeConflict`). When `git-agent close-feature` reports a conflict:
+   - Identify the `last_writing_agent` from the worktree's `.feature-context.json` (git-agent wrote this during checkout + updated on every agent handoff)
+   - Re-invoke that agent with `resolve-conflict-handoff` context: the conflicting files + the merge-base + the `main` HEAD + the feature branch HEAD
+   - Agent re-edits inside the worktree; re-commits; git-agent retries close-feature
+   - Max 3 resolution attempts per feature; on the fourth failure, git-agent emits `emergency-abort` (destroys the worktree + branch, writes `failed: true` + reason into that feature's tasks.yaml row) and the feature is marked `failed`
+
+6. **Kit-change-request detour** — builders inside a feature worktree may still emit `docs/screens/kit-change-requests/*.md`. The detour invokes PM `--mode=kit-change-request` (refactor-003) from OUTSIDE the worktree (it touches `packages/ui-kit/` at the main working tree). After the kit bumps via `/stylesheet`, the orchestrator re-runs the emitting agent inside the feature worktree. This is the post-signoff variant — as documented below, it may also invalidate gate-4 sign-off and require re-signing.
+
+7. **Phase completion.** When all features are `completed` or `failed`:
+   - If `failed.length === 0` → pipeline success. Emit final return JSON.
+   - If `failed.length > 0` → surface each failed feature with its abort reason; pipeline exits non-zero but preserves all successfully-merged features on `main`. Human decides whether to re-run the failures (orchestrator supports `--resume-feature-graph` flag to pick up where it left off).
+
+### Agent surface mapping (for `skip[]` logic)
+
+```ts
+function agentSurface(
+  agent: AgentSequenceMember,
+): "web" | "mobile" | "backend" | null {
+  switch (agent) {
+    case "backend-builder":
+      return "backend";
+    case "web-frontend-builder":
+      return "web";
+    case "mobile-frontend-builder":
+      return "mobile";
+    default:
+      return null; // tester / reviewer / security / devops apply to all surfaces
+  }
+}
+```
+
+If `feature.skip: [mobile]`, the mobile-frontend-builder is removed from `agent_sequence` for that feature's run. Tester / reviewer still run (they cover whatever surfaces remain). PM produces `skip[]` based on the feature's task shape — no mobile-task in the feature → `skip: [mobile]`.
 
 ### Pipeline-wide flag set (refactor-001)
 
@@ -218,15 +369,15 @@ Visual retries are **independent** of Layer 5 retries:
 
 A screen can theoretically consume up to 6 retries total (3 Layer 5 on `/screens` producing it + 3 visual-review re-generations), but in practice 3+3 is the extreme case; screens flagged `needsHumanReview` move the decision to the human reviewer at gate 4.
 
-### Kit-change-request detour (refactor-001 + refactor-003 PM dual-mode)
+### Kit-change-request detour (refactor-001 + refactor-003 PM dual-mode + refactor-004 feature-graph placement)
 
-`/screens`, `/build-web`, and `/build-mobile` can all emit `docs/screens/kit-change-requests/{screen-id}.md` when a required primitive / pattern / layout doesn't exist in the kit. On detection:
+`/screens` (design phase), and `web-frontend-builder` / `mobile-frontend-builder` (post-PM, inside feature worktrees) can all emit `docs/screens/kit-change-requests/{screen-id}.md` when a required primitive / pattern / layout doesn't exist in the kit. On detection:
 
 1. Halt the emitting stage (no retry; this is a structural gap, not a generation failure)
 2. **Invoke PM agent in `--mode=kit-change-request`** (refactor-003 dual-mode; see task 021). PM reads the kit-change-request file + current `packages/ui-kit/package.json` version, writes `plans/active/kit-change-request-{id}.md` mini-plan describing the needed kit update. PM in this mode does NOT require `architecture.yaml` to exist — crucially important since design-phase detours fire BEFORE the main architect stage has run.
 3. Re-run `/stylesheet` (task 024) with the PM's mini-plan injected so the kit bumps to a new minor version (e.g., `1.0.0 → 1.1.0`); the kit's CHANGELOG.md gets a new entry
 4. **If the detour was triggered DURING the design phase** (from `/screens`): resume `/screens`, then `/visual-review`, then `/user-flows-generator`. Sign-off is NOT yet bound — re-running is clean.
-5. **If the detour was triggered AFTER sign-off** (from `/build-web` or `/build-mobile`): this is catastrophic — the kit bump breaks `signoff.uiKitVersion`, invalidating the sign-off. The orchestrator:
+5. **If the detour was triggered AFTER sign-off** (from a builder inside a feature worktree): this is catastrophic — the kit bump breaks `signoff.uiKitVersion`, invalidating the sign-off. The orchestrator:
    - Surfaces a red-flag warning to the human
    - Reverts to `/screens` (regenerate with the new kit)
    - Re-runs `/visual-review`
@@ -237,13 +388,28 @@ A screen can theoretically consume up to 6 retries total (3 Layer 5 on `/screens
 
 Either way, the detour is automated but transparent — the human sees the design-pipeline restart in the log. Max 2 kit-change detours per pipeline run before escalating to manual human-review (otherwise a circular kit-incomplete bug could burn unlimited budget).
 
-### `runStage()` + `runPipeline()`
+### `runStage()` + `runPipeline()` + `runFeatureGraph()` (refactor-004)
 
-- `runStage()` calls `query()` from the Claude Agent SDK with resolved model/effort/budget. Forwards `CLAUDE_PIPELINE_FLAGS` and (when gated) `CLAUDE_GATE_API_BASE` as env vars.
-- `runPipeline()` walks the stage array: reserve budget → run → validate output against `outputSchema` (from `StageSchemas` in task 034b) → checkpoint context (task 013) → check gate → proceed
-- On validation failure: retry with feedback (§13 Layer 5), max 3 attempts
-- On visual-review failure: run the visual-review retry loop above (per-screen, separate counter)
-- On kit-change-request emission: trigger the detour flow above
+**Three execution primitives**, each with its own retry model:
+
+- **`runStage(stage)`** — Mode A primitive. Calls `query()` from the Claude Agent SDK with resolved model/effort/budget. Forwards `CLAUDE_PIPELINE_FLAGS` and (when gated) `CLAUDE_GATE_API_BASE` as env vars. Runs ONE stage against the main working tree.
+
+- **`invokeAgent(agentName, context)`** — Mode B primitive. Called from inside `runFeature()`. Invokes a named agent (backend-builder / web-frontend-builder / etc.) with a task subset + worktree CWD. No pipeline-level gate logic here; gates only apply to Mode A stages.
+
+- **`runPipeline()`** — top-level driver:
+  1. Walk the Mode A `STAGES[]` array: reserve budget → `runStage()` → validate output against `outputSchema` (from `StageSchemas` in task 034b) → checkpoint context (task 013) → check gate → proceed. On validation failure: retry with feedback (§13 Layer 5), max 3 attempts.
+  2. After `git-agent-bootstrap` (final Mode A stage) completes, transition to Mode B: `await runFeatureGraph(tasksYaml.features)`.
+  3. On Mode B completion: if any feature failed, surface the failures; else emit final return JSON.
+
+**Retry models — independent counters:**
+
+- **Layer 5 stage retry** — max 3 per Mode A stage. Output-schema failure; orchestrator re-invokes the stage with validation-error feedback appended.
+- **Visual-review per-screen retry** — max 3 per screen. See §Visual-review retry loop.
+- **Feature-graph task retry** — max 3 per task (not per feature). Agent re-invoked for the specific failing task with error context.
+- **Feature-graph merge-conflict retry** — max 3 per feature's merge. See §Merge-conflict routing.
+- **Kit-change-request detour budget** — max 2 per pipeline run before escalating to human.
+
+All counters are independent — a single feature could theoretically consume 3 Layer 5 + 3 visual + 3 task + 3 merge retries = 12 retry attempts, but in practice only one or two loops fire. The hard ceiling is enforced per-category; exhausting one doesn't spend budget from another.
 
 ### Model Config Reader: `orchestrator/model-config.ts` (§7 L862-918)
 
