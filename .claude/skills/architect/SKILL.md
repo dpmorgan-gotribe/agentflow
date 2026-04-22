@@ -1,0 +1,457 @@
+---
+name: architect
+description: Read analyst research + signoff artefacts, pick one vendor per integration slot and one stack-slug per tooling slot, emit architecture.yaml + .env.example + credentials/deployment checklists + docker-compose.yml + CI workflow. Runs post-signoff, pre-PM.
+when_to_use: after /user-flows-generator sign-off gate (gate 4) resolves approved=true; before /pm
+allowed-tools: Read Write Bash Grep Glob
+model: inherit
+argument-hint: "(no flags — architect is a single invocation)"
+---
+
+# /architect — post-signoff architecture + credentials
+
+Runs after design sign-off (gate 4) and before PM. Single invocation, no phases. Produces the architecture-as-code spec, the credentials-setup surface for gate 5, and the **infrastructure minimum** (docker-compose + CI) so the generated app can boot on the user's machine.
+
+Orchestrator (035) controls invocation. Architect does NOT fire inside the design pipeline — only at its scheduled stage position after user-flows sign-off.
+
+## Prerequisites
+
+- `/user-flows-generator` completed + gate 4 sign-off resolved `approved: true`
+- `docs/signoff-{timestamp}.json` exists and parses
+- `docs/requirements.md` + `docs/brief-summary.json` + `docs/analysis/shared/integrations-options.md` present
+- `docs/selected-style.json` written (locked at gate 2)
+- `schemas/architecture.schema.json` present (validation target)
+- `scripts/validate-architecture.mjs` present (self-verify runner)
+- `.claude/architecture.yaml.template` present (shape reference; never loaded at runtime, used for design docs only)
+
+## Inputs (authoritative read order)
+
+1. `docs/signoff-*.json` — the latest by filename timestamp. Parse + assert `approved: true`. Extract `uiKitVersion`, `screensManifestHash`, `visualReviewReportHash`. **Abort** on missing / unapproved.
+2. `docs/requirements.md` — platforms + personas + features + compliance flags + skills needed
+3. `docs/brief-summary.json` — `projectName`, `detectedPlatforms`, `integrationsResearched`
+4. `docs/analysis/shared/integrations-options.md` — the research menu. One category → one decision per run.
+5. `docs/selected-style.json` — carries `iconLibrary` + `dials`. **Mirror only** — don't re-decide.
+6. `brief.md` §7, §8, §9, §14 — stack hints + compliance flags + infrastructure preferences
+7. `docs/screens/**/*.html` — composed screens; narrow vendor SDKs to primitives actually rendered
+8. `docs/asset-inventory.json` — user-supplied assets (for compliance scoping)
+9. `docs/brand-extracted.yaml` (optional) — brand-guide compliance rules
+10. `.claude/architecture.yaml` (optional, re-run only) — prior output. Hash it pre-overwrite; emit `docs/credentials-diff.md` post-overwrite.
+
+## Outputs
+
+| Path                                  | Purpose                                                                       |
+| ------------------------------------- | ----------------------------------------------------------------------------- |
+| `.claude/architecture.yaml`           | Full architecture-as-code spec; validates against the schema                  |
+| `.env.example`                        | Vendor credential placeholders grouped by required-now / later / optional     |
+| `docs/credentials-checklist.md`       | Human-readable vendor-signup table with "☐" status column                     |
+| `docs/deployment-checklist.md`        | Self-hosted services operational notes + config-template pointers             |
+| `docs/config/{service}.toml.template` | Per self-hosted integration (may be `.yaml` or `.json` depending on service)  |
+| `docs/credentials-diff.md`            | Re-runs only — kept / new / changed / removed groups vs prior file            |
+| `docker-compose.yml`                  | Local dev composition — backend + database + optional Redis per integrations  |
+| `.github/workflows/ci.yml`            | CI pipeline per `architecture.yaml.meta.ciProvider` (default: github-actions) |
+| `.mcp.json` (extended via task 041)   | Build-stage MCP servers (usually no-op)                                       |
+
+## Steps
+
+### 1. Gate signoff + load inputs
+
+- Find the newest `docs/signoff-*.json` by filename timestamp. If none: **abort** with "No signoff found — /architect runs post-gate-4".
+- Parse. Assert `approved === true`. If false or missing: **abort** with "Signoff not approved; gate 4 must resolve before /architect".
+- Read inputs 2–9 in order. Record which are present (brand-extracted.yaml is optional).
+- If `.claude/architecture.yaml` exists, compute sha256 hex of its bytes and retain for the diff.
+
+### 2. Parse the research menu + match to categories
+
+Read `docs/analysis/shared/integrations-options.md`. Parse by `^## Category:` headings. For each category, extract candidate vendors + their signals (pricing, lock-in, compliance, self-hosted availability).
+
+Record the raw menu in memory — one pick per category will emerge in step 3.
+
+### 3. Apply decision heuristics per category
+
+For each category, apply heuristics in precedence order:
+
+1. **Brief signal wins.** Grep `brief.md` §7.3 + §8 for explicit vendor names from the candidate list. If one matches, pick it unless integrations-options.md flagged a blocker.
+2. **Compliance fit.** If `requirements.md` names GDPR / HIPAA / SOC 2 / COPPA, filter candidates to ones that offer compliant residency/tier.
+3. **Lock-in risk.** Equal on price + features → prefer lower lock-in.
+4. **Scale realism.** Pick free-tier matching user's implied scale; no Enterprise without signal.
+5. **Self-hosted preference.** Messaging / infrastructure / mesh networking often signal self-hosted — honour the signal.
+
+Record for each integration:
+
+- `category`
+- `deployment: vendor | self-hosted | declined`
+- `vendor` (if vendor)
+- `signupUrl` + `credentialsRequired[]` + `requiredBy[]` + `requiredNow` (if vendor)
+- `configTemplate` + `deploymentChecklist` + `operationalNotes` (if self-hosted)
+- `declinedRationale` (if declined — must include why + when to reconsider)
+- `decisionRationale` — always, one-line prose citing the heuristic that applied
+
+### 4. Pick stack-slugs per tooling.stack slot (feat-002)
+
+For each slot (`web_framework`, `web_styling`, `mobile_framework`, `backend_language`, `backend_framework`, `orm`, `database`):
+
+1. Check brief §7/§8 for explicit names (`FastAPI`, `SvelteKit`, `Expo`, etc.) → pick.
+2. Otherwise check `docs/analysis/shared/competitors.md` for dominant stacks in the winning vertical → borrow.
+3. Otherwise use factory defaults:
+   - `web_framework: react-next`, `web_styling: tailwind`
+   - `mobile_framework: expo-rn`
+   - `backend_language: node`, `backend_framework: node-trpc-nest`
+   - `orm: prisma`
+   - `database: postgres`
+4. No-tier case: set slot to `null` (e.g. `mobile_framework: null` for web-only projects). PM uses `features[].skip[]` to skip the builder for null tiers.
+
+For every slot, record a `stackRationale[]` entry:
+
+```yaml
+- slot: web_framework
+  pick: react-next
+  reason: "Factory default — brief did not name a framework"
+  briefSignal: null
+  rejected: [svelte-kit, remix]
+```
+
+When picking a non-null slug, verify that `.claude/skills/agents/{tier}/{stack-slug}/SKILL.md` exists. If it doesn't, the slot is a **draft stack** — record in `stackRationale[].reason` as `"draft stack — triggers /skills-audit --scope=build --auto-author-stack-skills"`. Skills-audit step 11 will author it.
+
+### 5. Compose architecture.yaml
+
+Build the YAML structure per `.claude/architecture.yaml.template`:
+
+- `meta`: projectName (from brief-summary), generatedAt (now, ISO-8601), generatedBy: `"/architect (refactor-003)"`, priorArchitectureSha (from step 1), ciProvider (default `github-actions`; override from brief §8 if specified), signoff subtree populated from the signoff file.
+- `apps`: one entry per app in `detectedPlatforms` plus `api` (inferred — every project with a backend has an api app). `framework` is the free-text mirror of `tooling.stack.{tier}_framework`. `integrations` subtree contains the per-category decisions from step 3.
+- `packages`: ui-kit (version mirrored from signoff.uiKitVersion), types, utils, api-client, orchestrator-contracts.
+- `tooling.stack`: the slot picks from step 4.
+- `tooling.icon_library`: mirrored from `docs/selected-style.json.iconLibrary`.
+- `tooling.design_dials`: mirrored from `docs/selected-style.json.dials`.
+- `tooling.mcp_servers`: read existing `.mcp.json` entries; preserve them as an array. Usually architect adds zero new entries.
+- `tooling.skills.design`: derived from `tooling.stack` (e.g. `storybook-tailwind`, `nativewind-expo`).
+- `tooling.skills.build`: one slug per vendor pick (e.g. `stripe-connect`, `thirdweb-embedded-wallets`).
+- `tooling.budget`: total_mcp_cost_usd (default 25), total_image_gen_calls (default 100 — enforced only when `--flags=nanobanana`).
+- `assets.provenance`: derive from `docs/asset-inventory.json` (user vs hybrid vs research).
+- `compliance`: mirror from `requirements.md` + `brief.md` §14.
+- `stackRationale[]`: from step 4.
+
+Write to `.claude/architecture.yaml` using js-yaml with `noRefs: true, lineWidth: 120`.
+
+### 6. Validate architecture.yaml
+
+Run:
+
+```bash
+node scripts/validate-architecture.mjs .claude/architecture.yaml
+```
+
+If exit code non-zero, **abort** with the error messages. Fix + retry.
+
+### 7. Emit .env.example
+
+Three groups, in this order:
+
+```bash
+# =============================================================================
+# .env.example — auto-generated by /architect
+# Copy to .env and fill in values. Never commit .env.
+# Gate 5 file-watches for docs/credentials-confirmed.txt
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# REQUIRED NOW — /build-backend will fail without these
+# -----------------------------------------------------------------------------
+
+# <VendorName> (<category>) — <signupUrl>
+# Pricing: <pricingTier from research>
+# required-now: true
+<KEY_1>=
+<KEY_2>=
+
+# -----------------------------------------------------------------------------
+# REQUIRED LATER — needed at /deploy (not build)
+# -----------------------------------------------------------------------------
+
+# ... (same pattern, requiredNow: false, required by deploy)
+
+# -----------------------------------------------------------------------------
+# OPTIONAL — feature-flag gated
+# -----------------------------------------------------------------------------
+
+# <VendorName> — gated by --flags=<flagName>
+# ...
+```
+
+A vendor decision with `requiredNow: true` goes in REQUIRED NOW. A vendor decision with `requiredBy` including `deploy` (not `build-backend`) goes in REQUIRED LATER. A vendor decision inside a feature-flag-gated integration (e.g. image-generator when `nanobanana` is the flag) goes in OPTIONAL with the flag name.
+
+Self-hosted integrations go in `.env.example` ONLY if they also carry a vendor-side API key (rare — usually they're config-file only).
+
+### 8. Emit docs/credentials-checklist.md
+
+Human-readable table with "☐" status column per row. One section per group (required-now / required-later / optional / deferred). Columns: #, Service, Category, Signup URL, Pricing, Keys, Status.
+
+Include the gate-5 file-drop instruction at the top:
+
+```
+## Gate 5 confirmation
+
+After filling in `.env`, drop one of the following as `docs/credentials-confirmed.txt`:
+  - `proceed` — all required-now keys set
+  - `defer:SERVICE_A,SERVICE_B` — deferring these services with rationale below
+  - `abort` — stop the pipeline
+```
+
+The `Deferred` section starts empty; populated by gate 5 when the user writes `defer:...`.
+
+### 9. Emit docs/deployment-checklist.md (self-hosted only)
+
+One section per self-hosted integration. Include: config template path, deployment footprint notes, ports / runtime dependencies / operational notes from the research menu.
+
+If there are no self-hosted integrations, still write the file with a short header stating "No self-hosted integrations — all vendor-backed" (so downstream stages always find the file).
+
+### 10. Emit docs/config/{service}.toml.template per self-hosted integration
+
+Each self-hosted integration gets one template file. Name the file after the vendor slug (e.g. `docs/config/postgres.toml.template`, `docs/config/conduwuit.toml.template`). Include:
+
+- Commented header: "Config template for <Service>. Copy to docs/config/<service>.toml and fill in."
+- Section-by-section placeholders per the service's documented config schema.
+
+For postgres specifically, emit a minimal config template with `port`, `data_directory`, `shared_preload_libraries`, and `max_connections` placeholders.
+
+### 11. Emit docker-compose.yml (must-have infrastructure minimum)
+
+Shape:
+
+```yaml
+version: "3.8"
+
+services:
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: "postgres://postgres:postgres@db:5432/app"
+      # other env vars referenced from .env via `env_file` below
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Redis added only when integrations mention queue / cache / session-store
+  # redis:
+  #   image: redis:7-alpine
+  #   ports: ["6379:6379"]
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 5
+
+volumes:
+  db-data:
+```
+
+Skip the entire `docker-compose.yml` emission when `tooling.stack.backend_framework` is `null` AND `tooling.stack.database` is `null` (frontend-only static-site project). Record the skip in warnings.
+
+### 12. Emit .github/workflows/ci.yml (or equivalent)
+
+Branch per `architecture.yaml.meta.ciProvider`:
+
+- `github-actions` (default) → `.github/workflows/ci.yml`
+- `gitlab-ci` → `.gitlab-ci.yml`
+- `circleci` → `.circleci/config.yml`
+
+For github-actions:
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: "pnpm" }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: "pnpm" }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r lint
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: "pnpm" }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r test
+        env:
+          DATABASE_URL: "postgres://postgres:postgres@localhost:5432/app"
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [typecheck, lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: "pnpm" }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+```
+
+Skip `test` job's postgres service when `tooling.stack.database` is null. Skip the whole workflow emission if ALL of `web_framework`, `mobile_framework`, `backend_framework` are null (nothing to CI). Record skips in warnings.
+
+### 13. Emit credentials-diff.md (re-runs only)
+
+If step 1 recorded a priorArchitectureSha, load the prior architecture.yaml (the sha hash was computed pre-overwrite, so the prior content is still available in memory from step 1). Diff per-integration:
+
+- **Kept** — vendor + keys unchanged
+- **New** — vendor pick not in prior
+- **Changed** — same category but different vendor (write both old + new keys; signup URL for new)
+- **Removed** — category in prior but not in current
+
+Write to `docs/credentials-diff.md`. Include: timestamp, one section per group, explicit "add to .env" / "safe to remove from .env" language per the scaffolding §docs/credentials-diff.md shape.
+
+Skip this step if prior architecture.yaml didn't exist.
+
+### 14. Delegate to task 041 (/register-mcp-servers --scope=build)
+
+Invoke the skill if it exists. If `.claude/skills/register-mcp-servers/SKILL.md` is missing, emit a warning ("register-mcp-servers build scope not yet implemented; see task-041") and record `buildMcpServersAdded: []`. The actual registration is usually no-op (vendor SDKs are NPM packages).
+
+### 15. Self-verify (all 11 checks)
+
+Execute each check:
+
+1. `node scripts/validate-architecture.mjs .claude/architecture.yaml` → exit 0
+2. Grep `.claude/architecture.yaml` for every `apps.*.integrations.*` entry → each has `deployment` field
+3. For each `deployment: vendor`, confirm `vendor`, `signupUrl`, `credentialsRequired`, `requiredBy`, `requiredNow`, `decisionRationale` populated
+4. For each `deployment: self-hosted`, confirm `configTemplate` path resolves to a file under `docs/config/`
+5. For each `deployment: declined`, confirm `declinedRationale` non-empty
+6. `.env.example` has the three group headers (`REQUIRED NOW`, `REQUIRED LATER`, `OPTIONAL`)
+7. Every non-null `tooling.stack` slot has a matching `.claude/skills/agents/{tier}/{slug}/SKILL.md` OR appears in `stackRationale[].reason` as "draft stack"
+8. `tooling.icon_library` exactly equals `docs/selected-style.json.iconLibrary`
+9. `docker-compose.yml` exists when any `apps.*.framework` is non-null
+10. `.github/workflows/ci.yml` (or equivalent) exists when any `tooling.stack.*_framework` is non-null
+11. Grep own execution log for `.env` reads/writes — zero allowed outside `.env.example` context
+
+Any failure → fix + retry the specific step, then re-verify. After 3 self-verify attempts, abort with an error listing the failed checks.
+
+### 16. Emit return JSON
+
+Write the ArchitectOutput JSON to stdout as a single line or final block. The orchestrator parses it via `ArchitectOutputSchema`. Shape:
+
+```json
+{
+  "success": true,
+  "architectureYamlPath": ".claude/architecture.yaml",
+  "envExamplePath": ".env.example",
+  "appsCount": <integer>,
+  "packagesCount": <integer>,
+  "vendorDecisions": [...],
+  "selfHostedDecisions": [...],
+  "declinedDecisions": [...],
+  "envVarsRequiredNow": [...],
+  "envVarsRequiredLater": [...],
+  "envVarsOptional": [...],
+  "credentialsChecklistPath": "docs/credentials-checklist.md",
+  "deploymentChecklistPath": "docs/deployment-checklist.md",
+  "credentialsDiffEmitted": <bool>,
+  "credentialsDiffPath": "docs/credentials-diff.md" | null,
+  "configTemplatesEmitted": [...],
+  "stackRationale": [...],
+  "dockerComposePath": "docker-compose.yml" | null,
+  "ciWorkflowPath": ".github/workflows/ci.yml" | null,
+  "buildMcpServersAdded": [],
+  "warnings": [...]
+}
+```
+
+## Error paths
+
+- **Signoff missing / unapproved** — abort with "Signoff not approved; gate 4 must resolve approved=true before /architect".
+- **integrations-options.md missing** — abort with "Analyst integrations research missing. Re-run /analyze."
+- **selected-style.json missing** — abort with "Selected style missing. Gate 2 must resolve before /architect."
+- **Schema validation fails on architecture.yaml** — retry generation up to 3 attempts with error context. After 3: abort with the last validation errors.
+- **self-verify fails** — retry up to 3 attempts. After 3: abort listing failed checks.
+- **.env read/write detected** — HARD abort regardless of intent. This is a security boundary.
+
+## Integration Points
+
+- **Task 036 Gate 5** reads `docs/credentials-confirmed.txt` file-drop post-architect. Consumes `.env.example` group structure for required-now inventory (stat-only; never reads `.env`).
+- **Task 041 /register-mcp-servers --scope=build** consumes `.claude/architecture.yaml.tooling.mcp_servers` + appends to `.mcp.json`. Usually no-op. Step 14 delegates.
+- **Task 021 /pm --mode=tasks** reads `architecture.yaml` + requirements.md to produce `docs/tasks.yaml` v2. Task-035 Mode B scheduler drives `features[]` from there.
+- **Builders (028/029/030)** read `architecture.yaml.tooling.stack` for stack dispatch; read `architecture.yaml.apps.*.integrations.*` for vendor SDK pinning + import scoping.
+- **Reviewer (032)** reads architecture.yaml for "no secrets in code" enforcement.
+
+## Acceptance criteria
+
+- [ ] `.claude/skills/architect/SKILL.md` exists with the frontmatter above
+- [ ] Reads 10 inputs in authoritative order; aborts on missing/unapproved signoff
+- [ ] Five-heuristic vendor decision discipline applied per category with `decisionRationale` non-empty on every vendor pick
+- [ ] Stack picks populate every `tooling.stack` slot; `stackRationale[]` has one entry per slot
+- [ ] `.claude/architecture.yaml` validates against `schemas/architecture.schema.json` before proceeding
+- [ ] `.env.example` grouped by required-now / required-later / optional with signup URL comment blocks
+- [ ] `docs/credentials-checklist.md` emitted with "☐" status column + gate-5 file-drop instruction
+- [ ] `docs/deployment-checklist.md` emitted (even if no self-hosted integrations — degenerate header)
+- [ ] Per-self-hosted config template emitted under `docs/config/`
+- [ ] `docker-compose.yml` emitted when any app framework is non-null
+- [ ] `.github/workflows/ci.yml` (or equivalent) emitted when any framework is non-null
+- [ ] `docs/credentials-diff.md` emitted on re-runs with kept/new/changed/removed groups
+- [ ] Task 041 delegation attempted; graceful warning if the skill is missing
+- [ ] 11-check self-verify runs before return; all must pass or the stage retries
+- [ ] Return JSON validates against `ArchitectOutputSchema` from `@repo/orchestrator-contracts`
+- [ ] Grep of skill code for `.env` (outside `.env.example` context) returns zero matches
