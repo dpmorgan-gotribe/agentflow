@@ -1,9 +1,10 @@
 ---
 id: feat-005-architect-implementation
 type: feature
-status: approved
+status: completed
 approved-at: 2026-04-22
 approved-by: human
+completed-at: 2026-04-22
 author-agent: human
 created: 2026-04-22
 updated: 2026-04-22
@@ -166,4 +167,44 @@ Five phases. Each ends with a commit + a passing smoke test against `projects/mi
 
 ## Attempt Log
 
-<!-- Populated by executing agent. -->
+### Attempt 1 — 2026-04-22 (succeeded end-to-end across all 5 phases)
+
+5 commits on `feat/architect-implementation`:
+
+- Phase 1 (f9cfc16): `schemas/architecture.schema.json` validates template; `packages/orchestrator-contracts/src/architect.ts` (ArchitectOutputSchema + 13 new tests, contracts now at 70 tests); `.claude/architecture.yaml.template` (walk-through example); `scripts/validate-architecture.mjs` (AJV runner). Added js-yaml + @types/js-yaml to factory-root devDeps.
+- Phase 2 (ed612c9): `.claude/agents/architect.md` — planning-tier inherited, maxTurns 40, effort max, explicit `.env` prohibition, three-way deployment enum, five-heuristic vendor decision ladder.
+- Phase 3+4 (91ee979): `.claude/skills/architect/SKILL.md` — all 16 steps including gate-signoff load, heuristic-driven vendor + stack picks, architecture.yaml composition + schema validation, .env.example + checklists + config templates, docker-compose.yml + CI workflow emission (must-have infra per roadmap), credentials-diff on re-runs, 11-check self-verify.
+- Phase 5 smoke test: `pnpm generate mindapp-v2 --dry-run` now reports `→ architect — skill present at .claude/skills/architect [gate: credentials]` and advances to halt at `pm` (feat-006 territory). Cumulative spend: $0.00. Exit code 0.
+
+**Total: 13 new contracts tests; 112 orchestrator tests unchanged (this plan is additive, no regressions).**
+
+## Lessons Learned
+
+**AJV + ajv-formats is factory-root-level, js-yaml wasn't until now.** The existing `scripts/validate-brief.mjs` parses markdown directly (no yaml body), so js-yaml wasn't pulled in. Adding architecture.yaml-shaped validation required a root-level dep. Added via `pnpm add -D -w js-yaml @types/js-yaml`.
+
+**Schema + template validation is a two-sided contract.** The template uses real ISO-8601 timestamps (not `"{ISO-8601 timestamp}"` placeholders) because AJV's `format: date-time` is strict. Templates that placeholder-stuff date fields need either weaker schemas or real placeholder dates — chose the latter for cleaner downstream diffs.
+
+**Skills are auto-registered by filesystem presence.** No manual registration call was needed — writing `.claude/skills/architect/SKILL.md` caused the skill to appear in the available-skills list on the next turn (harness scans `.claude/skills/` on boot). This is also exactly what `cli-runner.ts`'s `skillExists()` check looks for, so the orchestrator's dry-run + the Skill tool's discovery pipeline agree on the same filesystem signal.
+
+**Commit boundaries should follow user-visible milestones, not skill-internal subphases.** Phases 3 + 4 of this plan both write to `.claude/skills/architect/SKILL.md`. Committing them separately would have forced an unnatural split (phase 3 ships a partial skill that can't run). Combined them into one commit — cleaner history.
+
+**Claim: every skill that consumes architecture.yaml must also self-verify it.** The scripts/validate-architecture.mjs runner is meant to be called from:
+
+1. /architect's own self-verify (scaffolding step 15, check #1)
+2. feat-009 reviewer agent (when it boots post-code)
+3. A future CI workflow step
+
+Shipping the runner alongside the schema in phase 1 means downstream consumers don't need to re-implement validation.
+
+## Follow-up Work Unblocked
+
+- **feat-006-pm-implementation** — next on the critical path. `pnpm generate mindapp-v2 --dry-run` now halts at `pm`. PM reads architecture.yaml (produced here) + requirements.md to produce `docs/tasks.yaml` v2 for Mode B.
+- **feat-007-builder-runtimes** — needs both tasks.yaml (feat-006) AND architecture.yaml (this plan). Blocked on feat-006.
+- **task-036-hitl-gates** — gate 5 (credentials, file-drop) consumes the `.env.example` group structure emitted here. Architect-side contract is stable; gate 5's side can be built independently.
+
+Follow-ups NOT yet tested in this plan:
+
+- **Actual architect invocation against a real project** — dry-run verified skill presence; a full live run requires task-035's `runStage` to actually invoke the skill via Agent SDK. Deferred until feat-006 ships (so the pipeline can actually walk past architect).
+- **docker-compose config validate** — `docker compose config --dry-run` wasn't run against a real architect output (no live invocation yet). Spec'd in plan's validation criteria; do in the first live run.
+- **actionlint on .github/workflows/ci.yml** — same.
+- **Re-run credentials-diff path** — requires a prior architecture.yaml to diff against; first live run is the "prior"; second live run exercises the diff.
