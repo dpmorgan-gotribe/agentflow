@@ -145,13 +145,14 @@ For each of these factory paths, `cp -r` into the matching project path.
 In refresh mode, before overwriting an existing file, copy it to
 `{path}.bak-{ISO-timestamp}` first:
 
-| Factory source          | Project destination                     |
-| ----------------------- | --------------------------------------- |
-| `.claude/agents/`       | `projects/<name>/.claude/agents/`       |
-| `.claude/skills/`       | `projects/<name>/.claude/skills/`       |
-| `.claude/hooks/`        | `projects/<name>/.claude/hooks/`        |
-| `.claude/rules/`        | `projects/<name>/.claude/rules/`        |
-| `.claude/settings.json` | `projects/<name>/.claude/settings.json` |
+| Factory source                          | Project destination                                                                                                                                                                        |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `.claude/agents/`                       | `projects/<name>/.claude/agents/`                                                                                                                                                          |
+| `.claude/skills/`                       | `projects/<name>/.claude/skills/`                                                                                                                                                          |
+| `.claude/hooks/`                        | `projects/<name>/.claude/hooks/`                                                                                                                                                           |
+| `.claude/rules/`                        | `projects/<name>/.claude/rules/`                                                                                                                                                           |
+| `.claude/settings.json`                 | `projects/<name>/.claude/settings.json`                                                                                                                                                    |
+| `.claude/templates/worktrees-README.md` | `projects/<name>/.claude/worktrees/README.md` (feat-003: human-facing lifecycle doc; seeded into the gitignored worktrees dir so humans inspecting `.claude/worktrees/` see what it's for) |
 
 **Exception — `.claude/models.yaml` is preserved in refresh mode** (user
 may have tuned it). Init mode copies it fresh.

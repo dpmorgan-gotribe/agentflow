@@ -601,6 +601,151 @@ export type TasksV2 = z.infer<typeof TasksV2Schema>;
  */
 ```
 
+### `feature-context.ts` — **NEW** (per feat-003-git-agent-worktrees)
+
+Feat-003 introduces the `.feature-context.json` lockfile written by git-agent at `.claude/worktrees/{worktree}/.feature-context.json`. Schema source of truth: `schemas/feature-context.schema.json`. Zod mirror below.
+
+```ts
+import { z } from "zod";
+
+export const FeatureContextAgentOp = z.enum([
+  "execute-tasks",
+  "resolve-conflict",
+  "checkout-feature",
+  "close-feature",
+  "emergency-abort",
+]);
+
+export const FeatureContextHistoryEntry = z.object({
+  agent: z.string(),
+  op: FeatureContextAgentOp,
+  attempt: z.number().int().min(1).optional(),
+  started_at: z.string().datetime(),
+  finished_at: z.string().datetime().nullable().optional(),
+  outcome: z.enum(["success", "failure", "in-progress"]).optional(),
+  commit_sha: z
+    .string()
+    .regex(/^[0-9a-f]{7,40}$/)
+    .nullable()
+    .optional(),
+  notes: z.string().max(400).optional(),
+});
+
+export const FeatureContextSchema = z.object({
+  version: z.literal("1.0"),
+  feature_id: z.string().regex(/^feat-[a-z][a-z0-9-]{1,48}$/),
+  worktree: z.string().regex(/^feat-[a-z][a-z0-9-]{1,48}$/),
+  branch: z.string().regex(/^(feat|fix|refactor|chore)\/[a-z][a-z0-9-]+$/),
+  opened_at: z.string().datetime(),
+  opened_from: z.string().regex(/^[a-zA-Z0-9_/-]+@[0-9a-f]{7,40}$/),
+  agent_sequence: z
+    .array(
+      z.enum([
+        "backend-builder",
+        "web-frontend-builder",
+        "mobile-frontend-builder",
+        "tester",
+        "reviewer",
+        "security",
+        "devops",
+      ]),
+    )
+    .min(1),
+  agent_history: z.array(FeatureContextHistoryEntry).default([]),
+  last_writing_agent: z.string().nullable().default(null),
+  status: z.enum(["open", "merge-conflict", "closed", "aborted"]),
+  conflict_files: z.array(z.string()).optional(),
+  conflict_detected_at: z.string().datetime().nullable().optional(),
+  merge_sha: z
+    .string()
+    .regex(/^[0-9a-f]{7,40}$/)
+    .nullable()
+    .optional(),
+  failure_reason: z.string().max(400).nullable().optional(),
+});
+export type FeatureContext = z.infer<typeof FeatureContextSchema>;
+```
+
+### `git-agent.ts` — **NEW** (per feat-003-git-agent-worktrees)
+
+Discriminated-union output schema for the git-agent's 5 operations. Orchestrator validates returns against this.
+
+```ts
+import { z } from "zod";
+
+export const GitAgentOutput = z.discriminatedUnion("op", [
+  // bootstrap
+  z.object({
+    op: z.literal("bootstrap"),
+    success: z.literal(true),
+    mainBranch: z.string(),
+    mainSha: z.string().regex(/^[0-9a-f]{7,40}$/),
+    worktreeRoot: z.string(),
+    cleanTree: z.literal(true),
+  }),
+  z.object({
+    op: z.literal("bootstrap"),
+    success: z.literal(false),
+    reason: z.enum(["uncommitted-changes", "main-branch-mismatch"]),
+    files: z.array(z.string()).optional(),
+    localSha: z.string().optional(),
+    remoteSha: z.string().optional(),
+  }),
+  // checkout-feature
+  z.object({
+    op: z.literal("checkout-feature"),
+    success: z.literal(true),
+    worktreePath: z.string(),
+    lockfilePath: z.string(),
+    branch: z.string(),
+    featureId: z.string(),
+  }),
+  z.object({
+    op: z.literal("checkout-feature"),
+    success: z.literal(false),
+    reason: z.enum(["branch-conflict", "stale-worktree"]),
+    existingWorktree: z.string().optional(),
+  }),
+  // close-feature — success (no conflict)
+  z.object({
+    op: z.literal("close-feature"),
+    success: z.literal(true),
+    conflict: z.literal(false),
+    mergeSha: z.string().regex(/^[0-9a-f]{7,40}$/),
+    featureId: z.string(),
+  }),
+  // close-feature — conflict detected
+  z.object({
+    op: z.literal("close-feature"),
+    success: z.literal(false),
+    conflict: z.literal(true),
+    conflictingFiles: z.array(z.string()).min(1),
+    lastWritingAgent: z.string(),
+    worktreePath: z.string(),
+  }),
+  // resolve-conflict-handoff — always "successful" at the git-agent layer; orchestrator routes
+  z.object({
+    op: z.literal("resolve-conflict-handoff"),
+    worktreePath: z.string(),
+    conflictingFiles: z.array(z.string()),
+    lastWritingAgent: z.string(),
+    attempt: z.number().int().min(1).max(3),
+    mergeBaseSha: z.string().regex(/^[0-9a-f]{7,40}$/),
+    mainHeadSha: z.string().regex(/^[0-9a-f]{7,40}$/),
+    featureHeadSha: z.string().regex(/^[0-9a-f]{7,40}$/),
+  }),
+  // emergency-abort
+  z.object({
+    op: z.literal("emergency-abort"),
+    success: z.literal(true),
+    featureId: z.string(),
+    reason: z.string(),
+    cleanup: z.literal("worktree-removed"),
+  }),
+]);
+export type GitAgentOutput = z.infer<typeof GitAgentOutput>;
+```
+
 ### `skills-audit.ts` — **EXTENDED** (per refactor-003)
 
 Refactor-003 splits the skills-audit by scope. Output schema gains a `scope` discriminator.
@@ -650,6 +795,8 @@ export * from "./skills-audit.js";
 export * from "./architect.js";
 export * from "./pm.js";
 export * from "./tasks.js"; // refactor-004: TasksV2 + Feature + Task schemas
+export * from "./feature-context.js"; // feat-003: worktree lockfile contract
+export * from "./git-agent.js"; // feat-003: git-agent discriminated-union output
 export * from "./mockups.js";
 export * from "./selected-style.js";
 export * from "./stylesheet.js";
