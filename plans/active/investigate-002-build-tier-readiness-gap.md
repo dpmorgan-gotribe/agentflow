@@ -443,13 +443,13 @@ refactor-005 + feat-008 (tester) + feat-009 (reviewer) follow within days of the
 - **Python + mobile codegens (feat-015 / feat-016)**: only trigger if a brief picks those stacks. Ship when the first such project comes in, not pre-emptively.
 - **Over-specifying the HITL pause mechanic**: gate-5-style file-drop is simple + effective (`docs/gate-N-approved.txt` with `proceed` / `defer:reason` / `abort` body). Use the same pattern for gates 1 + 3 in task-036 spec extension; don't build a custom HTTP UI per gate.
 
-### Open questions (leftover)
+### Open questions — resolved 2026-04-22
 
-1. **What's the autonomous-run target?** — 100% autonomous (pipeline runs brief → PR; human only sees the PR)? 90% autonomous (HITL gates 2 + 4 stay; others auto-approve)? 70% autonomous (human approves every gate)? Choice drives how much work goes into quality ceiling + review capability. My recommendation: ship MVP as 90% (humans see gate 2 + gate 4; gate 5 is user-action anyway); pursue 100% as a v2 goal once failure patterns are known.
-2. **What's "production-quality"?** — Accessibility? Performance? Security? Maintainability? Each has an agent owner implicit (reviewer for security + compliance; visual-review for a11y; performance unaddressed; maintainability via linting). Recommend: **reviewer agent scope explicitly lists which quality dimensions it owns**; anything not in that scope is known-uncovered for MVP.
-3. **First autonomous project choice.** — Build a new project from scratch for the first E2E autonomous run? Or retry mindapp-v2 through the full pipeline now that design validates? Recommendation: **mindapp-v2 re-run** — it's already past gate 4; we can pick up at architect + build it through without redoing design.
-4. **Quality of the reviewer** — most of the other agents have concrete skill catalogs to lean on (stack skills, kit contract, testing policy). The reviewer needs its own playbook or it becomes an AI-judgment blackbox. **refactor-005 should include a `reviewer-playbook.md` with explicit review dimensions** (architecture adherence, security checklist, compliance per brief §14, maintainability signals).
-5. **Where does app-specific business-logic validation live?** — the brief has §12 Key Features + §19 Milestones + §6 Personas. Currently no agent explicitly validates "does the built app actually do what the brief said?" beyond test coverage. Possible answer: reviewer's scope. Or: a new agent (brief-delivery-check) — but probably over-fragmentation. **Add to reviewer's scope in refactor-005.**
+1. **Autonomous-run target**: **humans approve design stages (gates 1-4); build tier runs autonomously after gate 5 credentials**. This matches the current design intent. Reviewer + tester + git-agent run without human intervention inside Mode B.
+2. **"Production-quality" definition**: **reviewer agent explicitly lists which quality dimensions it owns** — architecture adherence, security checklist, compliance per brief §14, maintainability signals, a11y beyond visual-review (semantic HTML + keyboard flows + ARIA), performance signals (bundle size + Web Vitals if web). Anything not in scope is known-uncovered for MVP.
+3. **First autonomous project**: **mindapp-v2 re-run** from its gate-4 signoff state. No redoing design; pick up at `/architect`.
+4. **Reviewer playbook**: **`reviewer-playbook.md` is a required artefact of refactor-005** with concrete review dimensions (not AI-judgment blackbox). Each dimension has pass/fail criteria.
+5. **Brief-delivery check**: **add to reviewer's scope in refactor-005** — reviewer explicitly validates "app delivers brief §12 features + meets brief §19 milestones."
 
 ## Attempt Log
 
