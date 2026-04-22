@@ -338,6 +338,19 @@ packages:
   orchestrator-contracts: { ... }
 
 tooling:
+  # NEW per feat-002-stack-skill-shelf: the authoritative stack choice lives here.
+  # Each slot is a stack-slug that resolves to .claude/skills/agents/{tier}/{stack-slug}/SKILL.md.
+  # Builders dispatch via these values: backend-builder reads backend_framework, web-frontend-builder
+  # reads web_framework, mobile-frontend-builder reads mobile_framework. null on a slot = "no app of
+  # that tier" (skip builder entirely). Schema: schemas/architecture.schema.json#/definitions/stack.
+  stack:
+    web_framework: react-next # shipped: react-next | svelte-kit; draft: remix, astro, qwik, vue-nuxt, solid-start
+    web_styling: tailwind # shipped: tailwind
+    mobile_framework: expo-rn # shipped: expo-rn; draft: flutter, bare-rn, native-kotlin, native-swift
+    backend_language: node # enum per stack.schema (node | python | go | rust | ruby | java)
+    backend_framework: node-trpc-nest # shipped: node-trpc-nest, python-fastapi; draft: others per schema
+    orm: prisma # enum per schema (prisma | drizzle | sqlalchemy | sqlmodel | diesel | ...)
+    database: postgres # informational — drives docker-compose + dev-setup, not builder prompts
   icon_library: lucide # MIRRORED from selected-style.json.iconLibrary
   design_dials: # MIRRORED from selected-style.json.dials
     design_variance: 4
@@ -395,8 +408,9 @@ The skill runs these in order:
 1. Read all inputs listed above. Abort if `docs/signoff-*.json` is missing or `approved: false`.
 2. If `.claude/architecture.yaml` exists, hash it and retain for diff.
 3. For each integration category in `integrations-options.md`: apply decision heuristics, pick one candidate (or `declined` with rationale), record decision.
-4. Compose `apps.*`, `packages.*`, `tooling.*` (mirroring selected-style.json fields, not re-deciding), `compliance.*`.
-5. Write `.claude/architecture.yaml`.
+   3b. **Stack pick** (feat-002). For each `tooling.stack` slot (web_framework, web_styling, mobile_framework, backend_language, backend_framework, orm, database), pick a stack-slug that matches a shipped (or recently-authored-draft) skill under `.claude/skills/agents/{tier}/{stack-slug}/SKILL.md`. Picking heuristic: - **Brief-hinted stack wins.** If brief §7 (Architecture) or §8 (Build Decisions) names a stack explicitly ("FastAPI", "SvelteKit", "Expo"), the architect picks that without further analysis. - **Competitor alignment**. If brief doesn't name a stack, check `docs/analysis/shared/competitors.md` for the dominant stack in the winning vertical — borrow the same stack when user context (team skills, deploy target) doesn't push otherwise. - **Factory defaults (no signal)**: `web_framework: react-next`, `mobile_framework: expo-rn`, `backend_framework: node-trpc-nest`, `orm: prisma`, `database: postgres`, `web_styling: tailwind`. These match the current blueprint §17 defaults. - **No-tier case**: if the project has no web tier, set `web_framework: null` + `web_styling: null`. Same for mobile + backend. PM uses `features[].skip[]` to skip builders for null tiers. - For every slot, write a `stackRationale[]` entry: `{slot, pick, reason, briefSignal: <quote or null>, rejected: [<slug>, ...]}`. Archive the reasoning — downstream agents (PM, builders, tester) read this to understand why a stack was chosen.
+4. Compose `apps.*`, `packages.*`, `tooling.*` (incl. `tooling.stack`), `compliance.*`, `stackRationale[]` (mirroring selected-style.json fields, not re-deciding).
+5. Write `.claude/architecture.yaml`. Validate against `schemas/architecture.schema.json` (strict for `tooling.stack` subtree; loose for consumer-specific app fields).
 6. Generate `.env.example` grouped by required-now / required-later / optional.
 7. Generate `docs/credentials-checklist.md` (table form).
 8. Generate `docs/deployment-checklist.md` for any self-hosted integrations.
@@ -415,6 +429,11 @@ The skill runs these in order:
 - [ ] Skill is a single invocation (no `--phase` arg)
 - [ ] Skill reads `docs/selected-style.json.iconLibrary` and mirrors it into `architecture.yaml.tooling.icon_library` (NOT decides it fresh)
 - [ ] Skill reads `docs/selected-style.json.dials` and mirrors into `architecture.yaml.tooling.design_dials`
+- [ ] **Skill populates `architecture.yaml.tooling.stack` with stack-slugs matching entries under `.claude/skills/agents/{tier}/`** (feat-002). Every non-null slot must resolve to a SKILL.md on disk OR trigger `/skills-audit --scope=build --auto-author-stack-skills` at step 11.
+- [ ] Skill emits `architecture.yaml.stackRationale[]` with one entry per populated stack slot — `{slot, pick, reason, briefSignal, rejected[]}` — per `schemas/architecture.schema.json`
+- [ ] Brief-hinted stacks (explicit mention of FastAPI / SvelteKit / Expo / etc. in brief §7 or §8) override architect-inferred picks; rationale records the brief quote
+- [ ] Factory defaults used when no signal present: web_framework=react-next, mobile_framework=expo-rn, backend_framework=node-trpc-nest, orm=prisma, web_styling=tailwind
+- [ ] Architecture validates against `schemas/architecture.schema.json` — `tooling.stack` subtree strict (`additionalProperties: false`); other subtrees loose
 - [ ] Skill reads `docs/analysis/shared/integrations-options.md` and picks exactly one candidate per category (or declines with rationale)
 - [ ] Every integration in architecture.yaml has `deployment` + (if vendor) `vendor, signupUrl, credentialsRequired, requiredBy, requiredNow, decisionRationale` OR (if self-hosted) `configTemplate, deploymentChecklist` OR (if declined) `declinedRationale`
 - [ ] Skill emits `.env.example` grouped by required-now / required-later / optional with signup URL comments per block

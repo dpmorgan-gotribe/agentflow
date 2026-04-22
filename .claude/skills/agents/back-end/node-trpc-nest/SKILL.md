@@ -1,0 +1,179 @@
+---
+name: node-trpc-nest
+description: Prompt pack for the backend-builder when architecture.yaml.tooling.stack.backend_framework=node-trpc-nest. NestJS 11 + tRPC 11 + Prisma 6 + Zod, consuming @repo/types for shared schemas.
+stack_tier: back-end
+stack_slug: node-trpc-nest
+maturity: shipped
+authoredAt: 2026-04-22
+dependencyPinsRefreshedAt: 2026-04-22
+---
+
+# node-trpc-nest — NestJS 11 + tRPC 11 + Prisma 6
+
+Stack-skill prompt pack for the backend-builder. Loaded when `architecture.yaml.tooling.stack.backend_framework === "node-trpc-nest"`.
+
+## 1. Canonical layout
+
+```
+apps/api/
+├── src/
+│   ├── main.ts                          # NestJS bootstrap
+│   ├── app.module.ts                    # root module
+│   ├── trpc/
+│   │   ├── trpc.module.ts               # exports TrpcService
+│   │   ├── trpc.service.ts              # tRPC instance + context builder
+│   │   └── app.router.ts                # root router — merges sub-routers
+│   ├── auth/
+│   │   ├── auth.module.ts
+│   │   ├── auth.router.ts               # tRPC router for auth endpoints
+│   │   ├── auth.service.ts              # business logic
+│   │   ├── auth.middleware.ts           # tRPC middleware for protected procedures
+│   │   └── auth.service.test.ts
+│   ├── users/
+│   │   ├── users.module.ts
+│   │   ├── users.router.ts
+│   │   ├── users.service.ts
+│   │   └── users.service.test.ts
+│   ├── common/
+│   │   ├── errors.ts                    # TRPCError factory helpers
+│   │   └── zod.ts                       # re-exports from @repo/types
+│   └── prisma/
+│       ├── prisma.module.ts
+│       └── prisma.service.ts            # extends PrismaClient
+├── prisma/
+│   ├── schema.prisma
+│   ├── seed.ts
+│   └── migrations/
+├── tsconfig.json                        # extends @repo/ui-kit/tsconfig.consumer.json base (no UI — but TS shape consistent)
+├── nest-cli.json
+└── package.json
+```
+
+Shared with consumers (web / mobile) via `@repo/api-client`:
+
+```
+packages/api-client/
+├── src/
+│   ├── index.ts                         # re-exports AppRouter type + createTrpcClient()
+│   └── test-utils.ts                    # mockTrpcClient() for consumer tests
+└── package.json
+```
+
+## 2. Idioms
+
+- **One module per domain.** `AuthModule`, `UsersModule`, `BillingModule`. Each exports a router + a service. Routers compose at `app.router.ts`.
+- **tRPC procedures via NestJS DI.** Services are NestJS providers (`@Injectable()`); routers construct procedures that call services. No business logic in the router file — routers are thin.
+- **Zod schemas from `@repo/types`.** Never re-declare input/output schemas in the API; import + compose. `.input(UserCreateSchema)` inside a mutation definition.
+- **Middleware for auth + logging.** `protectedProcedure = publicProcedure.use(authMiddleware)` — every protected router exports `protectedProcedure` from the base.
+- **Context builder at each request.** `createContext({ req, res })` reads cookies + attaches `userId` + db client to the context; procedures destructure from `ctx`.
+- **Prisma via a `PrismaService` singleton.** Extends `PrismaClient`; injected into service constructors. Migrations run as a separate command (`pnpm --filter @repo/api db:migrate`).
+- **`TRPCError` for all failures.** Codes: `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `BAD_REQUEST`, `INTERNAL_SERVER_ERROR`. Never `throw new Error()` in a procedure — the client gets a generic 500 instead of structured error.
+- **Transactions via `prisma.$transaction()`.** For multi-step ops (create user + create session + send email), wrap in an interactive transaction callback.
+- **Idempotency keys** on mutations that may retry (webhook handlers, payment flows). Persist a hash of input + check before processing.
+
+## 3. Testing
+
+Binds to `feat-004-builder-tdd-hybrid`.
+
+- **Test-file naming**: `src/auth/auth.service.ts` → `src/auth/auth.service.test.ts` (co-located).
+- **Test runner**: `pnpm --filter @repo/api test` (vitest); single file `pnpm --filter @repo/api test src/auth/auth.service.test.ts`; coverage `pnpm --filter @repo/api test:coverage`.
+- **Service tests**: unit tests on services with Prisma mocked via `vitest-mock-extended`:
+
+  ```ts
+  import { mockDeep } from "vitest-mock-extended";
+  import type { PrismaClient } from "@prisma/client";
+  import { AuthService } from "./auth.service";
+
+  test("creates user with hashed password", async () => {
+    const prisma = mockDeep<PrismaClient>();
+    prisma.user.create.mockResolvedValue({ id: "u_1", email: "a@b.c" } as any);
+    const svc = new AuthService(prisma);
+    const result = await svc.signup({ email: "a@b.c", password: "hunter2" });
+    expect(result.id).toBe("u_1");
+    expect(prisma.user.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ email: "a@b.c" }),
+      }),
+    );
+    expect(prisma.user.create.mock.calls[0][0].data.password_hash).not.toBe(
+      "hunter2",
+    );
+  });
+  ```
+
+- **Router tests** use a real `appRouter` + `createCallerFactory` — no HTTP; just in-process invocation with a stubbed context.
+- **Coverage expectation**: 60% builder / 80% total. Builder covers happy path per service; tester adds edge cases + concurrent-request integration + real-Postgres integration in a docker-compose test-db.
+- **Integration tests** (tester-owned): `apps/api/integration/*.test.ts` with a real Postgres via `testcontainers` or a named Docker Compose service.
+
+## 4. Commands
+
+```
+lint:        pnpm --filter @repo/api lint
+typecheck:   pnpm --filter @repo/api typecheck
+test:        pnpm --filter @repo/api test
+build:       pnpm --filter @repo/api build
+dev:         pnpm --filter @repo/api dev
+db:generate: pnpm --filter @repo/api prisma generate
+db:migrate:  pnpm --filter @repo/api prisma migrate dev
+db:seed:     pnpm --filter @repo/api prisma db seed
+```
+
+Builder self-verify gate: `pnpm --filter @repo/api lint && pnpm --filter @repo/api typecheck && pnpm --filter @repo/api test`. Post-schema-change: also run `db:generate` before typecheck so `@prisma/client` types match.
+
+## 5. Gotchas
+
+- **Circular module deps.** If `AuthModule` imports `UsersModule` and `UsersModule` imports `AuthModule`, NestJS DI fails silently. Break with `forwardRef(() => OtherModule)` on one side.
+- **tRPC procedure inference requires exact return type.** Never use `: any` on a procedure return — consumers lose end-to-end type safety.
+- **Prisma `select` vs `include`.** `select` returns exactly-listed fields (strips others); `include` returns all base fields + listed relations. Mixing both errors at runtime. Pick one per query.
+- **Middleware ordering.** NestJS middlewares run in declaration order within a module; tRPC middlewares chain via `.use()`. Auth middleware MUST run before any DB-access middleware.
+- **Prisma transactions + concurrent callers.** Long-running `prisma.$transaction()` callbacks hold connections; under load you can exhaust the connection pool. Keep tx bodies short; move non-DB work outside the tx.
+- **NestJS module imports.** Every used provider must be in a module's `providers` or `imports` array; DI fails with cryptic error otherwise. The typical "UnknownDependenciesException" means a missing import.
+- **Environment variables at bootstrap.** Use `@nestjs/config` with a `validationSchema` (Zod or Joi) — fail fast at startup if `DATABASE_URL` or `JWT_SECRET` is missing. Never `process.env.X!` with the non-null assertion — too easy to mask misconfig.
+- **Prisma generator output is stateful.** `pnpm prisma generate` writes into `node_modules/.prisma/client`. After pulling schema changes, re-run generate or types drift. CI: add `postinstall` hook.
+- **Webhooks need raw body.** Stripe / Twilio webhook signature verification requires the unmodified request body. NestJS default JSON parser consumes it — configure a RawBodyMiddleware on just the webhook routes.
+
+## 6. Dependency pins
+
+```
+@nestjs/core        11.0.x
+@nestjs/common      11.0.x
+@nestjs/platform-express 11.0.x
+@nestjs/config      3.3.x
+@trpc/server        11.0.x
+@trpc/client        11.0.x
+prisma              6.1.x
+@prisma/client      6.1.x
+zod                 3.23.x
+bcrypt              5.1.x
+jsonwebtoken        9.0.x
+typescript          5.6.x
+vitest              2.1.x
+vitest-mock-extended 2.0.x
+@types/node         22.x
+```
+
+Workspace packages:
+
+```
+@repo/types              workspace:*
+@repo/api-client         workspace:*    # this package EXPORTS the AppRouter type from here
+@repo/utils              workspace:*
+@repo/orchestrator-contracts workspace:*
+```
+
+## 7. Anti-patterns
+
+- **Never re-declare Zod schemas in the API.** Import from `@repo/types`. Web + mobile + API consume the same schemas; divergence is a correctness bug.
+- **Never `throw new Error()` in a tRPC procedure.** Use `TRPCError` with a proper code.
+- **Never use `prisma.$executeRawUnsafe()`** with user input interpolated. Use `$queryRaw` with tagged template literals (parameterized) or ORM query-builder methods.
+- **Never export the `PrismaClient` instance directly.** Always wrap in `PrismaService` so NestJS DI lifecycle + `onModuleInit` + `onModuleDestroy` hooks run.
+- **Never inline middleware in a single file.** Extract to a reusable module — even if the first use is single-call.
+- **Never persist secrets at rest.** Password hashes via bcrypt (cost ≥ 10); JWT secrets in env only; webhook signing keys via env.
+
+## 8. References
+
+- [NestJS 11 docs](https://docs.nestjs.com/) — modules, DI, middleware
+- [tRPC 11 server docs](https://trpc.io/docs/server) — procedures, middleware, context
+- [Prisma 6 migration guide](https://www.prisma.io/docs/orm/more/upgrade-guides/upgrading-versions/upgrading-to-prisma-6)
+- [OWASP Node.js cheatsheet](https://cheatsheetseries.owasp.org/cheatsheets/Nodejs_Security_Cheat_Sheet.html)
+- Blueprint §17 / Appendix E

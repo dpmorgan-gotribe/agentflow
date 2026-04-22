@@ -17,13 +17,14 @@ estimated-scope: medium
 
 Both are locked to the **UI Kit consumption contract** (task 022b). The builder translates the signed-off HTML screens in `docs/screens/` into production Next.js pages that import exclusively from `@repo/ui-kit`.
 
-## Why This Scope (per refactor-001)
+## Why This Scope (per refactor-001 + feat-002)
 
-Three concrete changes from the prior spec:
+Four concrete changes from the prior spec:
 
-1. **Kit-only imports enforced mechanically.** The builder embeds `packages/ui-kit/CONTRACT.md` in its system prompt verbatim AND runs `pnpm ui-kit:validate-consumer` against its output before reporting success. Any violation fails the build — no "but shadcn would be easier" escape hatch.
-2. **shadcn/ui dropped from the stated stack.** The UI Kit IS our component library; shadcn was the old spec's fallback for primitives we didn't have. The new kit has ≥20 primitives + ≥12 patterns + ≥5 layouts by construction (task 024), so shadcn is unnecessary and would introduce a parallel component library that violates the single-source-of-truth thesis.
-3. **Kit version pinned and verified.** The builder reads `packages/ui-kit/package.json.version` and asserts it matches `docs/signoff-{timestamp}.json.uiKitVersion`. If they differ, the build aborts — sign-off is tied to a specific kit release (task 025).
+1. **Stack-agnostic dispatcher (feat-002).** The builder is now STACK-AGNOSTIC. It reads `architecture.yaml.tooling.stack.web_framework` and loads `.claude/skills/agents/front-end/{stack-slug}/SKILL.md` verbatim into its prompt. The stack skill provides framework-specific canonical layout, idioms, testing recipe, commands, gotchas. The builder itself never hardcodes `Next.js` vs `SvelteKit` vs `Remix`. Initial shipped stacks: `react-next`, `svelte-kit`. Others auto-authored via `/skills-audit --scope=build --auto-author-stack-skills`.
+2. **Kit-only imports enforced mechanically.** The builder embeds `packages/ui-kit/CONTRACT.md` in its system prompt verbatim AND runs `pnpm ui-kit:validate-consumer` against its output before reporting success. Any violation fails the build. **For non-React stacks** (Svelte / Vue / Solid): the kit exports CSS tokens + global styles + `data-kit-*` attribute contract; the stack skill provides the local Svelte / Vue / Solid primitive implementations that match the kit's visual + attribute contract (per `packages/ui-kit/CONTRACT.md` Rule 4).
+3. **shadcn/ui dropped from the stated stack.** The UI Kit IS our component library; shadcn was the old spec's fallback for primitives we didn't have. The new kit has ≥20 primitives + ≥12 patterns + ≥5 layouts by construction (task 024).
+4. **Kit version pinned and verified.** The builder reads `packages/ui-kit/package.json.version` and asserts it matches `docs/signoff-{timestamp}.json.uiKitVersion`. If they differ, the build aborts — sign-off is tied to a specific kit release (task 025).
 
 ## Scope
 
@@ -32,33 +33,57 @@ Three concrete changes from the prior spec:
 ```yaml
 ---
 name: web-frontend-builder
-description: Builds Next.js frontend (apps/web, apps/admin) by translating docs/screens/**/*.html into JSX that imports exclusively from @repo/ui-kit. Runs ui-kit:validate-consumer post-generation; fails on any contract violation.
+description: Stack-agnostic web frontend builder. Dispatches to the stack skill named in architecture.yaml.tooling.stack.web_framework. Translates docs/screens/**/*.html into components that consume @repo/ui-kit (React imports for react-* stacks; CSS+attribute contract for Svelte/Vue/Solid stacks). Runs ui-kit:validate-consumer post-generation; fails on any contract violation.
 tools: Read, Write, Edit, Bash, Grep, Glob
 model: inherit
 permissionMode: acceptEdits
 maxTurns: 40
-skills:
-  - react-patterns
-  - nextjs-app-router
+skills: []
 ---
 ```
 
-Note: `tailwind-conventions` and any shadcn-related skills are removed from the frontmatter. The kit owns Tailwind config; builders don't hand-author it.
+Note: `skills` frontmatter is empty — stack-specific skills (`react-patterns`, `nextjs-app-router`, `svelte-runes`, etc.) live in the DISPATCHED stack skill's prompt pack, not in agent frontmatter. The kit owns Tailwind config; builders don't hand-author it.
 
 ### System Prompt — the UI Kit Contract (verbatim embed)
 
 The agent's system prompt begins with the opening mandate, then embeds the CONTRACT.md content from `packages/ui-kit/CONTRACT.md` (factory template at `.claude/templates/ui-kit-contract.md`) verbatim. The contract's six numbered rules live in the prompt unaltered — any plugin or skill update doesn't change them.
 
 ```
-You are a Senior Next.js engineer. You translate signed-off HTML screens
-into production React/JSX. You consume the project's UI Kit and nothing
-else for UI.
+You are a Senior web-frontend engineer. You translate signed-off HTML
+screens into production code using the stack the architect picked. You
+consume the project's UI Kit and nothing else for UI.
 
-## Stack (locked by architecture.yaml)
+## Stack dispatch (feat-002)
 
-- Next.js 15 App Router (file-based routing)
-- React 19
-- @repo/ui-kit for ALL UI (primitives, patterns, layouts, tokens, icons)
+Your stack choice is LOCKED by `architecture.yaml.tooling.stack.web_framework`.
+Read that value at the start of your run. Load
+`.claude/skills/agents/front-end/{stack-slug}/SKILL.md` verbatim — that
+pack gives you:
+
+- Canonical project layout (where files live)
+- Framework idioms (server components, runes, signals, etc.)
+- Testing recipe (test runner, mocking patterns, example test)
+- Commands (lint / typecheck / test / build / dev — exact invocations)
+- Gotchas + anti-patterns for this stack
+- Dependency pins
+
+**Do not hardcode Next.js assumptions in your output. Do not hardcode Svelte
+assumptions. The stack skill IS your framework guide.** If the stack skill
+disagrees with anything below, the stack skill wins.
+
+## Kit consumption varies by stack
+
+- **React stacks (react-next, remix, etc.)**: import components from
+  `@repo/ui-kit` directly. Every kit primitive is exported as a React component.
+- **Non-React stacks (svelte-kit, vue-nuxt, solid-start)**: the kit exports CSS
+  (`@repo/ui-kit/globals.css`, `@repo/ui-kit/tokens.css`) + the `data-kit-*`
+  attribute contract. The stack skill tells you how to author local components
+  (e.g., `src/lib/components/Button.svelte`) that match the kit's visual + attribute
+  contract. You preserve `data-kit-component` + `data-kit-variant` attributes so
+  build-phase tooling (testID, e2e locators) still works.
+
+## Common inputs (all stacks)
+
 - @repo/types for shared Zod schemas and types
 - @repo/api-client for tRPC client hooks
 - TypeScript strict mode
@@ -240,10 +265,15 @@ Web and mobile frontend builders run concurrently after `/stylesheet` + `/screen
 
 ## Acceptance Criteria
 
-- [ ] `.claude/agents/web-frontend-builder.md` exists with the updated frontmatter (no shadcn/tailwind-conventions skills; react-patterns + nextjs-app-router only)
+- [ ] `.claude/agents/web-frontend-builder.md` exists with STACK-AGNOSTIC frontmatter (`skills: []`) — no hardcoded Next.js / React / Tailwind skill references
+- [ ] Agent reads `architecture.yaml.tooling.stack.web_framework` and loads `.claude/skills/agents/front-end/{slug}/SKILL.md` verbatim
+- [ ] Aborts cleanly if the referenced stack skill is missing (no silent fallback)
 - [ ] System prompt embeds the CONTRACT.md verbatim (six rules + escape hatches + enforcement)
 - [ ] System prompt drops shadcn/ui from the stated stack
-- [ ] Stack lists: Next.js 15 App Router, React 19, @repo/ui-kit, @repo/types, @repo/api-client, TypeScript strict — nothing else for UI
+- [ ] Framework-specific prose (Next.js routing patterns, Svelte runes, etc.) comes from the dispatched stack skill — NOT from the agent's own system prompt
+- [ ] For non-React stacks (svelte-kit, vue-nuxt): agent authors local primitives matching the kit's `data-kit-*` attribute contract per the stack skill's guidance (kit's React exports not importable from those stacks)
+- [ ] Skill runs `features[].tasks[]` filtered by `agent: web-frontend-builder` AND feature's `skip[]` does NOT include `web` (refactor-004 v2 tasks.yaml)
+- [ ] Skill runs inside the feature's worktree at `.claude/worktrees/{features[i].worktree}/` (CWD handled by orchestrator per refactor-004)
 - [ ] `.claude/skills/build-web-frontend/SKILL.md` exists
 - [ ] Skill pins kit version from sign-off and aborts on mismatch
 - [ ] Skill builds HTML→JSX translation map by reading each primitive's `.variants.ts`

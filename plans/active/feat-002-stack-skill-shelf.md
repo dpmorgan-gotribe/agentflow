@@ -1,7 +1,8 @@
 ---
 id: feat-002-stack-skill-shelf
 type: feature
-status: draft
+status: completed
+completed: 2026-04-22
 author-agent: human
 created: 2026-04-22
 updated: 2026-04-22
@@ -89,13 +90,13 @@ Depends on **refactor-004-task-driven-orchestration** (features[].tasks[] schema
 
 ## Expected Outcomes
 
-- [ ] `.claude/skills/agents/{front-end,back-end,mobile}/{5 initial stack slugs}/SKILL.md` exist and validate against the `_template/SKILL.md` shape
-- [ ] `schemas/architecture.schema.json` includes `tooling.stack` with enum constraints matching shipped stack slugs
-- [ ] `scaffolding/11-020-architect-agent.md` documents the stack-pick sub-step + `stackRationale[]` output
-- [ ] Builder scaffolding files (028/029/030) rewritten as dispatchers — no hardcoded framework references remain; each reads `architecture.yaml.tooling.stack.<slot>` + loads the matching stack skill
-- [ ] `scaffolding/23-038-skills-agent.md` documents stack-skill discovery for `--scope=build`
-- [ ] Blueprint §17 revision reviewed + merged; clear multi-stack framing
-- [ ] Test: pick a non-default stack (e.g. svelte-kit + fastapi) in a fixture `architecture.yaml`, confirm orchestrator dry-run logs loading svelte-kit + fastapi skills (not react-next + node-trpc-nest)
+- [x] `.claude/skills/agents/{front-end,back-end,mobile}/{5 initial stack slugs}/SKILL.md` exist and validate against the `_template/SKILL.md` shape
+- [x] `schemas/architecture.schema.json` includes `tooling.stack` with enum constraints matching shipped stack slugs
+- [x] Architect scaffolding (`scaffolding/07-020-architect-agent.md`) documents the stack-pick sub-step + `stackRationale[]` output
+- [x] Builder scaffolding files (028/029/030) rewritten as dispatchers — no hardcoded framework references remain in agent definitions; each reads `architecture.yaml.tooling.stack.<slot>` + loads the matching stack skill
+- [x] `scaffolding/23-038-skills-agent.md` documents stack-skill discovery for `--scope=build` (shipped/draft/auto-author paths + 90-day freshness)
+- [x] Blueprint §17 supersession note + Appendix E (feat-002 Stack-Skill Shelf) published
+- [ ] Test: pick a non-default stack (e.g. svelte-kit + fastapi) in a fixture `architecture.yaml`, confirm orchestrator dry-run logs loading svelte-kit + fastapi skills — deferred to post-orchestrator-implementation (task 035 runtime)
 
 ## Validation Criteria
 
@@ -121,4 +122,50 @@ Depends on **refactor-004-task-driven-orchestration** (features[].tasks[] schema
 
 ## Attempt Log
 
-<!-- Populated by executing agent. -->
+### Attempt 1 — 2026-04-22 · Scaffolding + shelf landed
+
+**Scope:** scaffolding spec-only (schema + 5 stack skills + 4 scaffolding files updated + blueprint supersession + Appendix E).
+
+**Files created:**
+
+- `schemas/architecture.schema.json` (NEW) — authoritative definition of `tooling.stack` with 7 enum-locked slots (web_framework, web_styling, mobile_framework, backend_language, backend_framework, orm, database) + `stackRationale[]` block
+- `.claude/skills/agents/_template/SKILL.md` (NEW) — stack-skill authoring template (8 required sections)
+- `.claude/skills/agents/front-end/react-next/SKILL.md` (NEW) — Next.js 15 + React 19 + Tailwind 4
+- `.claude/skills/agents/front-end/svelte-kit/SKILL.md` (NEW) — SvelteKit 2 + Svelte 5 runes + Tailwind (special CSS-only kit consumption pattern for non-React stack)
+- `.claude/skills/agents/back-end/node-trpc-nest/SKILL.md` (NEW) — NestJS 11 + tRPC 11 + Prisma 6
+- `.claude/skills/agents/back-end/python-fastapi/SKILL.md` (NEW) — FastAPI + SQLAlchemy 2 async + Pydantic v2 (uses `packages/python-types/` codegen from `@repo/types` Zod)
+- `.claude/skills/agents/mobile/expo-rn/SKILL.md` (NEW) — Expo SDK 52 + RN 0.76 + NativeWind 4
+
+**Files updated:**
+
+- `scaffolding/07-020-architect-agent.md` — added step 3b (stack-pick sub-step w/ 4-rule picking heuristic: brief-hinted → competitor alignment → factory defaults → null for no-tier); added `tooling.stack` block to the architecture.yaml template + `stackRationale[]` acceptance criterion; 7 new acceptance checkboxes
+- `scaffolding/14-028-backend-builder-agent.md` — agent definition rewritten as stack-agnostic dispatcher; 5-step /build-backend skill rewritten around stack-skill load; 10 new acceptance criteria covering dispatch, worktree CWD, v2 tasks.yaml filter
+- `scaffolding/15-029-web-frontend-builder.md` — agent frontmatter `skills: []`; system prompt opens with stack-dispatch FIRST then UI Kit contract embedding; explicit React-vs-non-React kit consumption split; acceptance criteria updated
+- `scaffolding/16-030-mobile-frontend-builder.md` — same shape: stack-dispatch + mobile-tier null-skip logic + kit-mirror pattern for non-JS stacks (Flutter/native) documented; acceptance criteria updated
+- `scaffolding/23-038-skills-agent.md` — `--scope=build` gains stack-skill audit section: shipped/draft/auto-author/stale-pin paths + enum-valid-but-draft registry + hard-abort message when `--auto-author-stack-skills` not passed
+- `scaffolding/09-034b-output-contract-zod-schemas.md` — `SkillsAuditOutput` build variant gains 5 new fields: `stackSkillsAuditedShipped`, `stackSkillsAuditedDraft`, `stackSkillsAuthored`, `stackSkillsStalePin`, `stackSkillsMissing[]`
+- `multi-agent-app-generation-blueprint.md` — §17 marked superseded with rationale-preserving note; Appendix E (feat-002 Stack-Skill Shelf) appended (9 subsections covering §17 supersession, slot definitions, shelf structure, maturity levels, dispatch pattern, non-React kit consumption, skills-audit integration, feat-004 cross-cutting, downstream tasks)
+
+**Not changed — deferred to downstream plans or runtime:**
+
+- Orchestrator dry-run fixture test (stack-dispatch smoke test) — deferred until task 035 runtime ships; specs agree at the document level
+- `skills-audit-build` runtime logic (auto-authoring via WebSearch + WebFetch) — scaffolding spec only; implementation pending task 038
+- Cross-field validation on `tooling.stack` (e.g., reject `backend_language: python` + `backend_framework: node-trpc-nest`) — spec-level note added to schema description; strict enum-by-enum validator is a follow-up
+
+**Shipped stack registry (initial drop — 5 skills):**
+
+- front-end: `react-next`, `svelte-kit`
+- back-end: `node-trpc-nest`, `python-fastapi`
+- mobile: `expo-rn`
+
+**Draft-on-first-use candidates** (schema-enum-valid, auto-authored on demand):
+
+- front-end: `remix`, `astro`, `qwik`, `vue-nuxt`, `solid-start`
+- back-end: `node-trpc-only`, `node-express`, `node-fastify`, `python-django`, `go-chi`, `go-echo`, `rust-axum`, `ruby-rails`
+- mobile: `bare-rn`, `flutter`, `tauri-mobile`, `native-kotlin`, `native-swift`
+
+**Stack slug → prompt pack coverage:** each shipped SKILL.md has 8 required sections filled (canonical layout, idioms, testing, commands, gotchas, dependency pins, anti-patterns, references) totalling ~5-6 KB per skill. All are single-source-of-truth: importing a React component into a svelte-kit project is explicitly forbidden; Python backends use generated Pydantic mirrors from `@repo/types`; mobile frameworks consume kit tokens via their respective mirror pattern.
+
+**Status:** scaffolding spec + stack shelf complete. Builder implementations that actually DISPATCH will come when tasks 028/029/030 runtime ships.
+
+**Ready to mark completed.**

@@ -622,6 +622,12 @@ export const SkillsAuditOutput = z.discriminatedUnion("scope", [
     skillsAudited: z.number().int().nonnegative(),
     skillsAuthored: z.number().int().nonnegative(),
     vendorSdksAudited: z.number().int().nonnegative(),
+    // feat-002: stack-skill audit adds these fields
+    stackSkillsAuditedShipped: z.number().int().nonnegative().default(0),
+    stackSkillsAuditedDraft: z.number().int().nonnegative().default(0),
+    stackSkillsAuthored: z.number().int().nonnegative().default(0), // requires --auto-author-stack-skills
+    stackSkillsStalePin: z.number().int().nonnegative().default(0), // dependencyPinsRefreshedAt > 90d
+    stackSkillsMissing: z.array(z.string()).default([]), // tier/slug pairs that need authoring; populated when --auto-author-stack-skills is NOT passed
     warnings: z.array(z.string()),
   }),
 ]);

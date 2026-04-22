@@ -2625,7 +2625,9 @@ and privacy policy at [URL].
 
 ## 17. React/React Native stack
 
-Every piece generates well with AI agents: convention-based routing (file = route), copy-paste components (no complex deps), shared styling vocabulary (same Tailwind classes everywhere).
+> **Superseded by Appendix E (feat-002, 2026-04-22).** The table below is now ONE of several shipped stack options, not THE stack. Architect picks per-tier stacks per `architecture.yaml.tooling.stack` from the shelf at `.claude/skills/agents/{tier}/{stack-slug}/SKILL.md`. React + Next.js + Expo + NestJS + tRPC + Prisma remains the default when brief is silent (shipped slugs: `react-next`, `expo-rn`, `node-trpc-nest`). Alternative shipped stacks in the initial drop: `svelte-kit` (front-end), `python-fastapi` (back-end). Others are auto-authored as draft skills on first use via `/skills-audit --scope=build --auto-author-stack-skills`. See Appendix E for the full shelf + dispatch pattern.
+
+Every piece below generates well with AI agents: convention-based routing (file = route), copy-paste components (no complex deps), shared styling vocabulary (same Tailwind classes everywhere).
 
 | Layer            | Technology                            | Why                                                    |
 | ---------------- | ------------------------------------- | ------------------------------------------------------ |
@@ -3303,3 +3305,89 @@ Refactor-004's feature-graph model is the foundation for `feat-002-stack-skill-s
 - **Tasks 028 / 029 / 030 / 031 / 032 / 033 (builders + tester + reviewer + git-agent)**: to be updated per feat-002 (builders) and feat-003 (git-agent) follow-up plans.
 
 When reading §3 / §10 / §11 / §23 / §17 / §18, treat this appendix + Appendix C + the scaffolding tasks (020, 021, 035, 036, 038, 041, 018b) as the implementation spec. The pipeline shape documented in Appendix C is refined here — refactor-003 gave the linear sequence its current order; refactor-004 makes the post-PM portion task-driven.
+
+---
+
+## Appendix E — Stack-Skill Shelf (feat-002, 2026-04-22)
+
+Appendix D (refactor-004) made post-PM orchestration feature-graph; this appendix makes the builders inside that graph stack-agnostic. Together they complete the "factory ships any stack" story that §17 of the main blueprint previously hardcoded to React + NestJS + Expo.
+
+### 1. The §17 supersession
+
+Main blueprint §17 ("React/React Native stack") was opinionated: Next.js + Expo + NestJS + tRPC + Prisma as THE stack. Feat-002 makes that ONE of several shipped defaults, not the only option.
+
+**§17 is superseded by this appendix for stack-choice concerns.** The reasoning in §17 (convention-based routing, copy-paste components, shared styling vocabulary, Turborepo parallelism) still applies — those are good reasons to pick the default stack when the brief is silent. But architect may now pick different stacks per slot when the brief, competitor analysis, or integration constraints suggest otherwise.
+
+### 2. Architecture.yaml.tooling.stack — the slots
+
+Authoritative definition: `schemas/architecture.schema.json#/definitions/stack`. Six slots:
+
+- `web_framework` — `react-next` | `svelte-kit` | `remix` | `astro` | `qwik` | `vue-nuxt` | `solid-start` | null
+- `web_styling` — `tailwind` | `vanilla-extract` | `css-modules` | `styled-components` | null
+- `mobile_framework` — `expo-rn` | `bare-rn` | `flutter` | `tauri-mobile` | `native-kotlin` | `native-swift` | null
+- `backend_language` — `node` | `python` | `go` | `rust` | `ruby` | `java` | null
+- `backend_framework` — `node-trpc-nest` | `node-trpc-only` | `node-express` | `node-fastify` | `python-fastapi` | `python-django` | `go-chi` | `go-echo` | `rust-axum` | `ruby-rails` | null
+- `orm` — `prisma` | `drizzle` | `sqlalchemy` | `sqlmodel` | `diesel` | `gorm` | `ent` | `activerecord` | null
+
+`null` = "no app of this tier". A backend-only project has `web_framework: null`; a static site has `backend_framework: null`. PM emits `feature.skip[]` accordingly so builders for null-tier surfaces are never invoked.
+
+### 3. The shelf
+
+`.claude/skills/agents/{tier}/{stack-slug}/SKILL.md`. Tiers: `front-end`, `back-end`, `mobile`. Each SKILL.md is a **prompt pack** — loaded verbatim by the matching builder at dispatch time. Content per `_template/SKILL.md`:
+
+1. Canonical layout (directory tree)
+2. Idioms (5-10 bullets)
+3. Testing (file naming, runner command, mocks, example — binds to `feat-004-builder-tdd-hybrid`)
+4. Commands (lint / typecheck / test / build / dev — exact invocations)
+5. Gotchas (concrete failure modes + fixes)
+6. Dependency pins (exact versions + why)
+7. Anti-patterns (what NOT to do)
+8. References (official docs + canonical community patterns)
+
+### 4. Shipped vs draft maturity
+
+- **shipped** — human-reviewed, factory-maintained. Initial drop: `react-next`, `svelte-kit` (front-end); `node-trpc-nest`, `python-fastapi` (back-end); `expo-rn` (mobile).
+- **draft** — auto-researched by `/skills-audit --scope=build --auto-author-stack-skills` when architect picks an unshipped slug. Requires human review before first production use.
+- **experimental** — shipped but lightly validated; marked in frontmatter.
+
+### 5. Dispatch
+
+Builders are STACK-AGNOSTIC:
+
+- **backend-builder** reads `architecture.yaml.tooling.stack.backend_framework` → loads `.claude/skills/agents/back-end/{slug}/SKILL.md` verbatim
+- **web-frontend-builder** reads `web_framework` → loads `.claude/skills/agents/front-end/{slug}/SKILL.md`
+- **mobile-frontend-builder** reads `mobile_framework` → loads `.claude/skills/agents/mobile/{slug}/SKILL.md`
+
+Builders never hardcode framework-specific prose in their own system prompts. Framework knowledge lives in stack skills + is hot-loaded at dispatch time.
+
+### 6. Non-React front-end / mobile kit consumption
+
+`@repo/ui-kit` exports React components. For non-React web stacks (Svelte / Vue / Solid) and non-RN mobile stacks (Flutter / native), the kit's CSS surface + `data-kit-*` attribute contract are framework-agnostic. Stack skills tell builders how to author LOCAL primitives in their framework that match the kit's visual + attribute contract. Kit tokens travel via:
+
+- **React stacks**: direct TS import from `@repo/ui-kit/tokens/tokens.ts`
+- **Non-React JS stacks (Svelte/Vue/Solid)**: same TS import; kit tokens.ts is framework-agnostic
+- **Non-JS stacks (Flutter)**: generated Dart mirror at `packages/flutter-tokens/`
+- **Native stacks (iOS/Android)**: generated Colors.xcassets / colors.xml + JSON asset bundle at `packages/native-tokens/`
+
+The mirrors are generated by a factory codegen (shipped alongside the respective stack skill).
+
+### 7. Skills-audit integration (task 038)
+
+`/skills-audit --scope=build` audits TWO things now:
+
+1. **Vendor SDKs** (refactor-003, unchanged) — Stripe, Resend, ThirdWeb, etc. from `architecture.yaml.apps.*.integrations[deployment=vendor]`
+2. **Stack skills** (feat-002, new) — resolves every non-null `tooling.stack.*` slot to `.claude/skills/agents/{tier}/{slug}/` + validates presence + maturity + `dependencyPinsRefreshedAt` freshness. Missing shipped skill → hard abort; missing draft skill + `--auto-author-stack-skills` → auto-research + author.
+
+See `scaffolding/23-038-skills-agent.md` §`--scope=build` for full logic.
+
+### 8. Cross-cutting with feat-004 (TDD hybrid)
+
+Every shipped stack skill includes a §Testing block that names the test runner, file-naming convention, and one example test. Builders read this block at dispatch time and generate sibling happy-path tests alongside implementation per `feat-004-builder-tdd-hybrid` policy. Tester agent narrows to edge cases + integration + E2E per the same plan. The shelf therefore carries the TDD policy as a per-stack implementation detail, not a cross-cutting policy stapled on afterward.
+
+### 9. Downstream to build on
+
+- **Task 020 (architect)**: stack-pick sub-step + `stackRationale[]` output per `plans/active/feat-002-stack-skill-shelf.md` step 4.
+- **Tasks 028 / 029 / 030 (builders)**: rewritten as dispatchers; agent frontmatter `skills: []`; framework prose moves to stack skill.
+- **Task 038 (skills-audit)**: stack-skill discovery; auto-author path; 90-day freshness check.
+- **Schemas**: `schemas/architecture.schema.json` adds `tooling.stack` block + `stackRationale[]`.
+- **Blueprint §17**: marked superseded; reasoning preserved as "defaults when brief is silent".

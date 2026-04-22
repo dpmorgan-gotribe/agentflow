@@ -72,12 +72,16 @@ For each target: check if a skill exists at `.claude/skills/` or `~/.claude/skil
 
 #### `--scope=build` (runs post-architect, pre-build)
 
-Audit the build-stage vendor SDKs. Read:
+Audit the build-stage **vendor SDKs** AND **stack skills** (feat-002). Read:
 
-- `.claude/architecture.yaml` — **authoritative** source; the concrete vendor list lives in `apps.*.integrations[]` where `deployment === "vendor"`. Ignore `declined` and `self-hosted` entries (different skill needs — self-hosted gets a deployment-checklist pointer, not an SDK skill).
+- `.claude/architecture.yaml` — **authoritative** source. Two distinct subsets:
+  - `apps.*.integrations[]` where `deployment === "vendor"` → drives vendor SDK skill audit (Stripe, Resend, etc.)
+  - `tooling.stack.*` → drives stack-skill audit per feat-002 (below)
 - `docs/requirements.md § Skills Needed` — build-stage subset
 
-Target skills are derived dynamically from architecture.yaml vendor picks. Examples for a typical project:
+##### Vendor SDK audit
+
+Target vendor SDK skills are derived dynamically from architecture.yaml vendor picks. Ignore `declined` and `self-hosted` entries (different skill needs — self-hosted gets a deployment-checklist pointer, not an SDK skill). Examples for a typical project:
 
 - `stripe-connect` — if `integrations.payments.vendor === "stripe"`
 - `thirdweb-embedded-wallets` — if `integrations.auth.vendor === "thirdweb"`
@@ -87,6 +91,30 @@ Target skills are derived dynamically from architecture.yaml vendor picks. Examp
 - `sentry-node` — if `integrations.monitoring.vendor === "sentry"`
 
 For each vendor: check if a skill exists, research the vendor's documentation if missing, author SKILL.md with a minimal integration recipe (e.g., how to initialize + make one representative call), validate on a stub test.
+
+##### Stack-skill audit (feat-002)
+
+For each non-null slot in `architecture.yaml.tooling.stack`:
+
+1. Resolve slot → tier + slug:
+   - `web_framework` / `web_styling` → tier `front-end`
+   - `mobile_framework` → tier `mobile`
+   - `backend_language` / `backend_framework` / `orm` / `database` → tier `back-end`
+2. Check if `.claude/skills/agents/{tier}/{slug}/SKILL.md` exists on disk.
+3. Decide action:
+   - **Exists + maturity `shipped`**: nothing to do (report as `auditedShipped: +1`).
+   - **Exists + maturity `draft`**: flag for human review on first production use; report as `auditedDraft: +1`.
+   - **Exists but `dependencyPinsRefreshedAt` > 90 days old**: emit a warning; do not block. Report as `stalePin: +1`.
+   - **Missing, and `--auto-author-stack-skills` flag is present**: research via WebSearch + WebFetch on the stack's official docs; author a new SKILL.md with `maturity: draft`, filling every required section per the `_template/SKILL.md` contract; smoke-test if possible (install + `typecheck` on a hello-world). Report as `stackSkillsAuthored: +1`.
+   - **Missing, no `--auto-author-stack-skills` flag**: **abort with a clear error**. Example: `"Stack skill missing: architecture.yaml.tooling.stack.backend_framework = 'go-chi' but .claude/skills/agents/back-end/go-chi/SKILL.md does not exist. Re-run /skills-audit --scope=build --auto-author-stack-skills OR manually author the skill OR change the architecture.yaml pick to a shipped slug."`
+
+**Shipped stack-slug registry** (initial feat-002 drop):
+
+- front-end: `react-next`, `svelte-kit`
+- back-end: `node-trpc-nest`, `python-fastapi`
+- mobile: `expo-rn`
+
+**Enum-valid but draft (needs authoring)**: `remix`, `astro`, `qwik`, `vue-nuxt`, `solid-start`, `node-trpc-only`, `node-express`, `node-fastify`, `python-django`, `go-chi`, `go-echo`, `rust-axum`, `ruby-rails`, `bare-rn`, `flutter`, `tauri-mobile`, `native-kotlin`, `native-swift`. Allowed by `schemas/architecture.schema.json` enum; auto-authored on first use.
 
 ### Shared logic (both scopes)
 

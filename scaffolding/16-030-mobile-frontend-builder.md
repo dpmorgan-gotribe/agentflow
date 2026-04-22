@@ -17,12 +17,13 @@ estimated-scope: medium
 
 Both are locked to the **UI Kit consumption contract** (task 022b). The builder translates signed-off HTML screens under `docs/screens/mobile/` into an Expo React Native app that imports exclusively from `@repo/ui-kit` — resolving platform-specific primitives via Metro's `.native.tsx` extension resolution.
 
-## Why This Scope (per refactor-001)
+## Why This Scope (per refactor-001 + feat-002)
 
-1. **Kit-only imports enforced** — same contract as 029, applied to mobile.
-2. **Shared tokens + shared primitives across web and native.** `@repo/ui-kit/tokens/tokens.ts` is consumed by the web's Tailwind config AND by NativeWind on mobile; primitives ship both `Button.tsx` (web) and `Button.native.tsx` (RN) inside the kit so the consumer code is identical (`import { Button } from '@repo/ui-kit'` — Metro picks the right file).
-3. **React Native Reusables dropped from the stated stack.** The kit's `.native.tsx` primitives ARE the RN component library; RN Reusables was the old spec's fallback and would introduce a parallel library, same anti-pattern as shadcn on the web side.
+1. **Stack-agnostic dispatcher (feat-002).** Builder reads `architecture.yaml.tooling.stack.mobile_framework` and loads `.claude/skills/agents/mobile/{stack-slug}/SKILL.md` verbatim. Initial shipped: `expo-rn`. Draft candidates for future shelf growth: `flutter`, `bare-rn`, `native-kotlin`, `native-swift`.
+2. **Kit-only imports enforced** — same contract as 029, with kit consumption varying by stack (see §System Prompt below).
+3. **Shared tokens across every mobile stack.** `@repo/ui-kit/tokens/tokens.ts` (or its generated Dart / JSON mirror for non-JS stacks) consumed by the mobile framework's styling layer.
 4. **Kit version pinned** — same sign-off binding as 029.
+5. **Mobile-tier skip**: if `architecture.yaml.tooling.stack.mobile_framework` is `null` OR the feature's `skip[]` includes `mobile`, this builder is not invoked for those features (orchestrator marks tasks `skipped`).
 
 ## Scope
 
@@ -31,38 +32,46 @@ Both are locked to the **UI Kit consumption contract** (task 022b). The builder 
 ```yaml
 ---
 name: mobile-frontend-builder
-description: Builds Expo React Native app (apps/mobile) by translating docs/screens/mobile/**/*.html into React Native screens that import exclusively from @repo/ui-kit. Runs ui-kit:validate-consumer post-generation; fails on any contract violation.
+description: Stack-agnostic mobile builder. Dispatches to the stack skill named in architecture.yaml.tooling.stack.mobile_framework. Translates docs/screens/mobile/**/*.html into platform-native code per the loaded stack pack. Runs ui-kit:validate-consumer post-generation where applicable; fails on kit-contract violation.
 tools: Read, Write, Edit, Bash, Grep, Glob
 model: inherit
 permissionMode: acceptEdits
 maxTurns: 40
-skills:
-  - react-patterns
-  - expo-patterns
+skills: []
 ---
 ```
 
-Note: `rn-reusables` and similar skills are removed. The kit owns the component library; the builder's skill is translation, not component authoring.
+Note: `skills` frontmatter is empty — stack-specific knowledge (`expo-patterns`, `flutter-widgets`, native-iOS `SwiftUI` idioms, etc.) lives in the dispatched stack skill, not in agent frontmatter.
 
-### System Prompt — the UI Kit Contract (verbatim embed)
+### System Prompt — Stack Dispatch + UI Kit Contract
 
-Same pattern as 029: embed `packages/ui-kit/CONTRACT.md` verbatim in the system prompt. The six numbered rules apply identically on mobile.
+**Dispatch FIRST**: read `architecture.yaml.tooling.stack.mobile_framework`. If `null`, abort cleanly (no mobile tier; orchestrator marks assigned tasks `skipped`). Otherwise load `.claude/skills/agents/mobile/{stack-slug}/SKILL.md` verbatim — it provides canonical layout, idioms, testing recipe, commands, gotchas for the target framework.
+
+**Then embed the UI Kit Contract**: `packages/ui-kit/CONTRACT.md` verbatim. Six rules apply identically on mobile. Kit consumption varies by stack:
+
+- **`expo-rn`**: React kit imports resolve via Metro's `.native.tsx` extension; primitives ship both `Button.tsx` + `Button.native.tsx` under `apps/mobile/components/ui/` (or kit's own `.native.tsx` overrides). NativeWind 4 consumes `@repo/ui-kit/tokens/tokens.ts`.
+- **Non-JS stacks (future: flutter, native-kotlin, native-swift)**: stack skill spells out how to consume kit tokens via generated mirrors (Dart file, JSON asset bundle, Swift Colors.xcassets). `data-kit-*` HTML attributes translate to `testID` / accessibility identifiers per stack.
+
+Framework-specific prose (Metro monorepo config, Expo Router file-based routing, safe-area patterns, gesture handlers, `.native.tsx` resolution) comes EXCLUSIVELY from the dispatched stack skill.
 
 ```
-You are a Senior Expo / React Native engineer. You translate signed-off
-HTML screens into production React Native / Expo Router screens that
-consume the project's UI Kit exclusively.
+You are a Senior mobile engineer. You translate signed-off HTML screens
+into production mobile code using the stack the architect picked. You
+consume the project's UI Kit (via the pattern the stack skill prescribes)
+and nothing else for UI.
 
-## Stack (locked by architecture.yaml)
+## Stack dispatch (feat-002)
 
-- Expo SDK 52+
-- Expo Router (file-based routing)
-- React Native 0.76+ / React 19
-- NativeWind 4 (Tailwind classes for RN) — configured to consume the kit's tokens
-- @repo/ui-kit for ALL UI (primitives resolve via Metro's .native.tsx extension)
-- @repo/types for shared Zod schemas
-- @repo/api-client for tRPC client hooks (React Native compatible)
-- TypeScript strict mode
+LOCKED by `architecture.yaml.tooling.stack.mobile_framework`. Load the
+matching `.claude/skills/agents/mobile/{stack-slug}/SKILL.md` at the start
+of your run. The stack skill IS your framework guide. Do not hardcode
+Expo / RN / NativeWind assumptions below if the stack skill differs.
+
+## Common inputs (all stacks)
+
+- @repo/types for shared Zod schemas (or generated mirror for non-JS stacks)
+- @repo/api-client for tRPC client hooks (React stacks) OR a matching codegen (Dart/Swift)
+- TypeScript strict mode (for JS-based mobile stacks) OR the stack's language mode
 
 ## Platform variant resolution
 
@@ -245,9 +254,15 @@ NativeWind 4 consumes a Tailwind config. Point `apps/mobile/tailwind.config.js` 
 
 ## Acceptance Criteria
 
-- [ ] `.claude/agents/mobile-frontend-builder.md` exists with updated frontmatter (react-patterns + expo-patterns; no rn-reusables)
+- [ ] `.claude/agents/mobile-frontend-builder.md` exists with STACK-AGNOSTIC frontmatter (`skills: []`) — no hardcoded expo-patterns / react-patterns skill references
+- [ ] Agent reads `architecture.yaml.tooling.stack.mobile_framework` and loads `.claude/skills/agents/mobile/{slug}/SKILL.md` verbatim
+- [ ] Aborts cleanly if `mobile_framework` is null (no mobile tier — tasks marked skipped)
+- [ ] Aborts cleanly if the referenced stack skill is missing (no silent Expo fallback)
 - [ ] System prompt embeds CONTRACT.md verbatim and drops React Native Reusables from the stack
-- [ ] Stack lists: Expo SDK 52+, Expo Router, React Native 0.76+, NativeWind 4, @repo/ui-kit, @repo/types, @repo/api-client, TypeScript strict
+- [ ] Framework-specific prose (Expo Router, NativeWind, Metro monorepo config, safe-area patterns) comes from the dispatched stack skill — NOT the agent's own system prompt
+- [ ] For non-RN stacks (flutter, native-_): agent consumes kit tokens via stack-skill-specified mirrors (Dart file / Swift Colors.xcassets / JSON bundle); `data-kit-_` → stack-specific testID / a11y identifier translation per stack skill
+- [ ] Skill runs `features[].tasks[]` filtered by `agent: mobile-frontend-builder` AND feature's `skip[]` does NOT include `mobile` (refactor-004 v2 tasks.yaml)
+- [ ] Skill runs inside the feature's worktree at `.claude/worktrees/{features[i].worktree}/` (CWD handled by orchestrator per refactor-004)
 - [ ] `.claude/skills/build-mobile-frontend/SKILL.md` exists
 - [ ] Skill pins kit version from sign-off and aborts on mismatch
 - [ ] Skill verifies every platform-sensitive primitive has a `.native.tsx` sibling; aborts with clear error if missing
