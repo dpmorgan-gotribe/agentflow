@@ -52,21 +52,23 @@ maxTurns: 30
 | `packages/orchestrator-contracts/`                       | Task 034b                                               | Output schemas the backend validates against                                                                                                 |
 | Self-hosted config templates in `docs/config/*.template` | `/architect` output for self-hosted integrations        | Pointers to deployment config, NOT built into the app                                                                                        |
 
-### /build-backend Skill — stack-agnostic dispatcher (feat-002)
+### /build-backend Skill — stack-agnostic dispatcher (feat-002) + hybrid TDD (feat-004)
 
 Steps:
 
 1. Read `architecture.yaml` — extract `tooling.stack.backend_framework`. If null → abort (no backend tier for this project); mark any assigned `agent: backend-builder` tasks as `skipped`.
 2. Load `.claude/skills/agents/back-end/{backend_framework}/SKILL.md` verbatim into prompt context. If the skill doesn't exist → abort with "Stack skill missing — re-run /skills-audit --scope=build --auto-author-stack-skills". (Orchestrator handles this abort per refactor-004 §Feature-graph phase step 3.)
-3. Read `docs/tasks.yaml` (v2); filter to `features[].tasks[]` where `agent: backend-builder` AND parent feature's `skip[]` doesn't include `backend`.
-4. For each feature in the filtered set:
+3. Load `.claude/rules/testing-policy.md` into prompt context — the cross-stack hybrid-TDD contract.
+4. Read `docs/tasks.yaml` (v2); filter to `features[].tasks[]` where `agent: backend-builder` AND parent feature's `skip[]` doesn't include `backend`.
+5. For each feature in the filtered set:
    - Orchestrator has already opened the worktree via git-agent (per refactor-004); this skill runs with `CWD=.claude/worktrees/{features[i].worktree}/`.
    - For each assigned task in the feature (respecting `depends_on` within the feature):
      - Generate implementation files per the loaded stack skill's §Canonical layout + §Idioms.
-     - Generate sibling unit-test file per the stack skill's §Testing pattern (feat-004 hybrid: builder covers happy path).
-     - Run stack skill's `lint && typecheck && test` command block. Failure → retry up to 2× with error context.
-   - After all feature tasks complete, agent returns success; orchestrator advances to the next agent in `feature.agent_sequence[]`.
-5. Report files created per task; emit return JSON matching `BackendBuildOutput` (034b) with `stackSlug: <the dispatched stack-slug>`.
+     - **Generate sibling happy-path test file** per the stack skill's §Testing pattern (feat-004 hybrid). Test covers: canonical success case of every public function / endpoint; primary branch of each non-trivial conditional; positive input-validation at public boundaries. See `.claude/rules/testing-policy.md` §"What counts as 'happy path'" for the full shape.
+     - **Run stack skill's full self-verify command block** — `lint && typecheck && test` with coverage. On failure, retry up to 2× with error context fed back. On persistent failure, escalate to orchestrator (per-task retry, max 3 per refactor-004).
+     - **Assert 60% line coverage** on files the builder authored (stack skill's coverage flag parses this). Below 60% → generate more tests or escalate; don't silently continue.
+   - After all feature tasks complete + all tests pass + coverage ≥ 60%, return success; orchestrator advances to the next agent in `feature.agent_sequence[]` (typically `tester` — who adds edge cases + integration + E2E + raises total to 80% per testing-policy.md).
+6. Report files created per task; emit return JSON matching `BackendBuildOutput` (034b) with `stackSlug`, `testsWritten`, `coverageBuilderScope` fields.
 
 ## Acceptance Criteria
 
@@ -77,8 +79,11 @@ Steps:
 - [ ] Skill reads `docs/tasks.yaml` v2 (refactor-004) — filters features[].tasks[] where `agent: backend-builder` AND `feature.skip[]` doesn't include `backend`
 - [ ] Skill runs inside the feature's worktree (CWD handled by orchestrator per refactor-004 §runFeature)
 - [ ] Self-verify uses the stack skill's `lint && typecheck && test` command block (NOT hardcoded `pnpm typecheck && pnpm lint`)
-- [ ] Per `feat-004-builder-tdd-hybrid`: builder generates happy-path unit tests alongside implementation files; test command execution is part of self-verify
-- [ ] Return JSON includes `stackSlug` field naming which stack was dispatched
+- [ ] **feat-004 hybrid TDD**: builder generates happy-path sibling test file alongside every implementation file per the stack skill's §Testing pattern
+- [ ] **feat-004 coverage**: builder runs test command with `--coverage`; asserts ≥ 60% line coverage on files it authored (from `.claude/rules/testing-policy.md`)
+- [ ] **feat-004 scope discipline**: builder does NOT write edge-case / integration / E2E tests — those are tester's scope (SKILL.md references testing-policy.md for the full split)
+- [ ] Agent reads `.claude/rules/testing-policy.md` into prompt context at dispatch time
+- [ ] Return JSON includes `stackSlug` + `testsWritten` + `coverageBuilderScope` fields (034b `BackendBuildOutput` update pending)
 - [ ] `model: inherit` used (orchestrator assigns model)
 
 ## Human Verification

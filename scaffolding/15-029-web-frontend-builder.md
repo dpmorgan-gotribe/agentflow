@@ -274,6 +274,10 @@ Web and mobile frontend builders run concurrently after `/stylesheet` + `/screen
 - [ ] For non-React stacks (svelte-kit, vue-nuxt): agent authors local primitives matching the kit's `data-kit-*` attribute contract per the stack skill's guidance (kit's React exports not importable from those stacks)
 - [ ] Skill runs `features[].tasks[]` filtered by `agent: web-frontend-builder` AND feature's `skip[]` does NOT include `web` (refactor-004 v2 tasks.yaml)
 - [ ] Skill runs inside the feature's worktree at `.claude/worktrees/{features[i].worktree}/` (CWD handled by orchestrator per refactor-004)
+- [ ] **feat-004 hybrid TDD**: builder generates happy-path sibling test file alongside every component / page / hook per the stack skill's §Testing pattern (e.g. `Button.tsx` → `Button.test.tsx` for react-next; `Button.svelte` → `Button.test.ts` for svelte-kit)
+- [ ] **feat-004 coverage**: builder runs test command with coverage flag; asserts ≥ 60% line coverage on authored files per `.claude/rules/testing-policy.md`
+- [ ] **feat-004 scope discipline**: builder does NOT write edge-case / E2E tests; those are tester's scope (Playwright specs at `apps/web/e2e/*.spec.ts` are tester-authored)
+- [ ] Agent reads `.claude/rules/testing-policy.md` at dispatch time; testing-policy cross-reference in system prompt
 - [ ] `.claude/skills/build-web-frontend/SKILL.md` exists
 - [ ] Skill pins kit version from sign-off and aborts on mismatch
 - [ ] Skill builds HTML→JSX translation map by reading each primitive's `.variants.ts`

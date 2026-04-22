@@ -1,7 +1,8 @@
 ---
 id: feat-004-builder-tdd-hybrid
 type: feature
-status: draft
+status: completed
+completed: 2026-04-22
 author-agent: human
 created: 2026-04-22
 updated: 2026-04-22
@@ -80,11 +81,11 @@ Depends on **feat-002-stack-skill-shelf** — stack skills carry the test-genera
 
 ## Expected Outcomes
 
-- [ ] Builder scaffolding files (028/029/030) each include a step "Generate sibling .test.{ts,tsx,py} file after implementation; run stack-specific test command; retry up to 2 times on failure"
-- [ ] Tester scaffolding file (031) narrows scope to edge cases + integration + E2E + full-suite run; removes happy-path unit-test generation
-- [ ] Each of the 5 initial stack SKILL.md files (from feat-002) has a §Testing block with file-naming convention, test runner command, mocking patterns, min coverage expectation
-- [ ] `.claude/rules/testing-policy.md` documents the 60% (builder) / 80% (total after tester) coverage policy + what happens when thresholds miss
-- [ ] Manual smoke test: synthetic backend task → backend-builder produces both `auth.router.ts` and `auth.router.test.ts` → test passes → task marked done
+- [x] Builder scaffolding files (028/029/030) each include a step "Generate sibling .test.{ts,tsx,py} file after implementation; run stack-specific test command; retry up to 2 times on failure"
+- [x] Tester scaffolding file (031) narrows scope to edge cases + integration + E2E + full-suite run; removes happy-path unit-test generation
+- [x] Each of the 5 initial stack SKILL.md files (from feat-002) has a §Testing block with file-naming convention, test runner command, mocking patterns, min coverage expectation — shipped as part of feat-002; no net-new work in feat-004
+- [x] `.claude/rules/testing-policy.md` documents the 60% (builder) / 80% (total after tester) coverage policy + what happens when thresholds miss
+- [ ] Manual smoke test: synthetic backend task → backend-builder produces both `auth.router.ts` and `auth.router.test.ts` → test passes → task marked done — deferred to post-orchestrator-runtime (task 035 body)
 
 ## Validation Criteria
 
@@ -107,4 +108,51 @@ Depends on **feat-002-stack-skill-shelf** — stack skills carry the test-genera
 
 ## Attempt Log
 
-<!-- Populated by executing agent. -->
+### Attempt 1 — 2026-04-22 · Hybrid TDD policy + builder/tester scope split landed
+
+**Scope:** policy file + 4 scaffolding updates. No stack-skill edits needed — feat-002 already filled §Testing blocks in all 5 shipped stack skills.
+
+**Files created:**
+
+- `.claude/rules/testing-policy.md` (NEW) — authoritative hybrid-TDD contract. 8 sections: who-authors-what matrix, coverage thresholds (60% builder / 80% total), what-counts-as-happy-path, genuine-product-bug definition, stack-skill integration, scope exceptions (data-only / config-only / stack-declared), retry ladder (cross-references refactor-004), file cross-references.
+
+**Files updated:**
+
+- `scaffolding/17-031-tester-agent.md` — full rewrite from "generates and runs ALL tests" (67 lines) to narrow-scope edge-case + integration + E2E authoring (~180 lines). Key changes:
+  - Removed happy-path unit-test authoring from tester scope
+  - Added "trust but verify" step: tester checks builder-authored tests exist + pass before writing its own
+  - 6-step skill flow ending in full-suite run with coverage enforcement against testing-policy.md
+  - `genuineProductBugs[]` concept: when tester's edge-case test fails on real implementation bug, flag back to builder via orchestrator per-task retry
+  - Responsibilities split table (builder / tester / both) matching testing-policy.md
+  - Acceptance criteria: explicit "does NOT author happy-path tests" + "dispatches via stack skill §Testing blocks" + "enforces 80% total coverage"
+- `scaffolding/14-028-backend-builder-agent.md` — /build-backend skill step list gains step 3 (load testing-policy.md) + expanded step 5 (generate happy-path sibling tests; run test command with coverage; assert ≥ 60% on builder scope). 5 new acceptance criteria flagged with **feat-004**.
+- `scaffolding/15-029-web-frontend-builder.md` — 4 new acceptance criteria covering sibling-test generation per stack skill's §Testing pattern (react-next → `.test.tsx`; svelte-kit → `.test.ts`), 60% coverage enforcement, scope-discipline (no E2E — Playwright specs at `apps/web/e2e/*.spec.ts` are tester-authored), testing-policy.md read at dispatch.
+- `scaffolding/16-030-mobile-frontend-builder.md` — same pattern with expo-rn specifics (`.test.tsx` siblings; Maestro YAML at `.maestro/*.yaml` authored by tester, not builder).
+
+**Stack skills unchanged** — all 5 shipped skills from feat-002 (react-next, svelte-kit, node-trpc-nest, python-fastapi, expo-rn) already have §Testing blocks with file-naming, test runner command with + without coverage flag, mocking patterns, one example test, and coverage expectation. That work landed in feat-002; feat-004 is the policy-reference + scope-reshaping work.
+
+**Cross-referenced from testing-policy.md:**
+
+- Builders (028/029/030) — one bind per builder
+- Tester (031) — primary consumer
+- Stack skills' §Testing — each restates the 60% threshold for local context
+
+**Deferred (explicit):**
+
+- `TestOutput` schema update in 034b to add `coverageTotal`, `coverageBuilderOnly`, `policyCheck`, `genuineProductBugs` — follow-up to avoid further 034b churn in this plan
+- Smoke test (synthetic backend task → builder emits `auth.router.ts` + `auth.router.test.ts`) — needs orchestrator runtime (task 035 body)
+- Coverage-instrumentation runtime (actual parsing of `vitest run --coverage` / `pytest --cov` output into a policy-checker) — scaffolding says where + how; implementation is per-stack in builder runtimes.
+
+**Cross-plan completeness check** — the 5-plan arc from `investigate-001-post-design-pipeline-architecture`:
+
+| Plan         | Scope                                           | Status                   |
+| ------------ | ----------------------------------------------- | ------------------------ |
+| feat-001     | `/new-project --agentic-visibility` flag        | ✅ completed             |
+| refactor-004 | tasks.yaml v2 + feature-graph orchestrator mode | ✅ completed             |
+| feat-002     | stack-skill shelf + builder dispatchers         | ✅ completed             |
+| feat-003     | git-agent worktree lifecycle + lockfile         | ✅ completed             |
+| feat-004     | hybrid TDD policy                               | ✅ completed (this plan) |
+
+All 5 investigate-001 follow-ups land. Runtime implementations (orchestrator/index.ts, auto-author skills-audit, test-policy-check parser) remain pending on their respective scaffolding tasks.
+
+**Ready to mark completed.**

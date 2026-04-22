@@ -263,6 +263,10 @@ NativeWind 4 consumes a Tailwind config. Point `apps/mobile/tailwind.config.js` 
 - [ ] For non-RN stacks (flutter, native-_): agent consumes kit tokens via stack-skill-specified mirrors (Dart file / Swift Colors.xcassets / JSON bundle); `data-kit-_` → stack-specific testID / a11y identifier translation per stack skill
 - [ ] Skill runs `features[].tasks[]` filtered by `agent: mobile-frontend-builder` AND feature's `skip[]` does NOT include `mobile` (refactor-004 v2 tasks.yaml)
 - [ ] Skill runs inside the feature's worktree at `.claude/worktrees/{features[i].worktree}/` (CWD handled by orchestrator per refactor-004)
+- [ ] **feat-004 hybrid TDD**: builder generates happy-path sibling test file alongside every screen / component / hook per the stack skill's §Testing pattern (expo-rn: `.test.tsx` siblings; Flutter: matching `_test.dart`; native stacks per their skill)
+- [ ] **feat-004 coverage**: builder runs test command with coverage flag; asserts ≥ 60% line coverage on authored files per `.claude/rules/testing-policy.md`
+- [ ] **feat-004 scope discipline**: builder does NOT write Maestro E2E flows / integration tests; those are tester's scope (`.maestro/*.yaml` authored by tester)
+- [ ] Agent reads `.claude/rules/testing-policy.md` at dispatch time; testing-policy cross-reference in system prompt
 - [ ] `.claude/skills/build-mobile-frontend/SKILL.md` exists
 - [ ] Skill pins kit version from sign-off and aborts on mismatch
 - [ ] Skill verifies every platform-sensitive primitive has a `.native.tsx` sibling; aborts with clear error if missing
