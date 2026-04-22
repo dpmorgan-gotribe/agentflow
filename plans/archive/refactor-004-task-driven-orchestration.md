@@ -1,7 +1,7 @@
 ---
 id: refactor-004-task-driven-orchestration
 type: refactor
-status: completed
+status: archived
 completed: 2026-04-22
 author-agent: human
 created: 2026-04-22
@@ -184,3 +184,29 @@ Blueprint commits to the opposite direction (stage-linear), so the blueprint rev
 - Task 035 STAGES[] trimmed from 17 entries to 11 (removed 6 build-phase stages now handled per-feature)
 
 **Ready to mark completed + commit.**
+
+---
+# COMPLETION RECORD (appended to archived plan)
+completed: 2026-04-22
+outcome: success
+actual-files-changed:
+  - multi-agent-app-generation-blueprint.md (modified)
+  - plans/active.md (modified)
+  - plans/active/refactor-004-task-driven-orchestration.md (modified)
+  - scaffolding/08-021-pm-agent.md (modified)
+  - scaffolding/09-034b-output-contract-zod-schemas.md (modified)
+  - scaffolding/21-035-orchestrator-core.md (modified)
+  - schemas/feature.schema.json (created)
+  - schemas/tasks.schema.json (created)
+commits:
+  - hash: 1a42749
+    message: "refactor-004: task-driven orchestration (feature-graph post-PM)"
+attempts: 1
+lessons:
+  - "Splitting orchestrator into stage-linear (Mode A) + feature-graph (Mode B) is foundational — feat-002/003/004 all bind to its schema."
+  - "Cross-field invariants (task.agent ∈ parent.agent_sequence; no dep cycles) can't be expressed in JSON Schema cleanly; documenting them in the Zod mirror's comment block as orchestrator-load-time checks is the pragmatic pattern."
+  - "Keep v1 deprecated cleanly — since no project had produced tasks.yaml yet, no migration code needed. Sometimes the best migration is 'there's no v1 in the wild'."
+test-results:
+  summary: "schema validated via ajv + Zod runtime eval on valid + 4 invalid fixtures; all pass expected verdicts"
+duration-minutes: 813
+---

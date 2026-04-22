@@ -1,7 +1,7 @@
 ---
 id: feat-004-builder-tdd-hybrid
 type: feature
-status: completed
+status: archived
 completed: 2026-04-22
 author-agent: human
 created: 2026-04-22
@@ -156,3 +156,29 @@ Depends on **feat-002-stack-skill-shelf** — stack skills carry the test-genera
 All 5 investigate-001 follow-ups land. Runtime implementations (orchestrator/index.ts, auto-author skills-audit, test-policy-check parser) remain pending on their respective scaffolding tasks.
 
 **Ready to mark completed.**
+
+---
+# COMPLETION RECORD (appended to archived plan)
+completed: 2026-04-22
+outcome: success
+actual-files-changed:
+  - .claude/rules/testing-policy.md (created)
+  - plans/active.md (modified)
+  - plans/active/feat-004-builder-tdd-hybrid.md (modified)
+  - scaffolding/14-028-backend-builder-agent.md (modified)
+  - scaffolding/15-029-web-frontend-builder.md (modified)
+  - scaffolding/16-030-mobile-frontend-builder.md (modified)
+  - scaffolding/17-031-tester-agent.md (modified)
+commits:
+  - hash: bf1b5bc
+    message: "feat-004: hybrid TDD — builders write happy-path tests; tester narrows to edge cases + integration + E2E"
+attempts: 1
+lessons:
+  - "Hybrid TDD (builder happy path + tester edge cases) beats pure TDD (too slow for AI) and pure post-build (tester reverse-engineers builder intent). Reinforced by Q3 investigation finding."
+  - "Stack skills carry the per-stack testing idioms; feat-002's §Testing blocks landed the specifics, feat-004 only needed to reshape the scope split + author the policy file."
+  - "`genuineProductBugs[]` in tester's return JSON is the clean handoff — tester flags real bugs; orchestrator routes back to builder; max 3 task retries per refactor-004 retry ladder."
+  - "60%/80% coverage thresholds felt arbitrary but give builders + tester clear stop signals. Coverage numbers become meaningful only once runtime instrumentation parses them; scaffolding documents the contract."
+test-results:
+  summary: "4 scaffolding updates (028/029/030/031) + 1 new policy file; no runtime tests; smoke test on synthetic fixture deferred to orchestrator runtime"
+duration-minutes: 813
+---

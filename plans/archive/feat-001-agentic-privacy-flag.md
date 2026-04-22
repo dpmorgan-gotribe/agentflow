@@ -1,7 +1,7 @@
 ---
 id: feat-001-agentic-privacy-flag
 type: feature
-status: completed
+status: archived
 author-agent: human
 created: 2026-04-22
 updated: 2026-04-22
@@ -101,3 +101,30 @@ No brief.md reference — this is factory-level tooling, not project-level featu
 **Status:** scaffolding spec complete. The next `/new-project` invocation will execute the new shape. Until then, existing projects (mindapp-v2, gotribe, hatch) keep their current `public` `.gitignore` and are unaffected.
 
 **Ready to mark completed + commit.**
+
+---
+# COMPLETION RECORD (appended to archived plan)
+completed: 2026-04-22
+outcome: success
+actual-files-changed:
+  - .claude/skills/new-project/SKILL.md (modified)
+  - docs/agentic-visibility.md (created)
+  - plans/active.md (modified)
+  - plans/active/feat-001-agentic-privacy-flag.md (created)
+  - plans/active/feat-002-stack-skill-shelf.md (created)
+  - plans/active/feat-003-git-agent-worktrees.md (created)
+  - plans/active/feat-004-builder-tdd-hybrid.md (created)
+  - plans/active/investigate-001-post-design-pipeline-architecture.md (created)
+  - plans/active/refactor-004-task-driven-orchestration.md (created)
+commits:
+  - hash: 155ad87
+    message: "feat-001: /new-project --agentic-visibility flag (private default)"
+attempts: 1
+lessons:
+  - "Default `private` was the safer choice — `public` opt-in preserves factory-internal audit workflow without risking client-repo leakage."
+  - "Moving visibility between modes requires history rewrite; refusing the change on --force refresh prevents silent footguns."
+  - "The 3-mode matrix (public/private/split) is the minimum — two modes wasn't enough (no split path) and four would have confused."
+test-results:
+  summary: "scaffolding spec only — no runtime tests; smoke-test deferred to next /new-project invocation"
+duration-minutes: 813
+---

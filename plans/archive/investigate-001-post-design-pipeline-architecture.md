@@ -1,7 +1,7 @@
 ---
 id: investigate-001-post-design-pipeline-architecture
 type: investigation
-status: completed
+status: archived
 author-agent: human
 created: 2026-04-22
 updated: 2026-04-22
@@ -269,3 +269,19 @@ The whole stack is ~5 plans, ordered so Q4's schema ships first (everything else
 NOTE: Investigations are what agents escalate to at attempt #3 of a bug or feature.
   This is the structured research step that prevents blind retrying.
 -->
+
+---
+# COMPLETION RECORD (appended to archived plan)
+completed: 2026-04-22
+outcome: success
+actual-files-changed: []
+commits: []  # investigation — no branch
+attempts: 2
+lessons:
+  - "Bundling 5 entangled architectural questions into one investigation was the right call — splitting would have re-threaded the dependencies 5 times."
+  - "Delegating Phase 1+2 (source survey) to an Explore agent kept the main context clean; main agent synthesized Phase 3+4 recommendations."
+  - "Hypothesis-before-investigation discipline paid off — 3 of 5 hypotheses confirmed, 2 falsified with concrete evidence."
+test-results:
+  summary: "n/a (investigation — no branch)"
+duration-minutes: 813
+---
