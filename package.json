@@ -2,10 +2,13 @@
   "name": "agentflow-phase2",
   "version": "0.1.0",
   "private": true,
-  "description": "Scaffolding-phase package.json. Task 026 replaces this with the Turborepo + pnpm workspace setup; until then these devDependencies exist only to run scripts/validate-brief.mjs.",
+  "description": "Agentflow factory repo (scaffolding + runtime). orchestrator/ runtime + packages/orchestrator-contracts/ shared types; task-035 implementation in progress.",
   "type": "module",
   "scripts": {
-    "validate-brief": "node scripts/validate-brief.mjs --all"
+    "validate-brief": "node scripts/validate-brief.mjs --all",
+    "generate": "pnpm --filter orchestrator start",
+    "typecheck:all": "pnpm -r typecheck",
+    "test:all": "pnpm -r test"
   },
   "devDependencies": {
     "ajv": "^8.17.1",
