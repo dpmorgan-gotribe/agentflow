@@ -2,7 +2,7 @@
 name: new-project
 description: Bootstrap a new generated-app under projects/<name>/. Clones agentic resources from the factory and seeds brief.md for user authoring.
 when_to_use: before any pipeline work on a new project; when user says "create a new project" or "start a new app"
-argument-hint: <name> [--force] [--reset-brief] [--proposal "<text>" | --proposal-file <path> | --proposal-url <url>]
+argument-hint: <name> [--force] [--reset-brief] [--agentic-visibility=public|private|split] [--proposal "<text>" | --proposal-file <path> | --proposal-url <url>]
 allowed-tools: Read Write Bash Glob Grep
 ---
 
@@ -26,6 +26,23 @@ independently after `/new-project`; factory changes don't auto-propagate.
 - `--reset-brief` — nuclear option, requires `--force`. Also overwrites
   `brief.md` back to the template. Use only if user explicitly wants
   brief edits discarded.
+- `--agentic-visibility=<public|private|split>` — controls whether the
+  agentic layer (`.claude/agents/`, `.claude/skills/`, `.claude/hooks/`,
+  `.claude/rules/`, `.claude/templates/`, `plans/`, `contexts/`) is tracked
+  by the project's git repo. Default: **`private`**.
+  - `public` — track everything (legacy behavior). Use for factory-internal
+    projects where the agentic layer is part of the deliverable + audit
+    trail.
+  - `private` — gitignore the agentic layer. Safest default — prevents
+    leakage when the project's repo is pushed to a public remote.
+  - `split` — two git roots. Outer repo at `projects/<name>/` tracks the
+    agentic layer (for a private factory remote). Inner repo at
+    `projects/<name>/apps-and-packages/` tracks only the app code (for a
+    public remote).
+  - Preserved across `--force` refreshes via `agenticVisibility` field in
+    the project's root `CLAUDE.md` frontmatter.
+  - See `docs/agentic-visibility.md` for the full matrix of what each mode
+    tracks vs ignores.
 - `--proposal "<text>"` — optional. Freeform proposal text. After scaffold,
   invokes `/draft-brief "<text>"` inside the new project to fill in the
   20-section brief.
@@ -183,12 +200,18 @@ Add to `filesCopied` tracker: `turbo.json`, `pnpm-workspace.yaml`, `tsconfig.jso
 **`projects/<name>/CLAUDE.md`** (root) — short file referencing factory
 patterns, project-specific paths. Include the Brief Protocol section from
 factory CLAUDE.md. Reference `brief.md` at project root as the canonical
-spec.
+spec. The frontmatter MUST include `agenticVisibility: <mode>` (from the
+resolved `--agentic-visibility` flag, default `private`) so refresh runs
+preserve the choice.
 
 **`projects/<name>/.claude/CLAUDE.md`** — nested CLAUDE.md that gives
 agent-specific guidance for this project (inherits from factory).
 
-**`projects/<name>/.gitignore`**:
+**`projects/<name>/.gitignore`** — content depends on the
+`--agentic-visibility` mode. All three modes share the "always ignored"
+base block; `private` and `split` add agentic-layer exclusions on top.
+
+**Always ignored (all modes — base block):**
 
 ```
 .claude/state/
@@ -208,6 +231,63 @@ credentials.json
 .DS_Store
 Thumbs.db
 ```
+
+**Additional exclusions by mode:**
+
+- **`public`** — no additional entries. Agentic layer + plans + contexts are
+  all tracked by the project's git repo. (This matches the pre-refactor
+  behavior; use only for factory-internal projects that ship the agentic
+  layer as a deliverable.)
+
+- **`private` (default)** — append these to the base block, gitignoring the
+  agentic layer so it stays on disk but doesn't leak when the repo pushes
+  to a public remote:
+
+  ```
+  # agentic-visibility: private — hides the agentic layer from git
+  .claude/agents/
+  .claude/skills/
+  .claude/hooks/
+  .claude/rules/
+  .claude/templates/
+  plans/
+  contexts/
+  ```
+
+  **Still tracked in `private` mode**: `brief.md`, `companion/`, `apps/`,
+  `packages/`, `docs/`, `schemas/`, `scripts/`, root config
+  (`package.json`, `tsconfig.json`, `turbo.json`, `pnpm-workspace.yaml`),
+  `.env.example`, `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/settings.json`,
+  `.claude/models.yaml`, `.mcp.json`, `mcp-defaults-design.json`, `justfile`.
+
+- **`split`** — same `.gitignore` body as `private` for the **outer** repo.
+  Additionally, step 8 creates a **second** git repo at
+  `projects/<name>/apps-and-packages/.git` that tracks ONLY `apps/` +
+  `packages/` + app-relevant root config copied into that subtree. See
+  step 8 for the split-mode git-init procedure.
+
+The mode selected for the project is recorded in the project's root
+`CLAUDE.md` frontmatter as `agenticVisibility: <mode>` so that
+`--force` refreshes preserve it.
+
+### 6b. Validate `--agentic-visibility` flag
+
+- Parse the flag from `$ARGUMENTS`. Valid values: `public`, `private`, `split`.
+- Default when flag omitted: `private`.
+- Any other value → error:
+  ```
+  --agentic-visibility: invalid value '<got>'. Valid: public | private | split.
+  ```
+- In refresh mode (`--force`), if the flag is supplied AND the existing
+  project's `CLAUDE.md` frontmatter has a different `agenticVisibility`,
+  error with:
+  ```
+  Project was scaffolded with agenticVisibility=<old>; requested <new>.
+  Changing visibility after init requires manual .gitignore surgery + git
+  history rewrite. To force a change, delete projects/<name>/ and re-run.
+  ```
+- If the flag is omitted in refresh mode and frontmatter has a value, use the
+  frontmatter value (preserve original choice).
 
 ### 7. If a `--proposal*` flag was supplied, invoke `/draft-brief`
 
@@ -234,11 +314,37 @@ the empty template:
 
 ### 8. Initialize git (INIT MODE ONLY — SKIP IN REFRESH)
 
+Base case (`public` or `private`):
+
 - `cd projects/<name> && git init`
-- `git add -A && git commit -m "chore: initialize project <name> from factory"`
-  (or `"chore: initialize project <name> from factory with drafted brief"`
-  if a proposal was supplied)
+- `git add -A && git commit -m "chore: initialize project <name> from factory (agenticVisibility=<mode>)"`
+  (append `" with drafted brief"` if a proposal was supplied)
 - Do NOT re-init or re-commit in refresh mode — user's git state is preserved
+
+**Split mode additions (`--agentic-visibility=split`):**
+
+After the outer `git init` + initial commit (which now tracks everything
+non-agentic per the `private` `.gitignore` body), bootstrap the inner
+app-only repo:
+
+1. `mkdir -p projects/<name>/apps-and-packages`
+2. Move (not copy) app-code subdirs into it: `apps/`, `packages/` — via
+   `git mv` so the outer repo's history records the move. Root config
+   (`package.json`, `tsconfig.json`, `turbo.json`, `pnpm-workspace.yaml`)
+   stays at the outer root; a minimal mirror (`package.json` with
+   `"workspaces"` pointing to `../apps-and-packages/{apps,packages}`) is
+   added inside `apps-and-packages/` so the inner repo can `pnpm install`
+   standalone if cloned alone.
+3. `cd apps-and-packages && git init && git add -A && git commit -m "chore: initialize app-code repo for <name>"`
+4. Write `projects/<name>/apps-and-packages/README.md` explaining the
+   split: "This is the public-ready app-code repo for `<name>`. The
+   factory + agentic layer lives one directory up at `projects/<name>/`."
+5. Outer `.gitignore` ALSO adds `apps-and-packages/.git/` (so the inner
+   repo's history is not tracked by the outer repo).
+
+Refresh mode: skip all git-init work. If the user's requested visibility
+differs from the existing project's frontmatter, step 6b already errored
+out — so we never reach here in a mode mismatch.
 
 ### 9. Self-verify
 
@@ -249,6 +355,20 @@ Read back at least:
 - One file from each of `.claude/{agents,skills,hooks,rules}/` — confirms
   the copy worked
 - `projects/<name>/.git/HEAD` — confirms git was initialized (init mode)
+- `projects/<name>/CLAUDE.md` frontmatter contains
+  `agenticVisibility: <mode>` matching the resolved flag
+
+**Visibility-specific checks (init mode):**
+
+- **`public`**: `git -C projects/<name> ls-files .claude/agents/` returns
+  non-empty (agentic layer IS tracked).
+- **`private`**: `git -C projects/<name> ls-files .claude/agents/` returns
+  empty (agentic layer is NOT tracked); `.claude/agents/` still exists on
+  disk (agents can still run).
+- **`split`**: both `projects/<name>/.git/HEAD` AND
+  `projects/<name>/apps-and-packages/.git/HEAD` exist. Outer repo's
+  `ls-files apps/` returns empty (app code moved to inner). Inner repo's
+  `ls-files` includes `apps/` + `packages/` entries.
 
 If any check fails, return `{ success: false, reason: "..." }` WITHOUT
 rolling back — partial state is easier to debug than an invisible cleanup.
@@ -260,6 +380,7 @@ rolling back — partial state is easier to debug than an invisible cleanup.
   "success": true,
   "mode": "init" | "refresh",
   "projectPath": "projects/<name>",
+  "agenticVisibility": "public" | "private" | "split",
   "filesCopied": {
     "agents": N,
     "skills": N,
@@ -271,10 +392,14 @@ rolling back — partial state is easier to debug than an invisible cleanup.
   "preserved": ["projects/<name>/brief.md", "projects/<name>/assets/", "..."],
   "overwritten": ["projects/<name>/.claude/agents/analyst.md", "..."],
   "backups": ["projects/<name>/.claude/agents/analyst.md.bak-2026-04-18T00-00-00Z", "..."],
+  "innerRepoPath": "projects/<name>/apps-and-packages",
   "draftResult": null,
   "nextStep": "Author brief.md at projects/<name>/brief.md, then run /validate-brief."
 }
 ```
+
+`innerRepoPath` is only present when `agenticVisibility: "split"`; omitted
+(or `null`) otherwise.
 
 When a `--proposal*` flag triggers `/draft-brief`, `draftResult` is:
 
@@ -295,15 +420,15 @@ In refresh mode with `--reset-brief`, `overwritten` includes `brief.md`.
 
 ## Overwrite Policy Matrix
 
-| File / dir                                                         | No `--force` | `--force` (preserve default)         | `--force --reset-brief`    |
-| ------------------------------------------------------------------ | ------------ | ------------------------------------ | -------------------------- |
-| `brief.md`                                                         | abort        | preserved                            | overwritten (backup saved) |
-| `assets/`, `companion/`, `docs/`, `plans/`, `contexts/`            | abort        | preserved                            | preserved                  |
-| `.git/`                                                            | abort        | preserved (no reinit)                | preserved                  |
-| `.claude/{agents,skills,hooks,rules}/`                             | abort        | re-copied (backups of changed files) | re-copied                  |
-| `.claude/settings.json`                                            | abort        | re-copied (backup saved)             | re-copied                  |
-| `.claude/models.yaml`                                              | abort        | preserved (user may have tuned)      | preserved                  |
-| `.claude/CLAUDE.md`, project `CLAUDE.md`, `.gitignore`, `justfile` | abort        | re-copied (backup saved)             | re-copied                  |
+| File / dir                                                         | No `--force` | `--force` (preserve default)                                                                      | `--force --reset-brief`    |
+| ------------------------------------------------------------------ | ------------ | ------------------------------------------------------------------------------------------------- | -------------------------- |
+| `brief.md`                                                         | abort        | preserved                                                                                         | overwritten (backup saved) |
+| `assets/`, `companion/`, `docs/`, `plans/`, `contexts/`            | abort        | preserved                                                                                         | preserved                  |
+| `.git/`                                                            | abort        | preserved (no reinit)                                                                             | preserved                  |
+| `.claude/{agents,skills,hooks,rules}/`                             | abort        | re-copied (backups of changed files) — still gitignored in `private`/`split`; tracked in `public` | re-copied                  |
+| `.claude/settings.json`                                            | abort        | re-copied (backup saved)                                                                          | re-copied                  |
+| `.claude/models.yaml`                                              | abort        | preserved (user may have tuned)                                                                   | preserved                  |
+| `.claude/CLAUDE.md`, project `CLAUDE.md`, `.gitignore`, `justfile` | abort        | re-copied (backup saved)                                                                          | re-copied                  |
 
 ## Edge Cases
 
