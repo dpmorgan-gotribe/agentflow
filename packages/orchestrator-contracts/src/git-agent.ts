@@ -1,0 +1,108 @@
+import { z } from "zod";
+
+/**
+ * Git-agent output schema — discriminated union on `op` covering all 5
+ * operations (bootstrap / checkout-feature / close-feature /
+ * resolve-conflict-handoff / emergency-abort).
+ *
+ * Authoritative spec: scaffolding/20-033-git-agent.md + feat-003 plan.
+ * Orchestrator validates every git-agent return against this before
+ * using the payload.
+ */
+
+// bootstrap — success
+const BootstrapSuccess = z.object({
+  op: z.literal("bootstrap"),
+  success: z.literal(true),
+  mainBranch: z.string(),
+  mainSha: z.string().regex(/^[0-9a-f]{7,40}$/),
+  worktreeRoot: z.string(),
+  cleanTree: z.literal(true),
+});
+
+// bootstrap — failure
+const BootstrapFailure = z.object({
+  op: z.literal("bootstrap"),
+  success: z.literal(false),
+  reason: z.enum(["uncommitted-changes", "main-branch-mismatch"]),
+  files: z.array(z.string()).optional(),
+  localSha: z.string().optional(),
+  remoteSha: z.string().optional(),
+});
+
+// checkout-feature — success
+const CheckoutFeatureSuccess = z.object({
+  op: z.literal("checkout-feature"),
+  success: z.literal(true),
+  worktreePath: z.string(),
+  lockfilePath: z.string(),
+  branch: z.string(),
+  featureId: z.string(),
+});
+
+// checkout-feature — failure
+const CheckoutFeatureFailure = z.object({
+  op: z.literal("checkout-feature"),
+  success: z.literal(false),
+  reason: z.enum(["branch-conflict", "stale-worktree"]),
+  existingWorktree: z.string().optional(),
+});
+
+// close-feature — success (no conflict)
+const CloseFeatureSuccess = z.object({
+  op: z.literal("close-feature"),
+  success: z.literal(true),
+  conflict: z.literal(false),
+  mergeSha: z.string().regex(/^[0-9a-f]{7,40}$/),
+  featureId: z.string(),
+});
+
+// close-feature — conflict
+const CloseFeatureConflict = z.object({
+  op: z.literal("close-feature"),
+  success: z.literal(false),
+  conflict: z.literal(true),
+  conflictingFiles: z.array(z.string()).min(1),
+  lastWritingAgent: z.string(),
+  worktreePath: z.string(),
+});
+
+// resolve-conflict-handoff — orchestration payload (no success/fail at this layer)
+const ResolveConflictHandoff = z.object({
+  op: z.literal("resolve-conflict-handoff"),
+  worktreePath: z.string(),
+  conflictingFiles: z.array(z.string()),
+  lastWritingAgent: z.string(),
+  attempt: z.number().int().min(1).max(3),
+  mergeBaseSha: z.string().regex(/^[0-9a-f]{7,40}$/),
+  mainHeadSha: z.string().regex(/^[0-9a-f]{7,40}$/),
+  featureHeadSha: z.string().regex(/^[0-9a-f]{7,40}$/),
+});
+
+// emergency-abort
+const EmergencyAbort = z.object({
+  op: z.literal("emergency-abort"),
+  success: z.literal(true),
+  featureId: z.string(),
+  reason: z.string(),
+  cleanup: z.literal("worktree-removed"),
+});
+
+/**
+ * Plain z.union (not z.discriminatedUnion) because several ops have two
+ * variants sharing the same `op` value (bootstrap success vs failure,
+ * checkout-feature success vs failure, close-feature clean vs conflict).
+ * Zod v4 forbids duplicate discriminator values. z.union parses slightly
+ * slower but produces clean error messages; acceptable trade-off.
+ */
+export const GitAgentOutput = z.union([
+  BootstrapSuccess,
+  BootstrapFailure,
+  CheckoutFeatureSuccess,
+  CheckoutFeatureFailure,
+  CloseFeatureSuccess,
+  CloseFeatureConflict,
+  ResolveConflictHandoff,
+  EmergencyAbort,
+]);
+export type GitAgentOutput = z.infer<typeof GitAgentOutput>;

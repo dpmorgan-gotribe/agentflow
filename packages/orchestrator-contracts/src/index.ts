@@ -1,5 +1,10 @@
 // @repo/orchestrator-contracts — barrel
 // Zod schemas + TS types shared between the orchestrator runtime and agents.
-// Populated in Phase 2 of task-035.
+// Source of truth: scaffolding/09-034b-output-contract-zod-schemas.md
+// + schemas/*.schema.json.
 
-export {};
+export * from "./common.js";
+export * from "./stages.js";
+export * from "./tasks.js";
+export * from "./feature-context.js";
+export * from "./git-agent.js";
