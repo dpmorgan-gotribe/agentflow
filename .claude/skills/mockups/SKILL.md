@@ -3,7 +3,7 @@ name: mockups
 description: Generate N styles × M apps of HTML mockups and an interactive review index for style selection. Writes docs/selected-style.json on single-style runs; defers to HITL gate on multi-style runs.
 allowed-tools: Read Write Bash Grep Glob
 model: inherit
-argument-hint: "[count] [--nanobanana]"
+argument-hint: "[archetypes-per-app] [--nanobanana]"
 ---
 
 # /mockups — Style-selection gate
@@ -35,24 +35,59 @@ Second pipeline stage (after `/analyze` + `/skills-audit --scope=design`, before
 
 Two positional, both optional:
 
-- **`count` (integer, default 1)** — archetypes per app per style
+- **`archetypes-per-app` (integer, default 1)** — how many representative screens per app per style. NOT the number of styles — that's set by `/analyze --style-count=N` and read from `brief-summary.json.styleCount`.
 - **`--nanobanana`** (boolean flag) — whether the pipeline run includes `--flags=nanobanana`. The orchestrator propagates this; this skill trusts `.mcp.json` to reflect the correct provisioning.
 
-### Count behavior
+### `archetypes-per-app` behavior
 
-| `count`                      | Mockups generated                                                                                          | Purpose                                         |
+| Value                        | Mockups generated                                                                                          | Purpose                                         |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
 | `1` (default)                | `N × M × 1` — one archetype per app per style                                                              | Cheapest complete grid for style selection      |
 | `C > 1`                      | Up to `N × M × C` — C archetypes per app per style (capped per-app when fewer are available; emit warning) | Richer comparison when styles are close to tied |
-| `0` / negative / non-integer | Reject with error: `/mockups expects a positive integer count or no argument`                              | —                                               |
+| `0` / negative / non-integer | Reject with error: `/mockups expects a positive integer archetypes-per-app or no argument`                | —                                               |
+
+### Rejected arguments
+
+- **`--style-count` (or `--styleCount`, `--styles`, `-n`)** — REJECT immediately with:
+  ```
+  /mockups aborted: --style-count is an /analyze argument, not a /mockups one.
+  The number of styles (N) is set at analysis time and flows through
+  brief-summary.json.styleCount + docs/analysis/shared/styles.md.
+  To change N, re-run: /analyze --style-count=<N>
+  /mockups will then render exactly what /analyze produced.
+  ```
+  The `/mockups` skill reads N from `brief-summary.json`; it is NOT a per-invocation parameter.
 
 ## Steps
 
 ### 1. Parse arguments, load inputs
 
-Parse `$ARGUMENTS` into `count` and `nanobananaOn`. Read `brief-summary.json` to get `detectedPlatforms` + `styleCount`. Load `styles.md`, `assets.md`, `inspirations.md`, each `screens.json`, `asset-inventory.json`, and `brand-extracted.yaml` if present.
+**Reject unknown / misrouted flags BEFORE loading any input.** If `$ARGUMENTS` contains any of `--style-count`, `--styleCount`, `--styles`, `-n`, abort immediately with the message in the §Rejected arguments block above. These are `/analyze` flags, not `/mockups` flags.
 
-### 2. Validate per-style dials (refactor-002 compliance)
+Parse `$ARGUMENTS` into `archetypesPerApp` (positional, default 1) and `nanobananaOn` (flag). Read `brief-summary.json` to get `detectedPlatforms` + `styleCount` (this is the source of truth for N — do NOT accept N from the command line). Load `styles.md`, `assets.md`, `inspirations.md`, each `screens.json`, `asset-inventory.json`, and `brand-extracted.yaml` if present.
+
+### 2. Validate per-style dials AND styles.md ↔ brief-summary consistency
+
+**Consistency check** (refactor-003 — closes silent-drift hole):
+
+Count the number of `## Style N:` blocks in `docs/analysis/shared/styles.md`. Assert it equals `brief-summary.json.styleCount`. If they differ, abort immediately:
+
+```
+/mockups aborted: styles.md has {actual} `## Style` blocks but
+brief-summary.json says styleCount={expected}. The Analyst's output is out
+of sync with what it reported.
+
+Causes:
+- styles.md was hand-edited after /analyze ran
+- /analyze was interrupted mid-run
+- brief-summary.json was hand-edited
+
+Fix: re-run /analyze --style-count={desired N} to regenerate both in sync.
+Do NOT hand-patch one side — the downstream /stylesheet and /screens
+stages bind to brief-summary.styleCount as ground truth.
+```
+
+**Per-style dials validation** (refactor-002):
 
 For each of the N style blocks in `styles.md`, confirm the block has a Dials field with `design_variance`, `motion_intensity`, `visual_density` each as integers in 1–10. If any style is missing dials, abort immediately:
 
@@ -69,7 +104,7 @@ pipeline position (architect runs post-design per refactor-003).
 For each app in `detectedPlatforms`:
 
 - Read the app's `screens.json`
-- Apply the **archetype-selection algorithm** below to pick `count` screens:
+- Apply the **archetype-selection algorithm** below to pick `archetypesPerApp` screens:
   1. **home / dashboard / landing** — preferred index 0
   2. **list** — screen with `section === "list"` or `"index"`
   3. **detail** — `section === "detail"` or `"show"`
@@ -80,12 +115,12 @@ For each app in `detectedPlatforms`:
   8. **settings** — settings page
   9. **notification** / **toast** preview if relevant
 
-- Stop when `count` reached or list exhausted
+- Stop when `archetypesPerApp` reached or list exhausted
 - If classification is ambiguous, skip; never duplicate a screen
 
 **Fallback when no canonical home exists** (one-screen admin portals, calculators, kiosks): use the **first screen in `screens.json`** as the representative archetype. Record `archetype: "fallback-first-screen"` in the per-style manifest. Every app contributes at least one mockup regardless of how exotic its inventory is.
 
-If the effective archetype count for an app is `< count`, cap at what's available and record a warning: `warnings: ["app=mobile has only 4 archetypes; generated 4 instead of 5"]`.
+If the effective archetype count for an app is `< archetypesPerApp`, cap at what's available and record a warning: `warnings: ["app=mobile has only 4 archetypes; generated 4 instead of 5"]`.
 
 ### 4. Re-run idempotency — clean slate
 
@@ -137,18 +172,35 @@ After all `(app, archetype)` HTML files for style K are written:
 
 For every asset a mockup needs:
 
-| Asset                    | User has                                             | User missing + `--nanobanana` ON                          | User missing + `--nanobanana` OFF                           |
-| ------------------------ | ---------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------- |
-| Logo                     | `assets/logos/primary.svg`                           | Generate via `image-generator`, style-matched             | Wordmark rendered in style's display font; no symbolic logo |
-| Colors                   | `assets/colors.json` or `brand-extracted.yaml`       | Research-derived palette from styles.md (NEVER generated) | Same (palettes are never image-generated)                   |
-| Fonts                    | `assets/fonts/*.woff2` via `@font-face`              | Google Fonts URL from assets.md                           | Same                                                        |
-| Icons                    | `assets/icons/*.svg`                                 | `icons8` MCP by keyword                                   | Same                                                        |
-| Hero image               | `assets/images/*`                                    | `unsplash` MCP first, `image-generator` only on miss      | `unsplash` MCP only; CSS-gradient placeholder on miss       |
-| Empty-state illustration | `assets/illustrations/*`                             | Generate via `image-generator`                            | unDraw MIT vector set, inline SVG                           |
-| Avatars                  | `assets/avatars/*`                                   | `image-generator` for diverse placeholder portraits       | `picsum.photos/seed/{word}/64/64` — seeded, deterministic   |
-| Wireframes               | Read as layout blueprint via vision (agent consumes) | (same — wireframes are user-supplied only)                | (same)                                                      |
+| Asset                    | User has                                                                                  | User missing + `--nanobanana` ON                          | User missing + `--nanobanana` OFF                                                                   |
+| ------------------------ | ----------------------------------------------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Logo                     | `assets/logos/*` — reference via `<img src="relative-path">` — NEVER redraw as inline SVG | Generate via `image-generator`, style-matched             | Wordmark rendered in style's display font; no symbolic logo                                         |
+| Colors                   | `assets/colors.json` or `brand-extracted.yaml`                                            | Research-derived palette from styles.md (NEVER generated) | Same (palettes are never image-generated)                                                           |
+| Fonts                    | `assets/fonts/*.woff2` via `@font-face`                                                   | Google Fonts URL from assets.md                           | Same                                                                                                |
+| Icons                    | `assets/icons/*.svg`                                                                      | `icons8` MCP by keyword                                   | Same                                                                                                |
+| Hero image               | `assets/images/*`                                                                         | `unsplash` MCP first, `image-generator` only on miss      | `unsplash` MCP → `picsum.photos/seed/{seed}/{w}/{h}` deterministic → CSS-gradient only on full miss |
+| Empty-state illustration | `assets/illustrations/*`                                                                  | Generate via `image-generator`                            | unDraw MIT vector set, inline SVG                                                                   |
+| Avatars                  | `assets/avatars/*`                                                                        | `image-generator` for diverse placeholder portraits       | `picsum.photos/seed/{word}/64/64` — seeded, deterministic                                           |
+| Wireframes               | Read as layout blueprint via vision (agent consumes)                                      | (same — wireframes are user-supplied only)                | (same)                                                                                              |
 
 **Partial-wireframe rule.** Low-fidelity wireframes (sketches, whiteboard photos) contribute ONLY layout structure. Colors / typography / polish come from the style's palette regardless. Record provenance as `hybrid` in the manifest.
+
+### Anti-pattern: CSS tone-blocks as imagery substitute
+
+**This is the #1 cause of mockups shipping with no real imagery.** Subagents often try to be "helpful" by inlining CSS tone blocks (`div { background: #C9432A; aspect-ratio: 4/3 }`) wherever a hero image or case-study thumbnail belongs — skipping the `{{HERO:...}}` marker + Pass 2 resolution entirely. The result: mockups look like placeholders, not real designs.
+
+**Corollary anti-pattern: inline-redrawn user logo.** Subagents commonly try to be "helpful" by redrawing the user's logo as approximate inline SVG (e.g. "a simplified chameleon silhouette in `#6B9B37`"). This is the same failure mode — the rendered mockup doesn't show the user's actual brand mark, just a crude proxy. Hard rule: when `asset-inventory.json.logos` has a file, the mockup MUST reference it via `<img src="{relative-path-to-asset}" alt="..." class="brand-logo">` — NEVER redraw. The relative path from `docs/mockups/style-K/{app}/{screen}.html` back to `assets/logos/file.png` is `../../../../assets/logos/file.png` (four `..` hops: screen → app → style → mockups → docs → project root → assets). Verifier: grep each mockup HTML for `<svg` elements in `class="brand"` / `class="logo-"` / header regions — if found AND user has a logo file, flag as anti-pattern violation.
+
+**Related anti-pattern: duplicating the brand name as text next to the logo.** When a user supplies a logo file, treat the file as the COMPLETE brand lockup. Do NOT add an adjacent `<span>` / `<h1>` rendering the project name as text (e.g. `<img src="logo.png"> <span class="wordmark">gotribe</span>`). If the logo is just a mark (no wordmark baked in), that's a deliberate brand choice — respect it; the user knows their own logo better than the agent does. If the user wants a separate wordmark treatment in the mockup, they'll supply a second asset (e.g. `assets/logos/wordmark.svg`). Subagent prompts MUST instruct: "Render the logo as `<img>` only. Do NOT add text wordmark spans, `<h1>` brand names, or any text rendering of the project name adjacent to the logo." Verifier: grep each mockup for `<span class="[^"]*(?:wordmark|brand-word|logo-word|brand-name)[^"]*"` — if present, flag as anti-pattern violation and remove in cleanup.
+
+**Hard rule for Pass 1 subagent prompts:**
+
+1. For every hero / case-study / testimonial photo position, emit a `{{HERO:seed-name}}` marker. DO NOT inline CSS tone blocks as a permanent substitute.
+2. **Exception — the style's `characteristics` field explicitly prefers no imagery.** Example: Style 0 Pentagram-minimal, whose aesthetic IS tone-blocks-as-content. In that case, OMIT the marker entirely — don't emit `{{HERO:...}}` and don't expect Pass 2 to fill one. This is recorded in the per-style manifest as `imageryPolicy: "none"`.
+3. **Verifier:** after Pass 1 writes, grep each HTML for `aspect-ratio.*\/.*;\s*background:\s*#` patterns — a CSS tone-block is a 2-decimal-aspect-ratio div with a solid hex bg and no `<img>` child. If found AND the style's imageryPolicy is not `"none"`, flag as an anti-pattern violation and regenerate the single mockup once with the marker rule re-emphasised.
+4. Pass 2 then resolves `{{HERO:seed-name}}` via the hybrid fallback table above. With `--nanobanana` off, the chain is Unsplash MCP → picsum seeded → CSS-gradient only if both miss.
+
+Subagents getting this wrong is the default failure mode; explicit prompt-level forbidding is necessary.
 
 ### 6. Anti-slop self-check (before each Write)
 
@@ -281,7 +333,7 @@ Read `.claude/templates/mockups-index-template.html` + replace placeholders:
 | Placeholder            | Value                                                                                                                             |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `{{PROJECT_NAME}}`     | from `brief.md` §1                                                                                                                |
-| `{{MANIFEST_JSON}}`    | inlined JSON of all styles (same shape as top-level manifest.json, one entry per (style, app, archetype) cell when count > 1)     |
+| `{{MANIFEST_JSON}}`    | inlined JSON of all styles (same shape as top-level manifest.json, one entry per (style, app, archetype) cell when archetypesPerApp > 1)     |
 | `{{NANOBANANA_STATE}}` | `"on"` or `"off"`                                                                                                                 |
 | `{{IMAGE_BUDGET}}`     | static ceiling from `models.yaml.stages.mockups.imageGenCallsCap` (orchestrator-resolved) when nanobanana is on; omitted when off |
 | `{{GATE_API_BASE}}`    | base URL for the HITL gate server (e.g., `http://localhost:8733`); orchestrator (task 035) passes this as input at render time    |
@@ -419,7 +471,9 @@ After this skill completes, the orchestrator (task 035) invokes `/verify-html` (
 
 - `brief-summary.json` missing → abort: `/mockups requires /analyze output. Run /analyze first.`
 - Any style block in `styles.md` missing its Dials field → abort (see step 2)
-- `count` is 0 / negative / non-integer → reject with usage error
+- `archetypesPerApp` is 0 / negative / non-integer → reject with usage error
+- `--style-count` (or `--styleCount`, `--styles`, `-n`) passed → reject immediately: this is an `/analyze` argument, not a `/mockups` one (see §Rejected arguments)
+- `count(## Style blocks in styles.md) !== brief-summary.json.styleCount` → abort with drift message (see step 2 consistency check)
 - `.mcp.json` missing a server listed in `mcp-defaults-design.json` → warn but proceed; fallback table handles missing servers gracefully (e.g., Unsplash missing → CSS gradient placeholder)
 - Anti-slop self-check exceeds 1 retry → emit with residual warnings, don't block
 - Layer 4 hook rejects a Write → counted as anti-slop failure; same retry logic

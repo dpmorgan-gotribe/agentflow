@@ -19,7 +19,7 @@ orchestration pattern.
 
 From `$ARGUMENTS` extract (defaults in parens):
 
-- `--style-count N` (1) — number of styles to generate. Integer ≥1.
+- `--style-count N` (1) — number of styles to generate. Integer ≥1. This is the ONLY place N is set for the run — `/mockups` reads it from `brief-summary.json.styleCount` and renders exactly what the Analyst produced. To change N after `/analyze` has run, re-invoke `/analyze --style-count=<new N>`; do NOT pass `--style-count` to `/mockups` (the skill rejects it).
 - `--use-assets` (false) — asset-mode flag. Switches from `standard` to
   `useAssets` (all styles use user's colors/icons; variations are
   typography/spacing only).
@@ -389,13 +389,33 @@ styles.md:
 
 **NOT** a placeholder — real values from the styles.md block.
 
+**6e. Aggregate components across platforms (post-components-gap fix).**
+
+After every phase-4 `screens.json` is written + validated, invoke the components aggregator to produce a cross-platform component catalog that `/stylesheet` consumes at gate 3:
+
+```bash
+node scripts/aggregate-components.mjs
+```
+
+The script (factory-level, runs inside the project's CWD):
+
+1. Walks every `docs/analysis/{platform}/screens.json`
+2. De-dupes the union of `components[]` arrays across platforms
+3. Classifies each entry into one of four tiers using the canonical mapping (primitive / pattern / layout / project-specific composition)
+4. Counts per-component screen usage + platforms covered
+5. Writes `docs/analysis/shared/components.md` with four tier-tables + a coverage summary + a machine-readable JSON trailer (parsed by `/stylesheet`)
+
+This catalog is load-bearing: `/stylesheet` reads `components.md` to guarantee every analyst-identified component gets rendered in `docs/design-system-preview.html` and binds a `componentsApproved[]` list at HITL gate 3. Without it, project-specific compositions (e.g. `wallet-balance`, `vote-button`, `chat-bubble`) leak past the design-system review and end up consumed by `/screens` across hundreds of screens with no prior approval.
+
+If the script reports `success: false` or `uniqueComponents: 0` → abort and report. Likely cause: screens.json files malformed or missing `components[]` arrays.
+
 ### 7. Self-verification
 
 Before reporting complete, verify:
 
 - All required output files exist and non-empty:
   - `docs/asset-inventory.json`
-  - `docs/analysis/shared/{competitors,integrations-options,styles,assets,inspirations}.md`
+  - `docs/analysis/shared/{competitors,integrations-options,styles,assets,inspirations,components}.md`
   - `docs/analysis/{platform}/{flows.md,navigation-schema.md,screens.json,coverage.md}` per detected platform
   - `docs/requirements.md`
   - `docs/brief-summary.json`
