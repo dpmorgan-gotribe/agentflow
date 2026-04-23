@@ -101,7 +101,7 @@ _Builder agents consuming architecture.yaml + `.env` (populated at gate 5) + UI 
 _Testing, review, git, HTML verification._
 
 - [17 / 031 — Tester agent](archive/17-031-tester-agent.md) ✓ complete (feat-009)
-- [18 / 032 — Reviewer agent + output contract hooks](18-032-reviewer-agent.md) ← **NEXT (feat-010)**
+- [18 / 032 — Reviewer agent + output contract hooks](archive/18-032-reviewer-agent.md) ✓ complete (refactor-005 spec-refresh + feat-010 implementation)
 - [19 / 032b — HTML Verifier agent (Layer 6 defense-in-depth)](19-032b-html-verifier-agent.md)
 - [20 / 033 — Git Agent](archive/20-033-git-agent.md) ✓ complete (feat-007)
 
