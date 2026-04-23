@@ -84,7 +84,7 @@ _Zod schemas + output-contract enforcement + MCP registration + monorepo scaffol
 
 - [09 / 034b — Output contract Zod schemas (`StageSchemas` lookup for all 17 stages)](archive/09-034b-output-contract-zod-schemas.md) ✓ complete (task-035 Phase 2 + feat-005/006/008/009 extensions; 121 contract tests)
 - [10 / 034 — Output contract enforcement (6 layers — prompt / file / Zod / hook / retry / verifier)](10-034-output-contracts.md) _partial — Zod + validate-\*.mjs runners shipped; hook + retry enforcement shipped via orchestrator (task-035); full 6-layer audit pending_
-- [11 / 041 — MCP server registration (`/register-mcp-servers --scope=design|build`; dual-invocation per refactor-003)](11-041-mcp-server-registration.md)
+- [11 / 041 — MCP server registration (`/register-mcp-servers --scope=design|build`; dual-invocation per refactor-003)](archive/11-041-mcp-server-registration.md) ✓ complete (task-011)
 - [12 / 026 — Turborepo + pnpm workspace scaffold (invoked from /new-project step 5b)](12-026-turborepo-scaffold.md)
 - [13 / 027 — Shared packages skeleton — `@repo/{ui-kit, types, utils, api-client, orchestrator-contracts}` (invoked from /new-project step 5b)](13-027-shared-packages.md)
 
@@ -116,7 +116,7 @@ _The external TypeScript orchestrator + HITL gate mechanics that tie stages toge
 
 _Self-improvement loop, skills-audit split, App Store readiness, meta-agent._
 
-- [23 / 038 — Skills Agent (dual-scope: `--scope=design` runs pre-mockups, `--scope=build` runs post-architect)](23-038-skills-agent.md)
+- [23 / 038 — Skills Agent (dual-scope: `--scope=design` runs pre-mockups, `--scope=build` runs post-architect)](archive/23-038-skills-agent.md) ✓ complete (task-011)
 - [24 / 037 — Lessons Agent](24-037-lessons-agent.md)
 - [25 / 040 — App Store compliance layer](25-040-app-store-compliance.md) _post-MVP per roadmap_
 - [26 / 039 — Agent Expert (meta-agent for authoring + editing other agents)](26-039-agent-expert.md) _post-MVP per roadmap_

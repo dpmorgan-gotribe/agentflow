@@ -1,9 +1,10 @@
 ---
 id: task-011-registrar-skills
 type: feature
-status: approved
+status: completed
 approved-at: 2026-04-23
 approved-by: human
+completed-at: 2026-04-23
 author-agent: human
 created: 2026-04-23
 updated: 2026-04-23
@@ -125,4 +126,44 @@ Move plan to archive/, update active.md manifest. Optionally: if time permits, a
 
 ## Attempt Log
 
-<!-- Populated by executing agent. -->
+### Attempt 1 — 2026-04-23 (succeeded in single pass)
+
+2 phases, 1 commit:
+
+- Phase 1: shipped `.claude/agents/skills-agent.md` + `.claude/skills/skills-audit/SKILL.md` + `.claude/skills/register-mcp-servers/SKILL.md`. Both skills registered in available-skills list.
+- Phase 2: `pnpm generate mindapp-v2 --dry-run` now reports **"All remaining stages have their skills registered. Real invocation would start here."** First time ANY project's dry-run reaches this state.
+
+**All 12 Mode A stages detected as registered on mindapp-v2**:
+
+```
+✓ analyze / skills-audit-design / mockups / stylesheet / screens /
+✓ visual-review / user-flows / architect / pm
+→ skills-audit-build — skill present
+→ register-mcp-build — skill present
+→ git-agent-bootstrap — skill present
+```
+
+Resume point: `skills-audit-build` (next stage to actually invoke when orchestrator graduates from dry-run to live mode). Cumulative spend: $0.00 in dry-run.
+
+## Lessons Learned
+
+**Registrar skills are legitimately no-op-heavy for MVP projects.** Both skills took ~200 lines each to fully specify, but their real runtime behavior on mindapp-v2 / hatch is: read architecture.yaml, find zero missing stack skills + zero new MCP servers, return empty deltas, exit. The ceremony exists because the orchestrator's stage-walk contract requires every STAGES[] entry to have a skill file AND because real production projects (different stacks, custom vendor SDKs) will genuinely find gaps. Don't conflate "trivial in MVP" with "not worth building".
+
+**Bundling worked cheaply here.** One plan, one branch, one commit for two skills that share structural shape. Compare: feat-008 bundled 3 builders (also sensible) vs splitting feat-005 / feat-006 separately (also sensible). Heuristic: bundle when (a) structural duplication is >70% + (b) both skills clear the same dry-run halt class, OR when (a) + (b) combined with (c) neither individually justifies a full smoke test. Don't bundle when a single real-world smoke test per skill is load-bearing (builders each exercise different stack-skill shelf content).
+
+**Scope separation matters at the skill boundary, not just the agent.** Both skills enforce "design-scope never reads architecture.yaml; build-scope never re-registers design-scope MCPs". Without these boundaries, a single skill could technically run both scopes, but the invocation coupling would leak: the design-time invocation would pull in build-time concerns (architecture.yaml access) that don't exist yet, and the build-time invocation would re-register design MCPs that already landed. Scope-gate at the skill level = simpler mental model + better idempotency.
+
+**Feature-flag filtering lives on the MCP registrar, not the architect.** `image-generator` has `feature_flag: nanobanana`. When `--flags=nanobanana` is absent, register-mcp-servers puts it in `skipped[]` with reason. Architect doesn't know about feature flags (it just describes what the project needs); the registrar is the policy enforcer. Clean separation — architect's output is feature-flag-agnostic; registrar applies the runtime filter.
+
+## Follow-up Work Unblocked
+
+- **task-036 HITL gates** — last plan before the first live test. Replace orchestrator's gate-server stub (from task-035 Phase 9) with real HTTP server + add gate 6 (PR review before merge to main). Gate 6 is load-bearing for the autonomy target: after reviewer approves + close-feature merges, git-agent would create a PR; gate 6 blocks auto-merge-to-main until human approves.
+- **First live Mode B run against hatch** — ready in principle. Needs: task-036 gate server (so gate 6 works), `architect` + `pm` to run on hatch (produce architecture.yaml + tasks.yaml — hatch currently has design-tier only), then full Mode B. Estimated cost $10-20 realistic per earlier discussion.
+- **Stack-skill §Review / §Gotchas backfill** — flagged in feat-010 lessons. Single cleanup plan before first live Mode B run; otherwise reviewer emits `stack-review-block-missing` on every invocation.
+- **`--auto-author-stack-skills` real implementation** — deferred per Rejected Alternative B. If hatch or mindapp-v2 first run surfaces a missing stack skill, we bump this up.
+
+Follow-ups NOT tested here:
+
+- **Build-scope MCP registration with non-empty architecture.yaml mcp_servers list** — mindapp-v2's architecture.yaml has zero build-stage MCPs (only design-scope). First project with custom build-stage MCP servers exercises this path.
+- **Idempotency on repeat registrar invocations** — not exercised; live runs with orchestrator crash-recovery will test.
+- **Agent-frontmatter mutation** — register-mcp-servers appends to `mcp_servers` field; no project has exercised this yet (design MCPs were seeded at /new-project time, not via this skill).
