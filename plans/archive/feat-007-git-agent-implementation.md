@@ -1,9 +1,10 @@
 ---
 id: feat-007-git-agent-implementation
 type: feature
-status: approved
+status: completed
 approved-at: 2026-04-23
 approved-by: human
+completed-at: 2026-04-23
 author-agent: human
 created: 2026-04-23
 updated: 2026-04-23
@@ -136,4 +137,51 @@ All GitAgentOutput payloads from steps 2-5 get validated against `GitAgentOutput
 
 ## Attempt Log
 
-<!-- Populated by executing agent. -->
+### Attempt 1 — 2026-04-23 (succeeded across all 3 phases)
+
+3 commits on `feat/git-agent-implementation`:
+
+- Phase 1 (6ad69a5): `.claude/skills/git-agent/SKILL.md` (5-op dispatcher) + `.claude/worktrees/README.md` (factory-seed doc) + `scripts/validate-feature-context.mjs` (AJV lockfile runner) + `.gitignore` update (pattern `.claude/worktrees/*` + `!README.md` negation so README is tracked while worktree contents stay ignored).
+- Phase 2: dry-run smoke — `pnpm generate mindapp-v2 --dry-run` reports `→ git-agent-bootstrap — skill present at .claude/skills/git-agent`. Halt remains at `skills-audit-build` (earlier in the chain, out of this plan's scope).
+- Phase 3: live smoke test in isolated scratch repo — all 7 test scenarios PASS. Every return JSON validates against its GitAgentOutput Zod variant.
+- Fix commit (9d3a96d): post-Phase-3 spec fixes for 2 real gaps the smoke test surfaced (see Lessons below).
+
+**Phase 3 test matrix** (scratch repo at `/tmp/git-agent-smoke-<ts>`):
+
+1. bootstrap clean main → PASS (BootstrapSuccess)
+2. bootstrap dirty tree → PASS (BootstrapFailure with `reason: "uncommitted-changes"`)
+3. checkout-feature (new) → PASS (CheckoutFeatureSuccess + lockfile validator exit 0)
+4. checkout-feature (idempotent re-invocation) → PASS (opened_at preserved)
+5. synthetic builder commit + agent_history append → PASS (re-validate exit 0)
+6. close-feature (clean merge) → PASS (CloseFeatureSuccess + merge commit on main + worktree removed + closed-lockfile persisted)
+7. bootstrap post-close → PASS (new mainSha reflecting the merge)
+
+## Lessons Learned
+
+**Gap 1 (fixed): lockfile placement inside the worktree breaks `git worktree remove`.** The spec puts `.feature-context.json` at `.claude/worktrees/{slug}/.feature-context.json` — inside the worktree directory. But the lockfile is never committed to the feature branch, so `git status --porcelain` inside the worktree sees it as untracked + `git worktree remove` refuses with "contains modified or untracked files". **Fix applied in 9d3a96d**: checkout-feature step 5 now appends `.feature-context.json` to `.git/worktrees/{slug}/info/exclude` right after worktree creation. This is git's per-worktree equivalent of `.gitignore` — makes the lockfile invisible to status-check and worktree-remove without needing `--force` or moving the file.
+
+**Gap 2 (non-issue in factory, flagged for /new-project): sidecar `*.closed.json` / `*.aborted.json` files.** Subagent flagged these would fail bootstrap's "clean-tree" check on subsequent Mode B iterations. In the factory, `.gitignore` pattern `.claude/worktrees/*` (with `!README.md` negation) already excludes all sidecars from `git status --porcelain`. In a generated project, `/new-project` needs to copy the same pattern. **Follow-up**: audit `/new-project` step 3 to confirm it scaffolds this gitignore rule in project repos; add to a future cleanup plan if not already handled.
+
+**Gap 3 (fixed): `git branch -d` refuses when main isn't pushed to origin.** After `git merge --no-ff` locally, the merge commit exists on main but `origin/main` still points at the pre-merge sha. `git branch -d feat/hello` sees the feature branch tip as "not fully merged" relative to origin and refuses. **Fix applied in 9d3a96d**: close-feature step 6 now runs `git push origin main` before the local branch delete. This matches the spec's intent that every feature's history reaches origin for audit + CI, and makes the branch-delete safe (`-d`, not `-D`).
+
+**Idempotency contract works as designed.** Test 4's idempotent checkout-feature re-invocation returned the ORIGINAL `opened_at` timestamp — confirmed by the subagent. The skill's logic correctly: (a) detects the existing worktree, (b) reads the existing lockfile, (c) returns the cached payload WITHOUT re-running `git worktree add`. Critical for orchestrator crash-recovery.
+
+**Zod discriminated union parsing against a plain `z.union`.** GitAgentOutput is `z.union([...])` (not discriminatedUnion) because bootstrap/checkout-feature/close-feature each have success + failure variants sharing the same `op` discriminator value — Zod v4 forbids duplicate discriminator values (feat-005 lesson). z.union parses slightly slower but handles the shape correctly. Subagent confirmed all 7 return JSONs parse cleanly against the union.
+
+**Factory git state never touched.** Smoke test ran entirely in a scratch repo at `/tmp/git-agent-smoke-<timestamp>`. Post-test `rm -rf` cleaned up the scratch + bare-origin repos. Factory `.git` was never a target of any git command. Good isolation pattern to reuse for feat-008 builder smoke tests.
+
+**Windows `node -e` + shell interpolation note.** `/tmp/...` paths written inside `node -e "..."` one-liners get rewritten to `C:\tmp\...` by Git Bash on Windows. Not a skill bug — a tooling note for future smoke-test authors. Prefer `cd <tmpdir> && node script.mjs` or write a real .mjs file rather than interpolating raw paths via shell.
+
+## Follow-up Work Unblocked
+
+Mode B is now fully functional at the skill layer:
+
+- **feat-008 builder runtimes** (backend + web + mobile bundled, ~1500 LOC) — builders can now be smoke-tested end-to-end against the full `invokeAgent → checkout-feature → execute-tasks → close-feature` loop driven by orchestrator's `runFeature`. Before feat-007, builders could only be tested in isolation (direct skill invocation).
+- **feat-009 tester + feat-010 reviewer** — same unlock; last 2 agents in the typical `agent_sequence[]`.
+- **task-010 skills-audit** + **task-011 register-mcp-servers** — the remaining dry-run halt stages. Registrar work; can ship anytime before the first live Mode B run against mindapp-v2.
+
+Follow-ups NOT yet validated:
+
+- **Merge conflict routing via resolve-conflict-handoff** — Phase 3 did NOT exercise this path (synthesizing a realistic cross-agent conflict in a scratch repo is overhead that doesn't match the skill's risk surface). Will be validated implicitly when feat-008 + feat-009 builders introduce real work that occasionally conflicts during concurrent feature merges.
+- **emergency-abort** — not invoked in Phase 3. Same reason: deferring to the first real retry-ladder exhaustion in live Mode B.
+- **Concurrent feature worktrees** (e.g. 4 features running in parallel per default `maxConcurrentFeatures=4`) — not tested at this layer; exercised indirectly through orchestrator's `runFeatureGraph` already (task-035 has 12 tests covering the feature-graph scheduler).
