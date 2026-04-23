@@ -12,3 +12,4 @@ export * from "./architect.js";
 export * from "./pm.js";
 export * from "./builder.js";
 export * from "./tester.js";
+export * from "./reviewer.js";
