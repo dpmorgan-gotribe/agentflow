@@ -113,6 +113,45 @@ Builder self-verify gate: `pnpm --filter @repo/web lint && pnpm --filter @repo/w
 - **Server actions (`"use server"`) leak fn names in the bundle as route paths.** Fine for internal use; don't expose to untrusted callers without auth guards.
 - **Tailwind `@apply` inside kit CSS** — kit styles compile at kit-build time, not at consumer build time. Don't add new `@apply` rules in `apps/web/` — extend the kit instead or use className directly.
 
+## Review
+
+Stack-specific checks the reviewer agent runs IN ADDITION to `docs/reviewer-playbook.md`'s generic 7 dimensions. Scope: files in the feature's diff under `apps/web/`.
+
+#### security — `dangerouslySetInnerHTML` usage
+
+- **Invocation**: `grep -rnE "dangerouslySetInnerHTML" apps/web/`
+- **Threshold**: every hit must be accompanied by an `isomorphic-dompurify` / `DOMPurify.sanitize` call on the same or immediately-adjacent line; raw HTML from user input with no sanitizer is a fail
+- **Retry target**: web-frontend-builder
+- **Playbook §**: augments §2.2 XSS
+
+#### performance — `<img>` vs `next/image`
+
+- **Invocation**: `grep -rnE "<img\s" apps/web/`
+- **Threshold**: zero hits outside of `apps/web/**/icon-*.tsx` or `<svg><image>` patterns — `next/Image` handles LCP + CLS + format negotiation; raw `<img>` breaks the bundle-budget gate
+- **Retry target**: web-frontend-builder
+- **Playbook §**: augments §6 performance (LCP + bundle-budget sub-checks)
+
+#### architecture — server vs client boundary
+
+- **Invocation**: `grep -rlE "useState|useEffect|useRef|onClick=|onChange=" apps/web/` → cross-reference against `grep -L "^\"use client\"" <file>`
+- **Threshold**: every file that uses interactivity hooks / event handlers MUST declare `"use client"` at the top. Cross-check opposite direction too: `grep -rlE "async function.*\{" apps/web/app/` — async server components must NOT also declare `"use client"`
+- **Retry target**: web-frontend-builder
+- **Playbook §**: augments §1 architecture (Next 15 App Router layering)
+
+#### a11y — icon-only buttons without accessible label
+
+- **Invocation**: `grep -rnB1 -A3 "<Button" apps/web/ | grep -E "<(Icon|svg)" | grep -vE "aria-label|aria-labelledby"`
+- **Threshold**: every icon-only button has `aria-label` OR wraps an `<sr-only>` span with descriptive text
+- **Retry target**: web-frontend-builder
+- **Playbook §**: augments §5 a11y
+
+#### architecture — secrets in client bundle
+
+- **Invocation**: `grep -rnE "process\.env\.[A-Z_]+" apps/web/` then cross-reference each match against `.env.example` — any env-var name WITHOUT `NEXT_PUBLIC_` prefix referenced inside a `"use client"` file or server action exposed to a client is a fail
+- **Threshold**: zero hits of non-`NEXT_PUBLIC_` env-vars reachable from client bundle
+- **Retry target**: web-frontend-builder
+- **Playbook §**: augments §2 security (secret-leak sub-check)
+
 ## 6. Dependency pins
 
 ```

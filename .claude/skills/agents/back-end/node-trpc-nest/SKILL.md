@@ -132,6 +132,45 @@ Builder self-verify gate: `pnpm --filter @repo/api lint && pnpm --filter @repo/a
 - **Prisma generator output is stateful.** `pnpm prisma generate` writes into `node_modules/.prisma/client`. After pulling schema changes, re-run generate or types drift. CI: add `postinstall` hook.
 - **Webhooks need raw body.** Stripe / Twilio webhook signature verification requires the unmodified request body. NestJS default JSON parser consumes it — configure a RawBodyMiddleware on just the webhook routes.
 
+## Review
+
+Stack-specific checks the reviewer agent runs IN ADDITION to `docs/reviewer-playbook.md`'s generic 7 dimensions. Scope: files in the feature's diff under `apps/api/`.
+
+#### architecture — tRPC procedure return-type inference
+
+- **Invocation**: `grep -rnE "(query|mutation)\s*\(.*\)\s*:\s*any" apps/api/src/`
+- **Threshold**: zero hits (`: any` on a tRPC procedure breaks end-to-end type inference for every consumer)
+- **Retry target**: backend-builder
+- **Playbook §**: augments §1 architecture + §4 maintainability
+
+#### security — raw-body middleware on webhook routes
+
+- **Invocation**: for every integration in `architecture.yaml.apps.api.integrations` that posts webhooks (stripe, twilio, sendgrid, etc.), grep the webhook controller path for `rawBody` / `RawBodyInterceptor`: `grep -rnE "rawBody|RawBodyInterceptor|raw:\s*true" apps/api/src/`
+- **Threshold**: ≥1 match per webhook-receiving integration (signature-verification impossible without raw body)
+- **Retry target**: backend-builder
+- **Playbook §**: augments §2 security (webhook-integrity sub-check)
+
+#### security — ConfigModule schema validation at bootstrap
+
+- **Invocation**: `grep -rnE "validationSchema\s*:|ConfigModule\.forRoot" apps/api/src/app.module.ts apps/api/src/main.ts`
+- **Threshold**: ≥1 match referencing `validationSchema:` with Zod/Joi; fail if `process.env.X!` non-null assertions appear outside the validated config boundary
+- **Retry target**: backend-builder
+- **Playbook §**: augments §2.9 input-validation (applies at service boundary)
+
+#### performance — Prisma N+1 detection
+
+- **Invocation**: `grep -rnB1 -A3 "\.map\(" apps/api/src/ | grep -E "prisma\.(\w+)\.(findUnique|findFirst)"`
+- **Threshold**: zero hits — `.map()` callbacks issuing per-item `findUnique` are N+1 queries; use `findMany({ where: { id: { in: ids } } })` or `prisma.$transaction([])` instead
+- **Retry target**: backend-builder
+- **Playbook §**: augments §6 performance (db-latency sub-check)
+
+#### maintainability — circular module dependencies
+
+- **Invocation**: `grep -rnE "forwardRef\s*\(" apps/api/src/`
+- **Threshold**: ≤1 hit total, and every hit requires a `// justification:` comment naming why the circularity can't be broken by module split
+- **Retry target**: backend-builder
+- **Playbook §**: augments §4 maintainability
+
 ## 6. Dependency pins
 
 ```

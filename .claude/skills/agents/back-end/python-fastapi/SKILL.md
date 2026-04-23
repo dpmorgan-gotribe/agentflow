@@ -149,6 +149,45 @@ Builder self-verify gate: `uv run ruff check api && uv run mypy api && uv run py
 - **`uvicorn --reload` in dev vs `fastapi dev`.** `fastapi dev` is the newer unified wrapper (FastAPI 0.110+); older examples use `uvicorn api.main:app --reload`. Stick with `fastapi dev` for consistency.
 - **Webhook signature verification needs raw body.** FastAPI's default JSON parser consumes the body. Register a dependency that reads `request.body()` BEFORE JSON parsing — see `api/common/raw_body.py` pattern.
 
+## Review
+
+Stack-specific checks the reviewer agent runs IN ADDITION to `docs/reviewer-playbook.md`'s generic 7 dimensions. Scope: files in the feature's diff under `apps/api/`.
+
+#### security — SQL string interpolation
+
+- **Invocation**: `grep -rnE "(execute|from_statement)\s*\(\s*[fF]\"(SELECT|INSERT|UPDATE|DELETE)" apps/api/`
+- **Threshold**: zero hits — SQLAlchemy f-string SQL is the classic injection vector; use `text(":param")` bound parameters or the ORM query builder
+- **Retry target**: backend-builder
+- **Playbook §**: augments §2.1 SQL injection
+
+#### security — raw-body dependency for webhooks
+
+- **Invocation**: for every webhook-receiving integration in `architecture.yaml.apps.api.integrations`, grep the corresponding router: `grep -rnE "raw_body|request\.body\(\)" apps/api/`
+- **Threshold**: ≥1 match per webhook integration (signature verification fails without the untouched body)
+- **Retry target**: backend-builder
+- **Playbook §**: augments §2 security (webhook-integrity sub-check)
+
+#### performance — sync def inside async app
+
+- **Invocation**: identify endpoint handlers that await I/O: `grep -rnB1 -A5 "@router\.(get|post|put|patch|delete)" apps/api/ | grep -B5 "await " | grep -E "^\s*def "`
+- **Threshold**: zero hits — every handler that awaits MUST be declared `async def`; a sync wrapper around an `await` blocks the event loop
+- **Retry target**: backend-builder
+- **Playbook §**: augments §6 performance (event-loop-blocking sub-check)
+
+#### architecture — response_model coverage on endpoints
+
+- **Invocation**: `grep -rnE "@router\.(get|post|put|patch|delete)" apps/api/ | grep -vE "response_model="`
+- **Threshold**: zero hits — every endpoint names a Pydantic `response_model=` (schema-driven API contract binds to tasks.yaml + brief §11)
+- **Retry target**: backend-builder
+- **Playbook §**: augments §1 architecture + §7 brief-delivery
+
+#### security — Depends() auth on protected routes
+
+- **Invocation**: for every route in `architecture.yaml.apps.api.routes` with `authRequired: true`, grep the router file: `grep -nE "Depends\((get_current_user|require_auth|verify_token)\)" apps/api/routers/<file>.py`
+- **Threshold**: ≥1 `Depends(...)` auth dependency per auth-required route
+- **Retry target**: backend-builder
+- **Playbook §**: augments §2 security (auth-bypass sub-check)
+
 ## 6. Dependency pins
 
 Via `pyproject.toml` (uv-managed):

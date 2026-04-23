@@ -124,6 +124,45 @@ EAS Build for production artifacts — requires `eas.json` + an EAS account. In 
 - **EAS update channels vs release channels**. `channels` (new) replaces `release-channels` (old). Mixing the two in `eas.json` causes OTA updates to fail silently. Pick one.
 - **`react-native` vs `react-native-web`**. The `.native.tsx` resolution handles native; web side needs `react-native-web` aliased in Vite / Webpack. Not relevant for a pure mobile app; relevant if `apps/web` also consumes RN primitives.
 
+## Review
+
+Stack-specific checks the reviewer agent runs IN ADDITION to `docs/reviewer-playbook.md`'s generic 7 dimensions. Scope: files in the feature's diff under `apps/mobile/`.
+
+#### security — secrets via SecureStore, not AsyncStorage
+
+- **Invocation**: `grep -rnE "AsyncStorage\.(setItem|getItem)" apps/mobile/` → cross-reference each match against the key name: any key containing `token`, `secret`, `jwt`, `refresh`, `password`, `pin` is a fail
+- **Threshold**: sensitive keys must use `expo-secure-store`'s `SecureStore.setItemAsync` / `getItemAsync` (iOS Keychain / Android EncryptedSharedPreferences); AsyncStorage is unencrypted plaintext
+- **Retry target**: mobile-frontend-builder
+- **Playbook §**: augments §2 security (secret-storage sub-check)
+
+#### performance — FlatList vs ScrollView for long lists
+
+- **Invocation**: `grep -rnB2 -A6 "<ScrollView" apps/mobile/` → flag any ScrollView that maps an array with length unbounded or user-fed (look for `.map(` inside the ScrollView body OR data from props/api)
+- **Threshold**: lists with a dynamic / potentially unbounded item count must use `FlatList` (or `FlashList` from Shopify) — ScrollView renders ALL children immediately, causing jank at ≥50 items
+- **Retry target**: mobile-frontend-builder
+- **Playbook §**: augments §6 performance (list-virtualization sub-check)
+
+#### performance — Image vs expo-image
+
+- **Invocation**: `grep -rnE "from 'react-native'" apps/mobile/ | grep -E "Image[,}]"` (named import of Image from react-native)
+- **Threshold**: zero hits in production components — `expo-image` provides better caching, blurhash placeholders, and GIF/WebP support; `react-native/Image` is a fallback only
+- **Retry target**: mobile-frontend-builder
+- **Playbook §**: augments §6 performance (image-loading sub-check)
+
+#### a11y — accessibilityLabel on Pressable / TouchableOpacity
+
+- **Invocation**: `grep -rnB1 -A3 "<(Pressable|TouchableOpacity|TouchableHighlight)" apps/mobile/ | grep -vE "accessibilityLabel=|accessibilityRole="`
+- **Threshold**: every pressable wrapping icon-only content has `accessibilityLabel`; every custom pressable with no text content has `accessibilityRole="button"`
+- **Retry target**: mobile-frontend-builder
+- **Playbook §**: augments §5 a11y (TalkBack / VoiceOver support)
+
+#### architecture — Expo Router file conventions
+
+- **Invocation**: confirm per-feature route files adhere to Expo Router conventions: `find apps/mobile/app -name "_layout.tsx" -o -name "+not-found.tsx"` in the diff's app subtree; each tab / stack group MUST have a `_layout.tsx` parent
+- **Threshold**: every new directory under `apps/mobile/app/` containing ≥2 route files has a `_layout.tsx` sibling (or inherits from a parent `_layout.tsx`)
+- **Retry target**: mobile-frontend-builder
+- **Playbook §**: augments §1 architecture
+
 ## 6. Dependency pins
 
 ```

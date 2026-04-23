@@ -112,6 +112,45 @@ dev:       pnpm --filter @repo/web dev
 - **Hydration + `$state` initial value mismatch.** If the server renders with one `$state` initial value and the client hydrates with another, you get the same mismatch warning as React. Use the same `load()` data source on both sides.
 - **`use:enhance` required for progressive form behavior.** Without it, form actions full-page-reload on submit; with it, the client intercepts + updates without navigation. Always add `use:enhance` to forms that the user interacts with frequently.
 
+## Review
+
+Stack-specific checks the reviewer agent runs IN ADDITION to `docs/reviewer-playbook.md`'s generic 7 dimensions. Scope: files in the feature's diff under `apps/web/`.
+
+#### security — secrets in `+page.svelte`
+
+- **Invocation**: `grep -rnE "process\.env\.|import\.meta\.env\." apps/web/src/routes/**/+page.svelte`
+- **Threshold**: zero hits inside `+page.svelte` files — server-only secrets belong in `+page.server.ts`; exposed env vars must be prefixed `PUBLIC_` (Vite convention) AND only touched in the client-side `<script>` of a page
+- **Retry target**: web-frontend-builder
+- **Playbook §**: augments §2 security (secret-leak sub-check)
+
+#### architecture — DB / auth access only in `+page.server.ts` / `+server.ts`
+
+- **Invocation**: `grep -rnE "(prisma|drizzle|supabaseClient|auth\(\))" apps/web/src/routes/**/+page.svelte apps/web/src/lib/**/*.svelte`
+- **Threshold**: zero hits — DB clients + server-side auth flows run only in `+page.server.ts` / `+server.ts` endpoints. A DB client imported into a `.svelte` component ships to the client bundle
+- **Retry target**: web-frontend-builder
+- **Playbook §**: augments §1 architecture (SvelteKit server boundary) + §2 security
+
+#### performance — parallel promises in load()
+
+- **Invocation**: `grep -rnB2 -A10 "export const load\s*=" apps/web/src/routes/` filter for sequential `await`s: look for `const a = await ...; const b = await ...` patterns with no inter-dependency
+- **Threshold**: sequential `await`s that could run in parallel are a fail; use `const [a, b] = await Promise.all([fetchA, fetchB])` — LCP penalty scales with the number of sequential awaits
+- **Retry target**: web-frontend-builder
+- **Playbook §**: augments §6 performance (LCP sub-check)
+
+#### security — form actions + CSRF
+
+- **Invocation**: in `svelte.config.js`: `grep -nE "csrf\s*:" svelte.config.js`. For each form-action file: `grep -rnE "export const actions\s*=" apps/web/src/routes/**/+page.server.ts` cross-referenced with `use:enhance` in the matching `+page.svelte`
+- **Threshold**: `csrf.checkOrigin` is NOT set to `false` in svelte.config.js; every form action's matching `+page.svelte` uses `<form method="post" use:enhance>` (or explicit `action="?/name"` with kit CSRF defaults)
+- **Retry target**: web-frontend-builder
+- **Playbook §**: augments §2 security (CSRF sub-check)
+
+#### a11y — click handlers on non-interactive elements
+
+- **Invocation**: `grep -rnE "on:click=" apps/web/src/` → cross-reference with the enclosing element tag (skip `<button>`, `<a href>`, `<input>`, `<select>`, `<textarea>`)
+- **Threshold**: zero hits on `<div>` / `<span>` / `<p>` / `<li>` without `role="button"` + `tabindex="0"` + keyboard handler (`on:keydown` filtering `Enter` / `Space`)
+- **Retry target**: web-frontend-builder
+- **Playbook §**: augments §5 a11y
+
 ## 6. Dependency pins
 
 ```

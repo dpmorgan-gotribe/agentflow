@@ -72,7 +72,23 @@ Builders run `lint && typecheck && test` as a self-verify gate. Failure there re
 
 Concrete failure modes this stack commonly exhibits, and how to sidestep them. Each bullet names the symptom + the fix. Examples for react-next: "Hydration mismatch when using `Date.now()` in a client component — hoist into `useEffect` or use `next/dynamic` with `ssr: false`." Examples for python-fastapi: "Circular imports between `models.py` and `schemas.py` — split into `models/` package with lazy references via `TYPE_CHECKING`."
 
-### 6. Dependency pins
+### 6. Review
+
+Stack-specific checks the **reviewer** agent runs IN ADDITION to `docs/reviewer-playbook.md`'s generic 7 dimensions. Builder-facing guidance lives in §Gotchas + §Anti-patterns above; this section is reviewer-facing pass/fail criteria.
+
+Format per check:
+
+```
+#### <dimension> — <concern>
+Invocation:  <exact grep or command>
+Threshold:   <pass/fail rule>
+Retry target: <backend-builder | web-frontend-builder | mobile-frontend-builder>
+Playbook §:  <which generic dimension this augments, e.g. "§1 architecture" or "§6 performance">
+```
+
+Each stack skill MUST ship ≥3 stack-specific checks in this section. The reviewer loads this block verbatim via `.claude/skills/reviewer/SKILL.md` step 2 (filter-then-load). Missing block → reviewer emits `stack-review-block-missing: <slug>` warning and falls back to the generic playbook only.
+
+### 7. Dependency pins
 
 Exact versions for everything the builder should install + why. Pin major version at minimum; pin exact patch for anything known-flaky. Include a `dependencyPinsRefreshedAt` date in frontmatter — if the date is older than 90 days, `/skills-audit --scope=build` flags the skill for refresh.
 
