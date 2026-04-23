@@ -68,6 +68,7 @@ function buildFeature(overrides: Partial<Feature> = {}): Feature {
         depends_on: [],
         skills: [],
         status: "pending",
+        screens: [],
       },
       {
         id: "auth-tests",
@@ -75,6 +76,7 @@ function buildFeature(overrides: Partial<Feature> = {}): Feature {
         depends_on: [],
         skills: [],
         status: "pending",
+        screens: [],
       },
       {
         id: "auth-review",
@@ -82,6 +84,7 @@ function buildFeature(overrides: Partial<Feature> = {}): Feature {
         depends_on: [],
         skills: [],
         status: "pending",
+        screens: [],
       },
     ],
     ...overrides,
@@ -173,6 +176,7 @@ describe("runFeature — happy path", () => {
           depends_on: [],
           skills: [],
           status: "pending",
+          screens: [],
         },
         {
           id: "mobile-ui",
@@ -180,6 +184,7 @@ describe("runFeature — happy path", () => {
           depends_on: [],
           skills: [],
           status: "pending",
+          screens: [],
         },
         {
           id: "tests",
@@ -187,6 +192,7 @@ describe("runFeature — happy path", () => {
           depends_on: [],
           skills: [],
           status: "pending",
+          screens: [],
         },
       ],
     });
@@ -228,6 +234,7 @@ describe("runFeature — happy path", () => {
           depends_on: [],
           skills: [],
           status: "pending",
+          screens: [],
         },
         // no tester task, no reviewer task
       ],
@@ -269,6 +276,7 @@ describe("runFeature — per-task retry", () => {
           depends_on: [],
           skills: [],
           status: "pending",
+          screens: [],
         },
       ],
     });
@@ -309,6 +317,7 @@ describe("runFeature — per-task retry", () => {
           depends_on: [],
           skills: [],
           status: "pending",
+          screens: [],
         },
       ],
     });
@@ -357,6 +366,7 @@ describe("runFeature — merge conflict routing", () => {
           depends_on: [],
           skills: [],
           status: "pending",
+          screens: [],
         },
       ],
     });
@@ -422,6 +432,7 @@ describe("runFeature — merge conflict routing", () => {
           depends_on: [],
           skills: [],
           status: "pending",
+          screens: [],
         },
       ],
     });
@@ -554,6 +565,7 @@ describe("runFeatureGraph — topological order + parallel execution", () => {
           depends_on: [],
           skills: [],
           status: "pending",
+          screens: [],
         },
       ],
       agent_sequence: ["backend-builder"],
@@ -569,6 +581,7 @@ describe("runFeatureGraph — topological order + parallel execution", () => {
           depends_on: [],
           skills: [],
           status: "pending",
+          screens: [],
         },
       ],
       agent_sequence: ["mobile-frontend-builder"],
@@ -762,6 +775,7 @@ describe("runFeature — gate 6 (pr-review) integration", () => {
           depends_on: [],
           skills: [],
           status: "pending",
+          screens: [],
         },
       ],
     });

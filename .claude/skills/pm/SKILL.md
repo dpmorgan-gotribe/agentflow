@@ -71,6 +71,37 @@ For each flow in `docs/analysis/{platform}/flows.md`:
 1. Create a feature (if not already created by integration grouping above).
 2. Tasks inside: one backend-builder task for any API endpoint implied by the flow, one frontend-builder task per relevant platform, one tester task, one reviewer task.
 
+### 2b. Resolve screens per frontend task (feat-012)
+
+Between grouping (step 2) and composition (step 3), bind each frontend task to its explicit screen set. This replaces the wildcard `docs/screens/{platform}/*.html` scope with an authoritative per-task list so builders know exactly which screens they own.
+
+Inputs:
+
+- `docs/analysis/{platform}/flows.md` — per-platform flows with `**Screens**:` sequences (`welcome.html → signup.html → ...`)
+- `docs/screens-manifest.json` — authoritative `files[]` with `{ path, platform, screenId, sha256 }` entries (produced by `/screens` — exists when PM runs per the refactor-003 ordering: `pm` depends on `architect` → `user-flows` → `visual-review` → `screens`)
+
+Algorithm, per frontend task (`agent` is `web-frontend-builder` or `mobile-frontend-builder`):
+
+1. Identify the feature's originating flow(s) (via `brief_reference` / the integration-flow mapping from step 2)
+2. Extract screen filenames from each flow's `**Screens**:` section (strip `.html`, split on `→` + `,` whitespace)
+3. For each filename, match against `screens-manifest.files[]` where `platform` equals the task's surface (`webapp` for web-frontend-builder; `mobile` for mobile-frontend-builder)
+4. Populate `task.screens[]` with the matched `{platform}/{screenId}` strings. De-dupe; preserve flow order where possible.
+
+Example: `feat-auth` maps to flow 1 in `docs/analysis/webapp/flows.md` whose screens are `welcome.html → signup.html → verify-email.html`; manifest has matching entries. The web-frontend-builder task gets:
+
+```yaml
+screens: [webapp/welcome, webapp/signup, webapp/verify-email]
+```
+
+Non-frontend tasks (backend-builder / tester / reviewer / devops) MUST leave `screens` unset (Zod superRefine rejects otherwise).
+
+**Overlap detection.** After all features + tasks have their `screens[]` populated, scan for any `{platform}/{screenId}` that appears on tasks in ≥2 different features. For each collision:
+
+- Emit `tasks.yaml.warnings[]`: `screen-overlap: {platform}/{screenId} claimed by feat-A, feat-B — flow decomposition likely wrong; reconcile at gate 4`
+- DO NOT auto-resolve. This signals that the Analyst's flow grouping placed a shared screen in two flows; human should adjust flows.md and re-run PM.
+
+**Empty-screens warning.** If a frontend task on a non-skipped surface has `screens.length === 0`, emit `tasks.yaml.warnings[]`: `frontend-task-zero-screens: feat-X task-Y — kit-only or routing-only work, or missing flow mapping`. Warning only; some UI work is kit-scaffolding and doesn't touch named screens.
+
 ### 3. Compose tasks.yaml structure
 
 ```yaml
@@ -102,7 +133,8 @@ features:
         skills: [stack-skill-slug-1, vendor-skill-slug-2]
         priority: P0|P1|P2|P3
         integration_ref: architecture.yaml#apps.api.integrations.payments # when applicable
-        estimated_screens: N # on frontend tasks
+        estimated_screens: N # on frontend tasks (count — advisory)
+        screens: [webapp/login, webapp/signup] # feat-012: REQUIRED on frontend tasks (exact scope); MUST be absent/[] on backend/tester/reviewer/devops
         status: pending
         summary: "..."
 summary_counts:
@@ -121,6 +153,7 @@ Before writing:
 2. DFS-walk `feature.depends_on[]` to detect cycles. On cycle: reshape the graph (break the cycle at the lowest-priority edge) or surface as a warning + abort.
 3. For each task, confirm `task.depends_on[]` entries all resolve to other task.id values **within the same feature**. Cross-feature deps belong at `feature.depends_on`; move them up if present.
 4. For each integration in architecture.yaml with `requiredNow: true`, confirm at least one `P0` task references it via `integration_ref`. If not, bump the corresponding task to P0 or emit a warning.
+5. **Screens ownership (feat-012)**. Non-frontend tasks (`backend-builder` / `tester` / `reviewer` / `security` / `devops`) MUST have `screens: []`. Zod superRefine rejects otherwise at validation time; catch earlier by refusing to populate the field. Frontend tasks on a non-skipped surface SHOULD have ≥1 screen entry; zero-screen frontend tasks emit a warning (see step 2b).
 
 ### 5. Write + validate
 

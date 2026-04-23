@@ -33,12 +33,17 @@ Every component you write composes from `@repo/ui-kit` primitives + patterns + l
 
 ## Screen-to-code translation
 
-Your feature's screens live at `docs/screens/webapp/*.html` — composed by `/screens` from the UI kit. Each screen has `data-kit-*` attributes identifying the primitive/pattern it composes (e.g., `data-kit-primitive="Button"`, `data-kit-variant="primary"`). Use these attributes as the deterministic map from HTML → JSX (or Svelte / Vue / Solid / etc. per the stack skill):
+Your scope is **exactly** `feature.tasks.filter(t => t.agent === "web-frontend-builder").flatMap(t => t.screens)` — the per-task `screens[]` list populated by PM (feat-012). Each entry is `webapp/{screenId}`, resolvable to `docs/screens/webapp/{screenId}.html`. Do NOT process screens outside this list; do NOT read `docs/screens/webapp/*.html` as a wildcard.
 
-1. Parse the screen HTML; walk the DOM.
-2. For each `data-kit-*`-annotated node, emit the corresponding primitive import + JSX.
-3. Preserve the kit's variant props (`variant="primary"` → `<Button variant="primary">`).
-4. Interactive elements (forms, buttons, navigation) get wired to tRPC / REST endpoints from the backend-builder's committed code (same feature, earlier in `agent_sequence[]`).
+If `task.screens` is empty for all your tasks on this feature, treat as a kit-only / routing-only task (a warning was emitted by PM); proceed without screen translation and focus on the task's `summary` + `notes`.
+
+Screens are composed by `/screens` from the UI kit. Each screen has `data-kit-*` attributes identifying the primitive/pattern it composes (e.g., `data-kit-primitive="Button"`, `data-kit-variant="primary"`). Use these attributes as the deterministic map from HTML → JSX (or Svelte / Vue / Solid / etc. per the stack skill):
+
+1. For each scoped `{platform}/{screenId}` entry, resolve to `docs/screens/webapp/{screenId}.html`. If the file is missing → abort with `screen-precondition-failed: webapp/{screenId} declared in task.screens[] but file not in docs/screens/` (PM's mapping drifted from /screens output; surface to orchestrator).
+2. Parse the screen HTML; walk the DOM.
+3. For each `data-kit-*`-annotated node, emit the corresponding primitive import + JSX.
+4. Preserve the kit's variant props (`variant="primary"` → `<Button variant="primary">`).
+5. Interactive elements (forms, buttons, navigation) get wired to tRPC / REST endpoints from the backend-builder's committed code (same feature, earlier in `agent_sequence[]`).
 
 ## Worktree CWD awareness
 
@@ -62,16 +67,16 @@ Set `last_writing_agent: "web-frontend-builder"`. Re-validate via `scripts/valid
 
 ## Inputs
 
-| Input                                                   | Source                                   | Purpose                                             |
-| ------------------------------------------------------- | ---------------------------------------- | --------------------------------------------------- |
-| `.claude/architecture.yaml`                             | `/architect` output                      | Stack + web integrations                            |
-| `docs/tasks.yaml`                                       | `/pm --mode=tasks` output                | Assigned web tasks                                  |
-| `.claude/skills/agents/front-end/{stack-slug}/SKILL.md` | Stack-skill shelf                        | Canonical layout + idioms + kit consumption         |
-| `.claude/rules/testing-policy.md`                       | Factory-level                            | Hybrid TDD policy                                   |
-| `docs/screens/webapp/*.html`                            | `/screens` output (signed off at gate 4) | Visual target; `data-kit-*` attrs drive translation |
-| `packages/ui-kit/`                                      | `/stylesheet` output                     | Primitive library (import via public barrel only)   |
-| `packages/types/`                                       | `@repo/orchestrator-contracts` + codegen | Shared schemas                                      |
-| `.feature-context.json`                                 | `git-agent checkout-feature`             | Feature metadata + agent_history                    |
+| Input                                                   | Source                                   | Purpose                                                                                        |
+| ------------------------------------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `.claude/architecture.yaml`                             | `/architect` output                      | Stack + web integrations                                                                       |
+| `docs/tasks.yaml`                                       | `/pm --mode=tasks` output                | Assigned web tasks                                                                             |
+| `.claude/skills/agents/front-end/{stack-slug}/SKILL.md` | Stack-skill shelf                        | Canonical layout + idioms + kit consumption                                                    |
+| `.claude/rules/testing-policy.md`                       | Factory-level                            | Hybrid TDD policy                                                                              |
+| `docs/screens/webapp/{screenId}.html`                   | `/screens` output (signed off at gate 4) | Visual target; resolved from `task.screens[]` (feat-012); `data-kit-*` attrs drive translation |
+| `packages/ui-kit/`                                      | `/stylesheet` output                     | Primitive library (import via public barrel only)                                              |
+| `packages/types/`                                       | `@repo/orchestrator-contracts` + codegen | Shared schemas                                                                                 |
+| `.feature-context.json`                                 | `git-agent checkout-feature`             | Feature metadata + agent_history                                                               |
 
 ## Happy-path TDD
 

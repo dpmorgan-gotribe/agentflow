@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 /**
  * Validate a tasks.yaml v2 against schemas/tasks.schema.json +
- * schemas/feature.schema.json. Also enforces the 3 cross-field
- * invariants that JSON Schema can't express:
+ * schemas/feature.schema.json. Also enforces cross-field invariants
+ * that JSON Schema can't express:
  *
  *   1. Every task.agent must be in its parent feature.agent_sequence
  *   2. feature.depends_on[] must not form a cycle (DFS)
  *   3. Every task.depends_on[] reference resolves within the SAME feature
+ *   4. task.screens[] ownership (feat-012):
+ *      a) Non-frontend agents MUST have screens.length === 0 (hard fail)
+ *      b) Same {platform}/{screenId} in ≥2 features → warning (not fail)
+ *      c) When docs/screens-manifest.json is present alongside tasks.yaml:
+ *         every declared screen MUST match a manifest entry (hard fail)
  *
  * Usage:
  *   node scripts/validate-tasks-yaml.mjs <path/to/tasks.yaml>
@@ -21,10 +26,15 @@
 
 import Ajv from "ajv";
 import addFormats from "ajv-formats";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
+
+const FRONTEND_AGENTS = new Set([
+  "web-frontend-builder",
+  "mobile-frontend-builder",
+]);
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const factoryRoot = resolve(scriptDir, "..");
@@ -62,8 +72,12 @@ if (!ok) {
 
 // Cross-field invariants
 const invariantErrors = [];
+const invariantWarnings = [];
 const features = parsed.features ?? [];
 const featureIds = new Set(features.map((f) => f.id));
+
+// Gather screen ownership across all features for overlap detection
+const screenOwners = new Map(); // "{platform}/{screenId}" → featureId[]
 
 for (const feature of features) {
   const agentSequence = new Set(feature.agent_sequence ?? []);
@@ -84,6 +98,20 @@ for (const feature of features) {
         );
       }
     }
+
+    // Invariant 4a (feat-012): non-frontend agents MUST NOT declare screens
+    const taskScreens = task.screens ?? [];
+    if (!FRONTEND_AGENTS.has(task.agent) && taskScreens.length > 0) {
+      invariantErrors.push(
+        `feature ${feature.id}: task '${task.id}' agent '${task.agent}' declares screens[] (${taskScreens.length} entries); only web-frontend-builder / mobile-frontend-builder may own screens`,
+      );
+    }
+
+    // Track ownership for overlap detection (invariant 4b)
+    for (const ref of taskScreens) {
+      if (!screenOwners.has(ref)) screenOwners.set(ref, new Set());
+      screenOwners.get(ref).add(feature.id);
+    }
   }
 
   // feature.depends_on must reference known features
@@ -93,6 +121,39 @@ for (const feature of features) {
         `feature ${feature.id}: depends_on references unknown feature '${dep}'`,
       );
     }
+  }
+}
+
+// Invariant 4b (feat-012): screens claimed by ≥2 features → warning
+for (const [ref, owners] of screenOwners) {
+  if (owners.size >= 2) {
+    invariantWarnings.push(
+      `screen-overlap: '${ref}' claimed by [${[...owners].join(", ")}] — flow decomposition likely wrong; reconcile at gate 4`,
+    );
+  }
+}
+
+// Invariant 4c (feat-012): when screens-manifest.json is present alongside
+// tasks.yaml, every declared screen MUST resolve to a manifest entry.
+const tasksYamlDir = dirname(resolve(input));
+const manifestPath = join(tasksYamlDir, "screens-manifest.json");
+if (existsSync(manifestPath) && screenOwners.size > 0) {
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const manifestRefs = new Set(
+      (manifest.files ?? []).map((f) => `${f.platform}/${f.screenId}`),
+    );
+    for (const ref of screenOwners.keys()) {
+      if (!manifestRefs.has(ref)) {
+        invariantErrors.push(
+          `screen-ref '${ref}' declared in tasks.yaml but not present in docs/screens-manifest.json — PM mapping drifted from /screens output`,
+        );
+      }
+    }
+  } catch (err) {
+    invariantWarnings.push(
+      `could not parse screens-manifest.json at ${manifestPath}: ${err.message}`,
+    );
   }
 }
 
@@ -138,6 +199,11 @@ if (invariantErrors.length > 0) {
   console.error(`Cross-field invariant errors for ${input}:`);
   for (const err of invariantErrors) console.error(`  - ${err}`);
   process.exit(1);
+}
+
+if (invariantWarnings.length > 0) {
+  console.warn(`Warnings for ${input}:`);
+  for (const w of invariantWarnings) console.warn(`  - ${w}`);
 }
 
 console.log(

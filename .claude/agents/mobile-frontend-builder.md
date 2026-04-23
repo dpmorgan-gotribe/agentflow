@@ -32,7 +32,11 @@ Same rules as web frontend builder — `@repo/ui-kit` is the primitive library. 
 
 ## Screen-to-code translation
 
-Your feature's screens live at `docs/screens/mobile/*.html` — composed by `/screens` from the UI kit with mobile viewport. `data-kit-*` attributes drive the deterministic translation same as web (HTML → React Native or Flutter widgets per the stack skill).
+Your scope is **exactly** `feature.tasks.filter(t => t.agent === "mobile-frontend-builder").flatMap(t => t.screens)` — the per-task `screens[]` list populated by PM (feat-012). Each entry is `mobile/{screenId}`, resolvable to `docs/screens/mobile/{screenId}.html`. Do NOT process screens outside this list; do NOT read `docs/screens/mobile/*.html` as a wildcard.
+
+If `task.screens` is empty for all your tasks on this feature, treat as a native-module / navigation-only task (a warning was emitted by PM); proceed without screen translation and focus on the task's `summary` + `notes`.
+
+Screens are composed by `/screens` from the UI kit with mobile viewport. `data-kit-*` attributes drive the deterministic translation same as web (HTML → React Native or Flutter widgets per the stack skill). For each scoped `mobile/{screenId}`, resolve to `docs/screens/mobile/{screenId}.html`; if the file is missing → abort with `screen-precondition-failed: mobile/{screenId} declared in task.screens[] but file not in docs/screens/` (PM's mapping drifted from /screens output; surface to orchestrator).
 
 ## Worktree CWD awareness
 
@@ -56,16 +60,16 @@ Set `last_writing_agent: "mobile-frontend-builder"`. Re-validate via `scripts/va
 
 ## Inputs
 
-| Input                                                | Source                                   | Purpose                                        |
-| ---------------------------------------------------- | ---------------------------------------- | ---------------------------------------------- |
-| `.claude/architecture.yaml`                          | `/architect` output                      | Stack + mobile integrations                    |
-| `docs/tasks.yaml`                                    | `/pm --mode=tasks` output                | Assigned mobile tasks                          |
-| `.claude/skills/agents/mobile/{stack-slug}/SKILL.md` | Stack-skill shelf                        | Canonical layout + native-module patterns      |
-| `.claude/rules/testing-policy.md`                    | Factory-level                            | Hybrid TDD policy                              |
-| `docs/screens/mobile/*.html`                         | `/screens` output (signed off at gate 4) | Visual target + `data-kit-*` attrs             |
-| `packages/ui-kit/`                                   | `/stylesheet` output                     | Primitive library with platform-aware variants |
-| `packages/types/`                                    | Shared schemas                           | Never re-declare                               |
-| `.feature-context.json`                              | `git-agent checkout-feature`             | Feature metadata + agent_history               |
+| Input                                                | Source                                   | Purpose                                                                                        |
+| ---------------------------------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `.claude/architecture.yaml`                          | `/architect` output                      | Stack + mobile integrations                                                                    |
+| `docs/tasks.yaml`                                    | `/pm --mode=tasks` output                | Assigned mobile tasks                                                                          |
+| `.claude/skills/agents/mobile/{stack-slug}/SKILL.md` | Stack-skill shelf                        | Canonical layout + native-module patterns                                                      |
+| `.claude/rules/testing-policy.md`                    | Factory-level                            | Hybrid TDD policy                                                                              |
+| `docs/screens/mobile/{screenId}.html`                | `/screens` output (signed off at gate 4) | Visual target; resolved from `task.screens[]` (feat-012); `data-kit-*` attrs drive translation |
+| `packages/ui-kit/`                                   | `/stylesheet` output                     | Primitive library with platform-aware variants                                                 |
+| `packages/types/`                                    | Shared schemas                           | Never re-declare                                                                               |
+| `.feature-context.json`                              | `git-agent checkout-feature`             | Feature metadata + agent_history                                                               |
 
 ## Happy-path TDD
 

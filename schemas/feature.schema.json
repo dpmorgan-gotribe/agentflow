@@ -137,6 +137,15 @@
           "minimum": 0,
           "description": "For frontend tasks only: approximate screen count. Used for budget projection."
         },
+        "screens": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(webapp|mobile|admin|desktop)/[a-z0-9][a-z0-9-]*$"
+          },
+          "default": [],
+          "description": "feat-012: exact `{platform}/{screenId}` set this task owns. Frontend-builder tasks populated by PM from flows.md + screens-manifest.json; backend / tester / reviewer / devops tasks MUST leave empty. Two features claiming the same entry → tasks.yaml warnings[] (PM does not auto-resolve). Builders scope their work to this list; they do NOT read docs/screens/{platform}/*.html as a wildcard."
+        },
         "summary": {
           "type": "string",
           "maxLength": 200,

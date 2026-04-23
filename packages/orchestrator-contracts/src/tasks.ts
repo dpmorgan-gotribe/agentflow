@@ -47,20 +47,56 @@ export const TaskAgent = z.enum([
 ]); // excludes git-agent — lifecycle is orchestrator-owned, never a task agent
 export type TaskAgent = z.infer<typeof TaskAgent>;
 
-export const TaskSchema = z.object({
-  id: z.string().regex(/^[a-z][a-z0-9-]{1,80}$/),
-  agent: TaskAgent,
-  depends_on: z.array(z.string()).default([]),
-  skills: z.array(z.string()).default([]),
-  priority: z.enum(["P0", "P1", "P2", "P3"]).optional(),
-  integration_ref: z.string().optional(),
-  status: z
-    .enum(["pending", "in-progress", "completed", "blocked", "skipped"])
-    .default("pending"),
-  estimated_screens: z.number().int().nonnegative().optional(),
-  summary: z.string().max(200).optional(),
-  notes: z.string().optional(),
-});
+/**
+ * Per-task screen assignment (feat-012). Frontend-builder tasks declare the
+ * exact `{platform}/{screenId}` set they own; backend / tester / reviewer /
+ * devops tasks MUST leave this empty.
+ *
+ * Values resolve against `docs/screens-manifest.json.files[]` — the PM
+ * populates this list by parsing `docs/analysis/{platform}/flows.md` and
+ * matching screen filenames to manifest entries.
+ *
+ * Cross-field invariants (enforced by scripts/validate-tasks-yaml.mjs +
+ * PM self-verify):
+ *   - non-frontend agents → screens.length === 0 (hard fail)
+ *   - frontend agent on a non-skipped surface with screens.length === 0 →
+ *     warning (some frontend work is kit-only / routing-only; don't hard-fail)
+ *   - Same `{platform}/{screenId}` in two features → warnings[] entry in
+ *     tasks.yaml (PM doesn't auto-resolve; flow decomposition is wrong)
+ */
+export const TaskScreenRef = z
+  .string()
+  .regex(/^(webapp|mobile|admin|desktop)\/[a-z0-9][a-z0-9-]*$/);
+export type TaskScreenRef = z.infer<typeof TaskScreenRef>;
+
+export const TaskSchema = z
+  .object({
+    id: z.string().regex(/^[a-z][a-z0-9-]{1,80}$/),
+    agent: TaskAgent,
+    depends_on: z.array(z.string()).default([]),
+    skills: z.array(z.string()).default([]),
+    priority: z.enum(["P0", "P1", "P2", "P3"]).optional(),
+    integration_ref: z.string().optional(),
+    status: z
+      .enum(["pending", "in-progress", "completed", "blocked", "skipped"])
+      .default("pending"),
+    estimated_screens: z.number().int().nonnegative().optional(),
+    screens: z.array(TaskScreenRef).default([]),
+    summary: z.string().max(200).optional(),
+    notes: z.string().optional(),
+  })
+  .superRefine((task, ctx) => {
+    const isFrontend =
+      task.agent === "web-frontend-builder" ||
+      task.agent === "mobile-frontend-builder";
+    if (!isFrontend && task.screens.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["screens"],
+        message: `task.agent=${task.agent} must not declare screens[]; only frontend builders own screens`,
+      });
+    }
+  });
 export type Task = z.infer<typeof TaskSchema>;
 
 export const FeatureSchema = z.object({

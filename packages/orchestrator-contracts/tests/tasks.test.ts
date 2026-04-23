@@ -121,9 +121,99 @@ describe("tasks — defaults + optional fields", () => {
     expect(t.status).toBe("pending");
   });
 
+  it("task.screens defaults to [] (feat-012)", () => {
+    const t = TaskSchema.parse({ id: "t1", agent: "backend-builder" });
+    expect(t.screens).toEqual([]);
+  });
+
   it("feature.depends_on + skip default to []", () => {
     const f = FeatureSchema.parse(validFeature);
     expect(f.depends_on).toEqual([]);
     expect(f.skip).toEqual([]);
+  });
+});
+
+describe("tasks — task.screens[] (feat-012)", () => {
+  it("accepts canonical {platform}/{screenId} entries", () => {
+    const t = TaskSchema.parse({
+      id: "auth-web",
+      agent: "web-frontend-builder",
+      screens: ["webapp/login", "webapp/signup", "webapp/verify-email"],
+    });
+    expect(t.screens).toHaveLength(3);
+    expect(t.screens[0]).toBe("webapp/login");
+  });
+
+  it("accepts all 4 PlatformId values", () => {
+    for (const ref of [
+      "webapp/home",
+      "mobile/feed-detail",
+      "admin/users-list",
+      "desktop/preferences",
+    ]) {
+      const t = TaskSchema.parse({
+        id: "t1",
+        agent:
+          ref.startsWith("mobile") || ref.startsWith("desktop")
+            ? "mobile-frontend-builder"
+            : "web-frontend-builder",
+        screens: [ref],
+      });
+      expect(t.screens[0]).toBe(ref);
+    }
+  });
+
+  it("rejects .html suffix", () => {
+    expect(() =>
+      TaskSchema.parse({
+        id: "t1",
+        agent: "web-frontend-builder",
+        screens: ["webapp/home.html"],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects uppercase + unknown platform", () => {
+    expect(() =>
+      TaskSchema.parse({
+        id: "t1",
+        agent: "web-frontend-builder",
+        screens: ["Webapp/Home"],
+      }),
+    ).toThrow();
+    expect(() =>
+      TaskSchema.parse({
+        id: "t1",
+        agent: "web-frontend-builder",
+        screens: ["weba/home"],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects screens on non-frontend agents (superRefine)", () => {
+    for (const agent of [
+      "backend-builder",
+      "tester",
+      "reviewer",
+      "security",
+      "devops",
+    ] as const) {
+      expect(() =>
+        TaskSchema.parse({
+          id: "t1",
+          agent,
+          screens: ["webapp/home"],
+        }),
+      ).toThrow(/must not declare screens/);
+    }
+  });
+
+  it("accepts empty screens on frontend task (kit-only / routing-only work)", () => {
+    const t = TaskSchema.parse({
+      id: "t1",
+      agent: "web-frontend-builder",
+      screens: [],
+    });
+    expect(t.screens).toEqual([]);
   });
 });
