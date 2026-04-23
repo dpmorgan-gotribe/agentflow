@@ -1,9 +1,10 @@
 ---
 id: refactor-005-reviewer-alignment
 type: refactor
-status: approved
+status: completed
 approved-at: 2026-04-23
 approved-by: human
+completed-at: 2026-04-23
 author-agent: human
 created: 2026-04-23
 updated: 2026-04-23
@@ -184,4 +185,39 @@ No scaffolding move — `18-032-reviewer-agent.md` stays in `scaffolding/` until
 
 ## Attempt Log
 
-<!-- Populated by executing agent. -->
+### Attempt 1 — 2026-04-23 (succeeded in 2 phases + archive)
+
+2 commits on `refactor/reviewer-alignment`:
+
+- Phase 1 (e4a2d82): `scaffolding/18-032-reviewer-agent.md` refresh. 68 → 191 lines. Added refactor-004 worktree CWD awareness, feat-004 hybrid-TDD handoff semantics (no re-testing), feat-002 stack dispatch with filter-then-load, 8-step dispatcher, `ReviewerOutput` contract skeleton for feat-010, 7 hard rules, downstream implications (close-feature gated on approval; task-036 gate-6 as next human touch). Validation greps: worktree 6×, stack skill 5×, tester 12×, ReviewerOutput 8×.
+- Phase 2 (ddaf236): `docs/reviewer-playbook.md` authored. 484 lines covering 7 dimensions × 4 fields each (what-it-checks / tool invocation / pass threshold / known-gap / retry target). 13 post-MVP deferral pointers. Every check names an exact grep/tool invocation + threshold — zero judgment-blackbox language.
+- Phase 3 (this commit): archive.
+
+**No runtime code shipped; no tests run; no regressions possible.** Pure spec-refresh per roadmap plan #3 intent.
+
+## Lessons Learned
+
+**Scaffolding files drift fast without discipline.** The 18-032 file was 68 lines of pre-refactor-004 assumptions, written before worktree Mode B + hybrid-TDD + stack dispatch existed. Five major refactors had landed between its authoring and feat-010's need for a current spec. **Action**: when a refactor ships, audit downstream scaffolding files for staleness and re-align them in the same plan where practical. This prevents "we refactored X but scaffolding/NN still says the pre-X way" drift.
+
+**Concrete-criteria-in-writing is load-bearing for review agents.** The pre-refresh spec had "Security: no secrets in code, proper auth checks, input validation" — a 12-word bullet that a reviewer would fill in from general-purpose LLM priors. The refreshed playbook has 15 security checks with exact grep invocations + thresholds. Concretely: the pre-refresh version would have reviewed 100 different features 100 different ways; the post-refresh version reviews them identically. Consistency is the point of a playbook — not cleverness.
+
+**Tool-unavailable skipping must be distinguishable from failure.** Lighthouse + axe-core + artillery all require a running dev server (or special installs). Scratch-repo smoke tests + first-run pipelines don't have these. The playbook distinguishes `status: "skipped"` (missing tooling — warning) from `status: "fail"` (actual violation). Without this distinction, scratch-repo tests would always block on perf — impractical. **Implication for feat-010**: dimension-skipping logic needs test coverage; ReviewerOutput Zod's DimensionResult union makes this explicit.
+
+**Retry routing precision affects retry ladder efficiency.** If reviewer flags "security issue" without naming which builder, orchestrator has to re-invoke all 3 builders per-task, burning retry budget. Playbook forces `retryTarget.agent` + `retryTarget.taskIds[]` on every needs-revision issue. **Implication for feat-010**: `ReviewerOutput.retryTargets[]` is required; reviewer invocations with `overallVerdict: "needs-revision"` but empty retryTargets should fail contract validation.
+
+**Known-gap-via-deferral-pointer is better than "TODO".** Each dimension explicitly links to the post-mvp-scaffolding file that owns the deeper treatment. A future reviewer reading the playbook sees "A11y MVP here; deep coverage in post-mvp-scaffolding/a11y-deep-coverage.md" — clear ownership + scope. No vague "future work" language.
+
+**The scaffolding vs playbook split is load-bearing.** One-file would conflate build-time spec (how feat-010 authors the skill) with run-time spec (how the skill runs per invocation). Different audiences (plan author vs running agent), different lifetimes (scaffolding archives when feat-010 ships; playbook stays canonical forever). Splitting matches the plan vs runtime separation we already have elsewhere.
+
+## Follow-up Work Unblocked
+
+- **feat-010 reviewer-implementation** — directly unblocked. The scaffolding file tells feat-010 authors what to build; the playbook tells the built skill how to operate at runtime. Both are ready.
+- **Stack skill §Review / §Gotchas block backfill** — a known-gap flagged in Phase 1 scaffolding. When stack skills (node-trpc-nest, react-next, expo-rn, python-fastapi, svelte-kit) lack §Review, reviewer falls back to the generic playbook and flags `stack-review-block-missing` as a warning. **Follow-up**: a future sweep to add §Review blocks to each shipped stack skill — ideally as a single cleanup plan before first live Mode B run, OR as part of feat-010 Phase 5 smoke-test observations.
+- **`scripts/audit-brief-delivery.mjs`** — helper referenced in dimension 7. Does not exist yet. Reviewer can inline the grep logic in feat-010, OR we ship the standalone script as a side-quest. Recommendation: defer the script; inline in feat-010 works for MVP.
+
+Follow-ups NOT addressed:
+
+- **Runtime brief-delivery walkthrough** (option B) — fully deferred to `post-mvp-scaffolding/brief-delivery-validation-depth.md` per the decision log.
+- **Automated SAST scan** (semgrep/snyk/trivy) — defer to CI layer, outside reviewer scope.
+- **Full ASVS L1 checklist** — deferred to `post-mvp-scaffolding/security-checklist-grounding.md`.
+- **Axe-core + Lighthouse CI + artillery baseline** — all tooling-heavy; defer to CI + `post-mvp-scaffolding/` per dimension cross-reference index.
