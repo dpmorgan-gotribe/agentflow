@@ -9,3 +9,4 @@ export * from "./tasks.js";
 export * from "./feature-context.js";
 export * from "./git-agent.js";
 export * from "./architect.js";
+export * from "./pm.js";
