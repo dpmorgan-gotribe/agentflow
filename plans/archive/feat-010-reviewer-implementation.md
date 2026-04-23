@@ -1,9 +1,10 @@
 ---
 id: feat-010-reviewer-implementation
 type: feature
-status: approved
+status: completed
 approved-at: 2026-04-23
 approved-by: human
+completed-at: 2026-04-23
 author-agent: human
 created: 2026-04-23
 updated: 2026-04-23
@@ -165,4 +166,53 @@ Reuse `projects/backend-builder-smoke-20260423-013328/` scratch repo (already ha
 
 ## Attempt Log
 
-<!-- Populated by executing agent. -->
+### Attempt 1 — 2026-04-23 (succeeded across all 4 phases)
+
+4 commits on `feat/reviewer-implementation`:
+
+- Phase 1: `packages/orchestrator-contracts/src/reviewer.ts` — ReviewerOutput Zod + ReviewDimension + ReviewRetryAgent + RetryTarget + ReviewIssue + DimensionResult discriminated union + OverallVerdict. 28 new tests. Contracts now at 149.
+- Phase 2: `.claude/agents/reviewer.md` — 135 lines. Read-first mandate; playbook-bound; retry-routing-required on needs-revision; filter-then-load stack skills; worktree CWD awareness; 6 hard rules.
+- Phase 3: `.claude/skills/reviewer/SKILL.md` — 229 lines. 8-step dispatcher walking all 7 dimensions from the playbook. Tool-unavailable → skipped not fail. Graceful degradation when stack skill has no §Review block.
+- Phase 4 smoke test: reused feat-008/009 scratch repo. Reviewer subagent walked 7 dimensions; overallVerdict `approved`; zero issuesFound; 3 dimensions passed (architecture, security, brief-delivery) + 4 skipped (compliance, maintainability, a11y, performance). Empty-branch close-feature merged cleanly. Factory repo untouched. All schemas validate (after fixing one subagent-forgotten `started_at` field in the close-feature agent_history entry).
+
+**Full agent chain now validated end-to-end** against sequential features in the same scratch repo's main:
+
+```
+*   d1805e4 (post-feat-010 smoke)    ← tasks.yaml + reviewer-playbook seeds
+*   6c7e820 (feat-009 tester merge)   ← 33 edge-case tests added
+*   72c1301 (feat-008 builder merge)  ← Prisma schema + knowledge-graph service + seed
+*   ee06626 (initial)
+```
+
+Three complete Mode B feature cycles shipped into one scratch repo: builder → close / tester → close / reviewer → close. Factory git unchanged throughout.
+
+## Lessons Learned
+
+**Empty-feature-branch close-feature is a real edge case.** When `agent_sequence` includes only meta-tasks (reviewer-only, tester-only, or both) and no one commits, `git merge --no-ff` reports `Already up to date` — no merge commit is created, but the close-feature succeeds semantically. The skill should document this explicitly: in the degenerate case, `mergeSha` equals the pre-merge main HEAD (which is `opened_from`'s sha). Current SKILL.md doesn't explicitly call this out; future live runs will hit this whenever a feature is meta-only. **Action**: add a note to git-agent SKILL.md Op 3 step 6 explaining the degenerate `Already up to date` path + what mergeSha means in that case.
+
+**Security dimension's 15 sub-checks should emit individual toolsUsed entries.** The smoke-test subagent batched them into one grep call, which is efficient but loses audit-trail granularity. A human reviewing reviewer output wants to see each security sub-check as its own line in `toolsUsed[]` (so they can confirm 2.5 rate-limiting was actually run vs implicitly skipped). **Action**: update skill's step 5 dim 2 instruction to explicitly enumerate each sub-check separately.
+
+**Lockfile rewrites should use Edit (append-one-entry), not Write (full rewrite).** The smoke-test subagent's 3rd consecutive `Write` to the same lockfile tripped the loop-detection hook. Reviewer's step 7 (append agent_history entry) should explicitly use Edit-mode append to avoid friction. Same pattern applies to builders + tester. **Action**: cross-cutting note to add to all agent SKILL.md files: "append to lockfile via Edit (single-entry append), not Write (full rewrite)".
+
+**Missing brief.md → dimension 7 skips §14 cross-check gracefully.** Production projects always have brief.md (enforced at /new-project); scratch repos may not. Skill handles this correctly by noting in warnings + skipping. Passes trivially when all tasks in the feature are meta (no implementation to cross-reference against brief).
+
+**Filter-then-load with missing §Review block works.** node-trpc-nest stack skill has no §Review section → reviewer emitted `stack-review-block-missing: node-trpc-nest` warning + fell back to generic playbook. Worked as designed. **Follow-up flagged from refactor-005 still applies**: backfill §Review / §Gotchas blocks on the 5 shipped stack skills before first live Mode B run.
+
+**Subagents sometimes forget schema-required fields.** The close-feature agent_history entry was missing `started_at` in the subagent's output — I manually fixed post-hoc. Not a skill bug; Zod/AJV caught it. **Implication**: reviewer/tester/builder skills should explicitly list `started_at` as non-skippable in their agent_history append step. Also consider a post-close validate step that catches this before persisting the closed.json.
+
+**Scope-fallback for empty diff is ad-hoc.** When a feature's branch has no commits, reviewer scoped review to files added by the previous merge (using `git log --name-only --diff-filter=A ee06626..72c1301`). This worked for the smoke test but is awkward in general — a proper solution is: orchestrator skips reviewer on empty-diff features (no code to review) OR reviewer emits `overallVerdict: "approved"` trivially with all dimensions skipped. For now, skill handles via warnings. **Action**: add a branch at step 4: if `git log main..HEAD` is empty, short-circuit to `overallVerdict: "approved"` with all dimensions skipped + reason "empty branch diff; no code in scope".
+
+## Follow-up Work Unblocked
+
+- **Builder → tester → reviewer chain is now COMPLETE** at the skill layer. Last agent in the typical `agent_sequence[]` done.
+- **task-036 HITL gates** is next: replaces orchestrator's gate-server stub (from task-035 Phase 9) with real HTTP server + adds gate 6 (PR review before merge to main). After reviewer approves, gate 6 is what stops the orchestrator from auto-merging.
+- **task-010 skills-audit + task-011 register-mcp-servers** — the last 2 dry-run halts before the Mode A pipeline walks cleanly end-to-end.
+- **Stack-skill §Review / §Gotchas backfill** — dependency of live reviewer invocations. Should land before first live Mode B run against mindapp-v2.
+
+Follow-ups NOT tested in this plan:
+
+- **Reviewer rejection path** (`overallVerdict: "needs-revision"` with populated `retryTargets[]`) — deferred. A synthetic security bug in the scratch could exercise this; left for when live Mode B surfaces real issues.
+- **Orchestrator retry routing** (builder re-invoked with reviewer's retryTargets) — consumed by task-035's runFeature retry ladder; separate concern, not reviewer's.
+- **Real tool runs** (pnpm typecheck, knip, Lighthouse, artillery) — need a real install; validated on first live run.
+- **Dimension 2's 15 individual sub-check toolsUsed entries** — noted as improvement above.
+- **Empty-diff short-circuit in step 4** — noted as action above.
