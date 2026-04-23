@@ -75,15 +75,15 @@ _From analyst outputs to mockup grid → UI Kit → composed screens → visual 
 
 _Architect decides vendors + emits .env.example after design sign-off. PM decomposes to tasks.yaml using concrete architecture decisions. Gate 5 (credentials file-drop) sits between them._
 
-- [07 / 020 — Architect agent + architecture.yaml + .env.example + credentials/deployment checklists](07-020-architect-agent.md)
-- [08 / 021 — Project Manager agent + tasks.yaml (dual-mode: --mode=tasks main / --mode=kit-change-request detour)](08-021-pm-agent.md)
+- [07 / 020 — Architect agent + architecture.yaml + .env.example + credentials/deployment checklists](archive/07-020-architect-agent.md) ✓ complete (feat-005)
+- [08 / 021 — Project Manager agent + tasks.yaml (dual-mode: --mode=tasks main / --mode=kit-change-request detour)](archive/08-021-pm-agent.md) ✓ complete (feat-006)
 
 ### Phase C — Contracts + foundational infrastructure
 
 _Zod schemas + output-contract enforcement + MCP registration + monorepo scaffolds that Phase D builders consume. 034b before 035 (orchestrator imports StageSchemas). 026+027 are specs for the logic `/new-project` step 5b already invokes at init time._
 
-- [09 / 034b — Output contract Zod schemas (`StageSchemas` lookup for all 17 stages)](09-034b-output-contract-zod-schemas.md)
-- [10 / 034 — Output contract enforcement (6 layers — prompt / file / Zod / hook / retry / verifier)](10-034-output-contracts.md)
+- [09 / 034b — Output contract Zod schemas (`StageSchemas` lookup for all 17 stages)](archive/09-034b-output-contract-zod-schemas.md) ✓ complete (task-035 Phase 2 + feat-005/006/008/009 extensions; 121 contract tests)
+- [10 / 034 — Output contract enforcement (6 layers — prompt / file / Zod / hook / retry / verifier)](10-034-output-contracts.md) _partial — Zod + validate-\*.mjs runners shipped; hook + retry enforcement shipped via orchestrator (task-035); full 6-layer audit pending_
 - [11 / 041 — MCP server registration (`/register-mcp-servers --scope=design|build`; dual-invocation per refactor-003)](11-041-mcp-server-registration.md)
 - [12 / 026 — Turborepo + pnpm workspace scaffold (invoked from /new-project step 5b)](12-026-turborepo-scaffold.md)
 - [13 / 027 — Shared packages skeleton — `@repo/{ui-kit, types, utils, api-client, orchestrator-contracts}` (invoked from /new-project step 5b)](13-027-shared-packages.md)
@@ -92,25 +92,25 @@ _Zod schemas + output-contract enforcement + MCP registration + monorepo scaffol
 
 _Builder agents consuming architecture.yaml + `.env` (populated at gate 5) + UI Kit + composed screens._
 
-- [14 / 028 — Backend Builder agent (NestJS + tRPC + Drizzle)](14-028-backend-builder-agent.md)
-- [15 / 029 — Web Frontend Builder agent (Next.js)](15-029-web-frontend-builder.md)
-- [16 / 030 — Mobile Frontend Builder agent (Expo)](16-030-mobile-frontend-builder.md)
+- [14 / 028 — Backend Builder agent (NestJS + tRPC + Drizzle)](archive/14-028-backend-builder-agent.md) ✓ complete (feat-008)
+- [15 / 029 — Web Frontend Builder agent (Next.js)](archive/15-029-web-frontend-builder.md) ✓ complete (feat-008)
+- [16 / 030 — Mobile Frontend Builder agent (Expo)](archive/16-030-mobile-frontend-builder.md) ✓ complete (feat-008)
 
 ### Phase E — Quality + ship (tier 8)
 
 _Testing, review, git, HTML verification._
 
-- [17 / 031 — Tester agent](17-031-tester-agent.md)
-- [18 / 032 — Reviewer agent + output contract hooks](18-032-reviewer-agent.md)
+- [17 / 031 — Tester agent](archive/17-031-tester-agent.md) ✓ complete (feat-009)
+- [18 / 032 — Reviewer agent + output contract hooks](18-032-reviewer-agent.md) ← **NEXT (feat-010)**
 - [19 / 032b — HTML Verifier agent (Layer 6 defense-in-depth)](19-032b-html-verifier-agent.md)
-- [20 / 033 — Git Agent](20-033-git-agent.md)
+- [20 / 033 — Git Agent](archive/20-033-git-agent.md) ✓ complete (feat-007)
 
 ### Phase F — Orchestrator (tier 9)
 
 _The external TypeScript orchestrator + HITL gate mechanics that tie stages together for autonomous runs._
 
-- [21 / 035 — Orchestrator core (stage runner + SDK integration + kit-change-request detour)](21-035-orchestrator-core.md)
-- [22 / 036 — HITL gates (5 gates — requirements / mockups / design-system / signoff / credentials-file-drop) + budget enforcement](22-036-hitl-gates.md)
+- [21 / 035 — Orchestrator core (stage runner + SDK integration + kit-change-request detour)](archive/21-035-orchestrator-core.md) ✓ complete (task-035)
+- [22 / 036 — HITL gates (5 gates — requirements / mockups / design-system / signoff / credentials-file-drop) + budget enforcement](22-036-hitl-gates.md) _deferred per roadmap_
 
 ### Phase G — Meta & compliance (tier 10)
 
@@ -118,8 +118,8 @@ _Self-improvement loop, skills-audit split, App Store readiness, meta-agent._
 
 - [23 / 038 — Skills Agent (dual-scope: `--scope=design` runs pre-mockups, `--scope=build` runs post-architect)](23-038-skills-agent.md)
 - [24 / 037 — Lessons Agent](24-037-lessons-agent.md)
-- [25 / 040 — App Store compliance layer](25-040-app-store-compliance.md)
-- [26 / 039 — Agent Expert (meta-agent for authoring + editing other agents)](26-039-agent-expert.md)
+- [25 / 040 — App Store compliance layer](25-040-app-store-compliance.md) _post-MVP per roadmap_
+- [26 / 039 — Agent Expert (meta-agent for authoring + editing other agents)](26-039-agent-expert.md) _post-MVP per roadmap_
 
 ---
 
