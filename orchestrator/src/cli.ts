@@ -36,6 +36,10 @@ program
   )
   .option("--resume-feature-graph", "resume Mode B after bootstrap")
   .option("--dry-run", "report the pipeline walk without invoking agents")
+  .option(
+    "--auto-merge-after-reviewer",
+    "skip gate 6 (pr-review) — auto-merge once reviewer approves",
+  )
   .action(
     async (
       projectName: string | undefined,
@@ -44,6 +48,7 @@ program
         resumeFromStage?: string;
         resumeFeatureGraph?: boolean;
         dryRun?: boolean;
+        autoMergeAfterReviewer?: boolean;
       },
     ) => {
       const optsForRunner: Parameters<typeof runCli>[0] = { flags: opts.flags };
@@ -53,6 +58,8 @@ program
       if (opts.resumeFeatureGraph)
         optsForRunner.resumeFeatureGraph = opts.resumeFeatureGraph;
       if (opts.dryRun) optsForRunner.dryRun = opts.dryRun;
+      if (opts.autoMergeAfterReviewer)
+        optsForRunner.autoMergeAfterReviewer = opts.autoMergeAfterReviewer;
       const result = await runCli(optsForRunner, factoryRoot);
       for (const line of result.messages) {
         // eslint-disable-next-line no-console

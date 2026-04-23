@@ -16,6 +16,8 @@ export interface CliOptions {
   resumeFromStage?: string;
   resumeFeatureGraph?: boolean;
   dryRun?: boolean;
+  /** Skip gate 6 (pr-review) — wired into Mode B when live runs land. */
+  autoMergeAfterReviewer?: boolean;
 }
 
 export interface CliResult {

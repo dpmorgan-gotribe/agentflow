@@ -26,13 +26,29 @@ afterEach(() => {
   rmSync(projectRoot, { recursive: true, force: true });
 });
 
-function makeCtx(invokeAgent: InvokeAgentFn) {
+function makeCtx(
+  invokeAgent: InvokeAgentFn,
+  overrides: Partial<{
+    autoMergeAfterReviewer: boolean;
+    waitForPrReviewGate: (args: {
+      featureId: string;
+      projectRoot: string;
+    }) => Promise<{ approved: boolean; note?: string }>;
+  }> = {},
+) {
   return {
     projectRoot,
     pipelineRunId: "pipe-test-001",
     budget: new BudgetTracker({ perPipelineMaxUsd: 1000, perStageMaxUsd: {} }),
     retryCounters: new RetryCounters(),
     invokeAgent,
+    // Default test stub: auto-approve gate 6 so existing tests don't hang.
+    // Tests exercising gate 6 behavior override this.
+    waitForPrReviewGate:
+      overrides.waitForPrReviewGate ?? (async () => ({ approved: true })),
+    ...(overrides.autoMergeAfterReviewer !== undefined
+      ? { autoMergeAfterReviewer: overrides.autoMergeAfterReviewer }
+      : {}),
   };
 }
 
@@ -660,5 +676,105 @@ describe("runFeatureGraph — topological order + parallel execution", () => {
     await expect(runFeatureGraph(tasks, makeCtx(invokeAgent))).rejects.toThrow(
       /cycle/,
     );
+  });
+});
+
+describe("runFeature — gate 6 (pr-review) integration", () => {
+  function okInvokeAgent(): { invokeAgent: InvokeAgentFn; gitOps: string[] } {
+    const gitOps: string[] = [];
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        gitOps.push(args.gitOp!.op);
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput:
+            args.gitOp?.op === "checkout-feature" ? checkoutOk : closeOk,
+          costUsd: 0.001,
+        };
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+    return { invokeAgent, gitOps };
+  }
+
+  it("fires gate 6 when reviewer is in the sequence; approved → close-feature", async () => {
+    const feature = buildFeature();
+    const gateCalls: string[] = [];
+    const { invokeAgent, gitOps } = okInvokeAgent();
+    const ctx = makeCtx(invokeAgent, {
+      waitForPrReviewGate: async ({ featureId }) => {
+        gateCalls.push(featureId);
+        return { approved: true, note: "LGTM" };
+      },
+    });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed");
+    expect(gateCalls).toEqual(["feat-auth"]);
+    expect(gitOps).toEqual(["checkout-feature", "close-feature"]);
+  });
+
+  it("gate 6 rejected → feature failed, close-feature NOT called", async () => {
+    const feature = buildFeature();
+    const { invokeAgent, gitOps } = okInvokeAgent();
+    const ctx = makeCtx(invokeAgent, {
+      waitForPrReviewGate: async () => ({
+        approved: false,
+        note: "missing CSRF",
+      }),
+    });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("failed");
+    expect(result.abortReason).toContain("gate-6-rejected");
+    expect(result.abortReason).toContain("missing CSRF");
+    expect(gitOps).toEqual(["checkout-feature"]);
+  });
+
+  it("autoMergeAfterReviewer=true short-circuits gate 6", async () => {
+    const feature = buildFeature();
+    let gateCalled = false;
+    const { invokeAgent } = okInvokeAgent();
+    const ctx = makeCtx(invokeAgent, {
+      autoMergeAfterReviewer: true,
+      waitForPrReviewGate: async () => {
+        gateCalled = true;
+        return { approved: true };
+      },
+    });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed");
+    expect(gateCalled).toBe(false);
+  });
+
+  it("gate 6 does NOT fire when reviewer is absent from sequence", async () => {
+    const feature = buildFeature({
+      agent_sequence: ["backend-builder"],
+      tasks: [
+        {
+          id: "api",
+          agent: "backend-builder",
+          depends_on: [],
+          skills: [],
+          status: "pending",
+        },
+      ],
+    });
+    let gateCalled = false;
+    const { invokeAgent } = okInvokeAgent();
+    const ctx = makeCtx(invokeAgent, {
+      waitForPrReviewGate: async () => {
+        gateCalled = true;
+        return { approved: true };
+      },
+    });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed");
+    expect(gateCalled).toBe(false);
   });
 });

@@ -1,14 +1,27 @@
 import type {
   AgentSequenceMember,
   Feature,
+  GateResolution,
   GitAgentOutput,
   Task,
   TasksV2,
 } from "@repo/orchestrator-contracts";
 import { GitAgentOutput as GitAgentOutputSchema } from "@repo/orchestrator-contracts";
 import type { BudgetTracker } from "./budget-tracker.js";
+import { waitForGateDecision } from "./gate-server-lifecycle.js";
 import type { RetryCounters } from "./retry-counters.js";
 import { saveState } from "./state-persistence.js";
+
+/**
+ * Gate 6 (pr-review) waiter. Fires between the last agent in
+ * `agent_sequence` (typically reviewer) and git-agent `close-feature`.
+ * Injectable so tests can stub without touching the filesystem; default
+ * delegates to `waitForGateDecision({ gateType: "pr-review", featureId })`.
+ */
+export type WaitForPrReviewGateFn = (args: {
+  featureId: string;
+  projectRoot: string;
+}) => Promise<GateResolution>;
 
 /**
  * Surface of a build-agent for `feature.skip[]` logic. Tester / reviewer /
@@ -94,6 +107,17 @@ export interface FeatureGraphContext {
   invokeAgent: InvokeAgentFn;
   /** Parallelism cap for runFeatureGraph. Defaults to 4. */
   maxConcurrentFeatures?: number;
+  /**
+   * Skip gate 6 (pr-review) — auto-merge once reviewer approves. Default
+   * false. Investigate-002 answer #1: gate 6 is opt-in for the first ~5
+   * autonomous runs; this flag lets trust build by flipping to opt-out.
+   */
+  autoMergeAfterReviewer?: boolean;
+  /**
+   * Override the gate-6 watcher. Default delegates to
+   * `waitForGateDecision` (file-drop at `docs/gate-6-approved-{id}.txt`).
+   */
+  waitForPrReviewGate?: WaitForPrReviewGateFn;
 }
 
 export type FeatureStatus = "completed" | "failed" | "aborted";
@@ -254,7 +278,39 @@ export async function runFeature(
     }
   }
 
-  // 3. Merge back via close-feature
+  // 3. Gate 6 (pr-review) — fires between reviewer-approve and merge.
+  // Only when the feature actually had a reviewer step AND the autonomy
+  // opt-out flag isn't set. Reviewer's successful completion is implicit
+  // by reaching this point without an earlier early-return.
+  const reviewerInSequence = feature.agent_sequence.includes("reviewer");
+  if (reviewerInSequence && !ctx.autoMergeAfterReviewer) {
+    const gate6 =
+      ctx.waitForPrReviewGate ??
+      (async ({ featureId, projectRoot }) =>
+        waitForGateDecision({
+          gateType: "pr-review",
+          projectRoot,
+          stageName: "pr-review",
+          featureId,
+        }));
+    const decision = await gate6({
+      featureId: feature.id,
+      projectRoot: ctx.projectRoot,
+    });
+    if (!decision.approved) {
+      return finish(
+        feature.id,
+        "failed",
+        startedAt,
+        attempts,
+        totalCostUsd,
+        taskOutcomes,
+        `gate-6-rejected: ${decision.note ?? "no note"}`,
+      );
+    }
+  }
+
+  // 4. Merge back via close-feature
   const closeResult = await attemptCloseFeature(
     feature,
     featureContext,

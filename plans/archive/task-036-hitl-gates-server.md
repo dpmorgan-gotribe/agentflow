@@ -1,9 +1,10 @@
 ---
 id: task-036-hitl-gates-server
 type: feature
-status: approved
+status: completed
 approved-at: 2026-04-23
 approved-by: human
+completed-at: 2026-04-23
 author-agent: human
 created: 2026-04-23
 updated: 2026-04-23
@@ -160,4 +161,48 @@ Extend `orchestrator/src/feature-graph.ts`:
 
 ## Attempt Log
 
-<!-- Populated by executing agent. -->
+### Attempt 1 — 2026-04-23 — completed
+
+Four phases shipped in sequence, no rework needed.
+
+**Phase 1 — gates Zod contracts**
+
+- `packages/orchestrator-contracts/src/gates.ts` (113 lines): GateType re-exported from stages.ts (extended to 6 values including `pr-review`), GateDirective enum, GateResolution, GateDecision, CredentialsGateOutput, GateSixOutput
+- `packages/orchestrator-contracts/tests/gates.test.ts` (19 tests)
+- Contracts total: 149 → **168 tests**
+
+**Phase 2 — real file-drop watcher**
+
+- Replaced `orchestrator/src/gate-server-lifecycle.ts` (41-line stub → 388 lines real impl)
+- `startGateServer` returns `{ baseUrl: null }` (HTTP deferred); watchers live per `waitForGateDecision` call
+- `waitForGateDecision` — fs.watch on docs/ + 500ms poll backstop, 60s re-print cadence, AbortSignal wired
+- Per-gate parsers: text directives (1, 3, 5, 6), SelectedStyle JSON (2), Signoff JSON glob (4)
+- Exported pure helpers (`resolveGateFilePath`, `tryResolveGateFile`) for testing
+- Updated `orchestrator/src/pipeline.ts` to re-export `GateResolution` from contracts + added `fileDropWaitForGate()` factory for CLI wiring
+
+**Phase 3 — gate 6 integration**
+
+- `orchestrator/src/feature-graph.ts`: injected gate 6 between agent_sequence walk and close-feature
+- Trigger: `reviewer` in agent_sequence AND !`ctx.autoMergeAfterReviewer`
+- On `rejected` → feature fails with `gate-6-rejected: <note>`
+- `orchestrator/src/cli.ts` + `cli-runner.ts`: added `--auto-merge-after-reviewer` flag
+
+**Phase 4 — tests + dry-run**
+
+- `orchestrator/tests/gate-server-lifecycle.test.ts` (29 tests): file-drop watcher paths, directive parsers, live watcher with setTimeout writes, AbortSignal cleanup
+- 4 new gate-6 tests in `orchestrator/tests/feature-graph.test.ts`
+- Orchestrator total: 112 → **145 tests**
+- Cross-package: **313 tests green**; build clean; dry-run on mindapp-v2 unchanged
+
+**Archive**
+
+- `scaffolding/22-036-hitl-gates.md` → `scaffolding/archive/22-036-hitl-gates.md` with MVP-shipped note
+- `scaffolding/000-scaffolding-index.md` updated to point at archive path
+- Plan moved to `plans/archive/` with this outcome block
+
+### Lessons learned
+
+- **`waitForPrReviewGate` must default to auto-approve in test contexts** — otherwise tests that include `reviewer` in `agent_sequence` hang waiting on a filesystem file that never arrives. Fixed by threading an injectable `waitForPrReviewGate` through `FeatureGraphContext` with the test helper defaulting to `async () => ({ approved: true })`.
+- **`exactOptionalPropertyTypes: true` bites** when building objects with `undefined`-valued optional fields. Either omit the key entirely or spread conditionally — never set to `undefined`.
+- **Typecheck (`tsc --noEmit`) is more lenient than build (`tsc` with emit)** — a null-narrowing bug slipped past typecheck but failed the build. Always run `pnpm -r build` before claiming done.
+- **fs.watch on a non-existent file throws on some platforms** — watch the parent directory instead; poll + fs.watch together give belt-and-suspenders reliability on Windows.

@@ -110,7 +110,7 @@ _Testing, review, git, HTML verification._
 _The external TypeScript orchestrator + HITL gate mechanics that tie stages together for autonomous runs._
 
 - [21 / 035 — Orchestrator core (stage runner + SDK integration + kit-change-request detour)](archive/21-035-orchestrator-core.md) ✓ complete (task-035)
-- [22 / 036 — HITL gates (5 gates — requirements / mockups / design-system / signoff / credentials-file-drop) + budget enforcement](22-036-hitl-gates.md) _deferred per roadmap_
+- [22 / 036 — HITL gates (6 gates — 5 classic + pr-review/gate-6) — MVP file-drop shipped; HTTP UI deferred](archive/22-036-hitl-gates.md) ✓ shipped 2026-04-23 via plans/task-036-hitl-gates-server.md
 
 ### Phase G — Meta & compliance (tier 10)
 

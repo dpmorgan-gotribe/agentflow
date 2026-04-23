@@ -1,14 +1,17 @@
-import type { PipelineStage } from "@repo/orchestrator-contracts";
+import type {
+  GateResolution,
+  PipelineStage,
+} from "@repo/orchestrator-contracts";
+import { waitForGateDecision } from "./gate-server-lifecycle.js";
 import { runStage, type RunContext, type StageResult } from "./stage-runner.js";
 import { STAGES } from "./stages-array.js";
 import { saveState } from "./state-persistence.js";
 
 /**
  * Gate resolution primitive. A gate is paused until this resolves. In
- * production, task-036 spins an HTTP server (gates 2 + 4) or watches
- * `docs/gate-{N}-approved.txt` (gates 1 + 3 + 5 + 6). For tests and the
- * MVP CLI dry-run we inject a stub that resolves immediately or per the
- * caller's control.
+ * production this delegates to `waitForGateDecision` (file-drop watcher
+ * in `gate-server-lifecycle.ts`). Tests + dry-runs inject a stub via
+ * `cfg.waitForGate` that resolves immediately.
  */
 export type WaitForGateFn = (args: {
   stage: PipelineStage;
@@ -16,10 +19,35 @@ export type WaitForGateFn = (args: {
   pipelineRunId: string;
 }) => Promise<GateResolution>;
 
-export interface GateResolution {
-  approved: boolean;
-  /** Free-form note from the human (stored in the pipeline output). */
-  note?: string;
+export { type GateResolution };
+
+/**
+ * Build a `WaitForGateFn` that delegates to the real file-drop watcher.
+ * Callers that want human gates wire this into `runPipeline({ waitForGate })`.
+ * Left as a factory (not a default) because tests + dry-runs want
+ * auto-approve; live runs wire this explicitly from the CLI.
+ */
+export function fileDropWaitForGate(
+  opts: {
+    logger?: (msg: string) => void;
+    rePrintIntervalMs?: number;
+  } = {},
+): WaitForGateFn {
+  return async ({ stage, projectRoot }) => {
+    if (!stage.gateType) {
+      return { approved: true };
+    }
+    const args: Parameters<typeof waitForGateDecision>[0] = {
+      gateType: stage.gateType,
+      projectRoot,
+      stageName: stage.name,
+    };
+    if (opts.logger) args.logger = opts.logger;
+    if (opts.rePrintIntervalMs !== undefined) {
+      args.rePrintIntervalMs = opts.rePrintIntervalMs;
+    }
+    return waitForGateDecision(args);
+  };
 }
 
 /**

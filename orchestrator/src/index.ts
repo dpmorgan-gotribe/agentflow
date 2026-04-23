@@ -1,5 +1,21 @@
 // orchestrator/ — barrel
 // TypeScript runtime driving the two-mode pipeline via the Claude Agent SDK.
-// Populated in Phases 3-9 of task-035.
 
-export {};
+export {
+  startGateServer,
+  waitForGateDecision,
+  resolveGateFilePath,
+  tryResolveGateFile,
+  type GateServerHandle,
+  type StartGateServerArgs,
+  type WaitForGateDecisionArgs,
+} from "./gate-server-lifecycle.js";
+export {
+  fileDropWaitForGate,
+  runPipeline,
+  type GateResolution,
+  type PipelineConfig,
+  type PipelineResult,
+  type SaveContextFn,
+  type WaitForGateFn,
+} from "./pipeline.js";

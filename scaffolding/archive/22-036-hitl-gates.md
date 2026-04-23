@@ -1,14 +1,27 @@
 ---
 task-id: "036"
 title: "HITL Gates + Budget Enforcement"
-status: pending
+status: shipped-mvp
 priority: P2
 tier: 9 — Orchestrator
 depends-on: ["035", "034b"]
 estimated-scope: medium
+shipped-as: plans/archive/task-036-hitl-gates-server.md
+shipped-at: 2026-04-23
 ---
 
 # 036: HITL Gates + Budget Enforcement
+
+> **MVP status (2026-04-23):** shipped as `plans/active/task-036-hitl-gates-server.md`
+> (archived on completion). MVP scope: **all 6 gates use file-drop**; HTTP UI
+> for gates 2 + 4 (dial editor, signoff form) is **deferred post-MVP**. Gate 6
+> (pr-review, new per investigate-002 answer #1) is wired. Budget enforcement
+> lives in `orchestrator/src/budget-tracker.ts` (task-035 Phase 6) and is
+> already shipped; this scaffolding's Budget Enforcement section is superseded
+> by the BudgetTracker implementation.
+>
+> This file is archived for historical reference — the HTTP-server design
+> documented below is a future enhancement.
 
 ## What This Task Produces
 
