@@ -35,13 +35,18 @@ export const StageName = z.enum([
 ]);
 export type StageName = z.infer<typeof StageName>;
 
-/** Which gates a stage may open after completing. */
+/**
+ * Which gates a stage may open after completing. Gates 1–5 are Mode A
+ * stage boundaries; gate 6 (`pr-review`) is a Mode B feature boundary
+ * added in task-036 per investigate-002 answer #1 (autonomy boundary).
+ */
 export const GateType = z.enum([
   "requirements",
   "mockups",
   "design-system",
   "signoff",
   "credentials",
+  "pr-review",
 ]);
 export type GateType = z.infer<typeof GateType>;
 
