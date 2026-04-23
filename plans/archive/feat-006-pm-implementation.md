@@ -1,9 +1,10 @@
 ---
 id: feat-006-pm-implementation
 type: feature
-status: approved
+status: completed
 approved-at: 2026-04-23
 approved-by: human
+completed-at: 2026-04-23
 author-agent: human
 created: 2026-04-23
 updated: 2026-04-23
@@ -184,4 +185,50 @@ Five phases. Each ends with a commit + passing validation.
 
 ## Attempt Log
 
-<!-- Populated by executing agent. -->
+### Attempt 1 — 2026-04-23 (succeeded end-to-end across all 5 phases)
+
+5 commits on `feat/pm-implementation`:
+
+- Phase 1: `packages/orchestrator-contracts/src/pm.ts` — PmOutput discriminated union on `mode` (tasks | kit-change-request). 16 new tests. Contracts now at 86 tests.
+- Phase 2: `.claude/agents/project-manager.md` — dual-mode agent, feature-grouping heuristic, 3 cross-field invariants, priority ladder from brief §19.
+- Phase 3: `.claude/skills/pm/SKILL.md` — 7 tasks-mode steps + 6 kit-change-request-mode steps; argument gate; schema-validate + retry ≤3x.
+- Phase 4: `docs/tasks.yaml.template` + `plans/templates/kit-change-request-plan.md` + `scripts/validate-tasks-yaml.mjs` (AJV + cross-field DFS cycle check). Template validates OK.
+- Phase 5 smoke test: spawned general-purpose subagent to execute `/pm --mode=tasks` against mindapp-v2's architecture.yaml (feat-005 output) + requirements + flows. Produced `projects/mindapp-v2/docs/tasks.yaml` — 1714 lines, 25 features, 136 tasks, schema-valid, all cross-field invariants pass. Dry-run now reports `✓ pm — already complete`; halt point advanced to `skills-audit-build` (feat-010).
+
+**25 features emerged from grouping:**
+
+- P0 infrastructure: `feat-infra-aws-foundation`, `feat-feature-flags-launchdarkly`, `feat-core-data-model`, `feat-fsrs-scheduler`, `feat-auth-auth0`, `feat-home-dashboard`
+- P0 learning core: `feat-onboarding-diagnostic`, `feat-card-study-session`
+- P0 billing: `feat-billing-stripe-web` (web-only)
+- P1 features: knowledge map, progress analytics, AI coach, on-demand topics, marketing, account settings, billing-iap-mobile
+- P2 features: public-kb, study-clubs, body-checkin, practice-guitar, practice-pose-detection, push-notifications, code-sandbox-firecracker
+- P3 deferred: language-audio, image-generation (nanobanana flag-gated)
+
+**byAgent** breakdown: devops 7 / backend-builder 42 / web-frontend-builder 18 / mobile-frontend-builder 19 / tester 25 / reviewer 25. **byPriority**: P0 48 / P1 43 / P2 37 / P3 8.
+
+## Lessons Learned
+
+**Discriminated union works cleanly when discriminator values are unique.** PmOutput's `mode: "tasks" | "kit-change-request"` has no duplicate-value variants, so `z.discriminatedUnion("mode", [...])` works. Feat-005's GitAgentOutput had duplicate `op` values across success/failure variants; that's what forced the fallback to `z.union`. Rule of thumb: try discriminatedUnion first; fall back to z.union only when the discriminator field has collisions.
+
+**Feature-grouping collapses are OK — even preferred.** The subagent naturally merged overlapping flows (e.g. mobile flows 2+3 + web flow 3 → `feat-card-study-session`) rather than creating 3 separate features for parallel surfaces of the same flow. This is the right call for worktree parallelism — splitting the same logical feature across 3 worktrees would serialize merges. Document the collapse in warnings[] so re-runs see the deliberate grouping choice.
+
+**`requiredNow: true` is a credential-presence contract, not a P0 task marker.** Architect flags integrations `requiredNow: true` to mean "this env var must be in .env at build time" — not "this integration must be used in a P0 task". PM correctly surfaced as a warning that `ai-inference` is `requiredNow: true` but its first consumer (AI Coach) is P1 (M1 milestone). The relationship between the two is intentionally loose; architect sizes the credential window, PM sizes the feature sequencing.
+
+**The `devops` agent is in the schema but not in FULL_SEQ defaults.** Features like `feat-infra-aws-foundation` (Terraform + AWS provisioning) and `feat-code-sandbox-firecracker` (Firecracker host provisioning) need `devops` explicitly at the front of their `agent_sequence[]`. The feature.schema enum includes `devops` + `security` for exactly this reason — PM should emit them when the feature's work naturally falls outside the typical builder/tester/reviewer chain.
+
+**AJV + js-yaml: remember to addSchema() for $refs across schema files.** `tasks.schema.json` has `items: { $ref: "./feature.schema.json" }`. AJV can't resolve that by path — you have to `ajv.addSchema(featureSchema, "./feature.schema.json")` so the compiled validator knows where to find it. Without this, AJV silently skips the ref and accepts any feature shape. Learned during Phase 4 when my first validator pass didn't actually verify feature structure.
+
+**1714 lines of tasks.yaml is a lot to eyeball — the cross-field validator is the load-bearing check.** For a 25-feature × 136-task graph, manual invariant checking isn't feasible. `scripts/validate-tasks-yaml.mjs` runs (a) AJV schema + (b) DFS cycle detection on feature.depends_on + (c) task.agent ∈ agent_sequence + (d) task.depends_on same-feature-scope. All four ran cleanly on the subagent's first output. That's what gives me confidence the output is actually usable by Mode B.
+
+## Follow-up Work Unblocked
+
+- **feat-007-builder-runtimes** — next on the critical path. Builders (backend + web + mobile) read their task subsets from the orchestrator (filtered by `task.agent == agentName` per feature), resolve `integration_ref` into architecture.yaml for vendor details, and dispatch stack-specific sub-skills from `.claude/skills/agents/{tier}/{stack-slug}/SKILL.md`.
+- **feat-008-tester** — reads tester-assigned tasks; testing-policy.md shipped in an earlier refactor.
+- **feat-009-reviewer** — reads reviewer-assigned tasks; consumes architecture.yaml + tasks.yaml for cross-reference.
+- **task-010 skills-audit** — next dry-run halt point. Secondary-scope skill shipping involves registering vendor SDKs identified in architecture.yaml.tooling.skills.build[]. Less load-bearing than builders — mostly registrar work.
+
+Follow-ups NOT yet tested in this plan:
+
+- **Live `/pm --mode=kit-change-request` invocation** — no kit-change-request has fired in any pipeline yet; the mode is load-bearing for refactor-001 detours but hasn't been exercised end-to-end. Deferred until a real design-phase detour fires OR until we synthesize a test request file for unit-level testing.
+- **`.claude/worktrees/` directory does not exist on mindapp-v2 yet.** tasks.yaml references worktrees that git-agent will create at runtime; that's Mode B territory + feat-007 (git-agent lifecycle).
+- **Re-run determinism** — did not verify that re-running /pm produces identical tasks.yaml. PM is supposed to use stable feature-slug naming so `depends_on` references survive; first live re-run will be the test.
