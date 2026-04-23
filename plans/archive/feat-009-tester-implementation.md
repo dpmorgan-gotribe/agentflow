@@ -1,9 +1,10 @@
 ---
 id: feat-009-tester-implementation
 type: feature
-status: approved
+status: completed
 approved-at: 2026-04-23
 approved-by: human
+completed-at: 2026-04-23
 author-agent: human
 created: 2026-04-23
 updated: 2026-04-23
@@ -163,4 +164,55 @@ Reuse the scratch repo at `projects/backend-builder-smoke-20260423-013328/` from
 
 ## Attempt Log
 
-<!-- Populated by executing agent. -->
+### Attempt 1 — 2026-04-23 (succeeded across all 4 phases)
+
+4 commits on `feat/tester-implementation` + 1 gap-fix commit:
+
+- Phase 1: `packages/orchestrator-contracts/src/tester.ts` — TesterOutput + TesterTestLayer enum + GenuineProductBug (routed-back-to-builder shape) + FullSuiteRun. 18 new tests. Contracts now at 121.
+- Phase 2: `.claude/agents/tester.md` — narrow-scope per feat-004 hybrid-TDD: no happy-path authoring, trust-but-verify builder tests, own edge-case + integration + (optional) E2E, coverage ≥80% total, genuineProductBugs feedback loop.
+- Phase 3: `.claude/skills/tester/SKILL.md` — 8-step dispatcher with retry ladder (≤3 iterations) distinguishing tester-authoring bugs vs genuine product bugs; `--skip-e2e` flag for backend-only features.
+- Phase 4 smoke test: reused feat-008 scratch repo. Synthesized `feat-test-coverage-knowledge-graph` feature. Tester subagent wrote **33 edge-case tests across 2 files** (knowledge-graph.service.edge-cases.test.ts + seed.edge-cases.test.ts), committed with `test:` conventional-commit prefix, merged to main via close-feature. TesterOutput validated.
+- Fix commit: step-2 ambiguity ("load-then-filter" vs "filter-then-load") clarified per Phase 4 gap finding.
+
+**Phase 4 artifacts on the scratch repo's main branch:**
+
+```
+*   6c7e820 Merge feat/test-coverage-knowledge-graph: feat-test-coverage-knowledge-graph
+|\
+| * ce88872 test(...): edge-case tests for seed.slugify (8 tests)
+| * 111b19e test(...): edge-case tests for KnowledgeGraphService (25 tests: error paths, empty graphs, depth clamps, lifecycle)
+|/
+* 2da6777 chore: add feat-test-coverage-knowledge-graph for tester smoke test
+* 72c1301 (previous feat-008 merge) ...
+```
+
+## Lessons Learned
+
+**Gap 1 (fixed in SKILL.md): "load-then-filter" is wasteful — prefer "filter-then-load".** Original step 2 said "for each tier present in tooling.stack.\*, load the stack skill". In a 3-tier project with a backend-only feature (feature.skip: [web, mobile]), this would load web + mobile stack skills for zero benefit — pure prompt noise. Updated step 2 explicitly: filter tasks first (step 3), THEN load stack skills for tiers that survive filtering. Survival rule: non-null framework + not in feature.skip[] + ≥1 task targeting that tier's app directory.
+
+**Gap 2 (documented, not fixed — stack-skill improvement candidate): seed scripts need DI seams OR integration-only scope.** `seed.ts::seedPsychology` + `seedKnowledgeGraph` instantiate `PrismaClient` + `neo4j.driver` at module level — no way to unit-test. Tester scoped seed edge cases to `slugify` boundaries only (pure function). In real pipeline with installed deps, tester would push these to the integration tier with testcontainers-postgres. **Action**: add to node-trpc-nest stack skill's §Gotchas: "Seed scripts: export inner helpers for unit-testing OR scope their tests to integration tier".
+
+**Gap 3 (documented): `.test.ts` test-isolation hazard.** Edge-case tests that mutate `process.env` or module-level state will leak across sibling tests if vitest parallelizes. Tester's lifecycle-edge-cases used `try/finally` to restore env — correct defensive shape. **Action**: add to node-trpc-nest stack skill's §Gotchas: "vitest-config.ts should set `pool: 'forks', isolate: true` when testing modules with env-var read-sites".
+
+**Gap 4 (documented, contract limitation): `coverageBuilderOnly: 0` when runner is blocked is semantically ambiguous.** 0 could mean "zero coverage" OR "unknown". The Zod schema enforces `0..100`, so "unknown" can't be represented. Consumers must gate on `policyCheck === "blocked"` before trusting coverage numbers. **Action**: either make the coverage fields nullable in a follow-up contract refactor (minor semver bump), OR document the "gate on policyCheck" rule more prominently in the Zod comments. Current smoke test's `policyCheck: "blocked"` + coverage: 0 is correctly interpretable, but future consumers may miss this.
+
+**`.git/info/exclude` idempotency confirmed.** Phase 4 re-used the scratch repo from feat-008 — `.feature-context.json` was already in `.git/info/exclude` from the earlier run. The skill's "check before append" logic correctly no-op'd. Good idempotent shape; working as designed.
+
+**Builders' §Testing stack-skill content DRIVES tester's authoring quality.** Tester authored realistic Vitest edge cases by reading node-trpc-nest's §Testing block verbatim. The quality of tester output is directly proportional to the quality of the stack skill's §Testing content. **Implication**: future stack-skill additions need substantive §Testing blocks (runner setup, mocking idiom, example test, anti-patterns) to give tester authoring context. A thin stub §Testing block = thin tester output.
+
+**No-overlap-with-builder verified via grep.** Tester's 33 tests had zero canonical-test-name collisions with the builder's 5 happy-path tests. Hybrid-TDD role split held cleanly. Trust-but-verify pattern (run builder tests first, surface handoff warnings, don't rewrite builder code) also held — the scratch-repo install-skip surfaced as a documented warning, not a retry-loop.
+
+**Scratch-repo reuse pattern works for cross-plan smoke tests.** feat-009 built on feat-008's scratch artifact (backend-builder's commits on main). Total new scratch setup time: a single commit adding the tester-only feature to tasks.yaml. **Implication**: feat-010 reviewer can reuse the same scratch repo — builder + tester commits already on main make a realistic reviewer input. Keep the scratch repo around until the feat-011+ first live mindapp-v2 Mode B run retires the pattern.
+
+## Follow-up Work Unblocked
+
+- **feat-010 reviewer** — next critical-path plan. Reviewer reads tester's test files + builder's implementation + architecture.yaml. Scratch repo is ready: builder commits + tester commits both on main. Same pattern as feat-008 / feat-009.
+- **feat-011+ registrar skills** (task-010 skills-audit + task-011 register-mcp-servers) — clear the remaining Mode A dry-run halt stages. After reviewer ships, the full agent_sequence chain (builders → tester → reviewer) is validated; registrar work is cheap shelf-stocking.
+- **First live Mode B run against mindapp-v2** — post-reviewer, post-registrars. Will exercise the real-install code path that smoke tests have bypassed.
+
+Follow-ups NOT yet tested:
+
+- **Web + mobile tester dispatch** — backend-only smoke didn't exercise web E2E (Playwright) or mobile E2E (Maestro) authoring paths. Deferred to first live run with UI features.
+- **genuineProductBugs routing** — no synthesized product bugs in Phase 4. First failed-builder-test scenario will exercise orchestrator's task-retry-to-last-writing-builder routing.
+- **Coverage-based retry ladder** — Phase 4 was install-blocked so coverage measurement was skipped; 3-iteration retry logic not exercised against real coverage numbers. First live run with passing install validates.
+- **80% total coverage threshold** — can't be measured in install-skip mode. Will be validated on first real pipeline run.

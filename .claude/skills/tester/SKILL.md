@@ -34,12 +34,11 @@ Parse `--feature-id=`, optional `--skip-e2e`, optional `--task-ids=`. Reject mis
 
 ### 2. Load architecture + testing policy
 
-Read `{projectRoot}/.claude/architecture.yaml`. For each tier present in `tooling.stack.*` (web_framework, mobile_framework, backend_framework — non-null):
+Read `{projectRoot}/.claude/architecture.yaml`. Load `.claude/rules/testing-policy.md` into prompt context.
 
-- Load `.claude/skills/agents/{tier-dir}/{stack-slug}/SKILL.md` VERBATIM — focus on the §Testing block
-- Missing stack skill for a tier with tasks in scope → abort with `stack-skill-missing; run /skills-audit --scope=build`
+**Filter-then-load for stack skills** (feat-009 Phase 4 finding). Do NOT pre-load stack skills for every tier in `tooling.stack.*`; loading skills for tiers with no in-scope tester tasks is prompt noise. Defer stack-skill loading until step 3 has filtered tasks. In step 3, load `.claude/skills/agents/{tier-dir}/{stack-slug}/SKILL.md` VERBATIM for each tier that survives filtering. A tier survives when (a) `tooling.stack.{tier}_framework` is non-null, (b) feature.skip[] does NOT exclude that tier, AND (c) ≥1 task in the filtered set targets code living under that tier's app directory.
 
-Load `.claude/rules/testing-policy.md` into prompt context.
+Missing stack skill for a tier that DOES survive filtering → abort with `stack-skill-missing; run /skills-audit --scope=build`.
 
 ### 3. Load tasks
 
