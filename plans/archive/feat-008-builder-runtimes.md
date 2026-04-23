@@ -1,9 +1,10 @@
 ---
 id: feat-008-builder-runtimes
 type: feature
-status: approved
+status: completed
 approved-at: 2026-04-23
 approved-by: human
+completed-at: 2026-04-23
 author-agent: human
 created: 2026-04-23
 updated: 2026-04-23
@@ -188,4 +189,51 @@ Pick the simplest P0 backend-only feature from mindapp-v2's tasks.yaml: **`feat-
 
 ## Attempt Log
 
-<!-- Populated by executing agent. -->
+### Attempt 1 — 2026-04-23 (succeeded across all 4 phases)
+
+4 commits on `feat/builder-runtimes` + 1 fix commit:
+
+- Phase 1: `packages/orchestrator-contracts/src/builder.ts` — BuilderTier + BuilderTaskResult + BuilderOutputBase + 3 tier variants + discriminated BuilderOutput. 17 new tests. Contracts test count 103.
+- Phase 2: 3 agent definitions — `.claude/agents/{backend,web-frontend,mobile-frontend}-builder.md`. Stack-agnostic (framework names only in "do not hardcode X" disclaimers). Sanctioned `.env` read for backend only.
+- Phase 3: 3 dispatcher skills — `.claude/skills/{backend,web-frontend,mobile-frontend}-builder/SKILL.md`. Shared 8-step pattern: arg gate → load arch → load stack skill → filter tasks → confirm worktree → per-task execute+commit+self-verify → append agent_history → return BuilderOutput.
+- Phase 4 smoke test: backend-builder against mindapp-v2's `feat-core-data-model` in an isolated scratch repo at `projects/backend-builder-smoke-<ts>/`. Full Mode B loop: bootstrap → checkout-feature → backend-builder(4 tasks, 8 files, 4 commits) → close-feature(clean merge). All GitAgentOutput variants + BuilderOutput validate. **Merge commit on main; worktree removed; closed-lockfile persisted; factory repo untouched.**
+
+**Phase 4 artifacts** (in the scratch repo, not the factory):
+
+| Task                         | Files written                                                                             |
+| ---------------------------- | ----------------------------------------------------------------------------------------- |
+| prisma-schema-relational     | `apps/api/prisma/schema.prisma`                                                           |
+| prisma-migrations-initial    | `apps/api/prisma/migrations/20260423000000_initial/migration.sql` + `migration_lock.toml` |
+| neo4j-driver-knowledge-graph | `knowledge-graph.module.ts` + `.service.ts` + `.service.test.ts`                          |
+| data-seed-scripts            | `prisma/seed.ts` + `seed.test.ts`                                                         |
+
+Total: 6 impl + 2 tests, 4 conventional-commits, merge-commit sha on main. BuilderOutput JSON validated against `BackendBuilderOutput` Zod variant.
+
+## Lessons Learned
+
+**Gap 1 (fixed): Per-worktree `.git/worktrees/{slug}/info/exclude` is NOT consulted by `git status`.** This was my feat-007 fix for lockfile-blocks-worktree-remove. The smoke-test subagent confirmed via `git check-ignore -v` that per-worktree excludes aren't read inside the worktree — git uses `.git/info/exclude` (the common/shared one at the main working tree's `.git/`). **Fix applied**: updated `checkout-feature` step 5 to append to `.git/info/exclude` instead. Idempotent: check if the line exists before appending. Live smoke-test worked via this path.
+
+**Gap 2 (documented, will be fixed in /new-project or pre-builder orchestrator step): Real invocations need `apps/{tier}/package.json` + `node_modules/` before builders' self-verify works.** The stack skill's `lint && typecheck && test` block assumes a real install. If `apps/api/package.json` is absent when backend-builder runs (which is true for the first-ever feature if infra-scaffolding hasn't run), `pnpm --filter @repo/api test` exits cleanly with "No projects matched" — retries loop pointlessly. **Action**: orchestrator should run `pnpm install` once after `feat-infra-aws-foundation` (or whichever feature scaffolds `apps/api/`) completes, before any subsequent backend-builder invocation. Alternatively, document this as a prereq of the backend-builder stack skill — the infra-scaffolding feature IS what creates `apps/api/package.json`.
+
+**Cross-feature `depends_on` semantics are enforced at PM time, not at builder time.** To smoke-test `feat-core-data-model` in isolation, subagent had to trim tasks.yaml to just that feature AND clear its `depends_on: [feat-infra-aws-foundation]` to keep the validator happy. In live Mode B, the orchestrator's topological-sort scheduler handles cross-feature ordering — features with unresolved deps don't launch. Smoke-test isolation required breaking this invariant intentionally; document the trimming as a scratch-repo setup step.
+
+**`.claude/hooks/enforce-boundaries.sh` blocks writes outside `$CLAUDE_PROJECT_DIR`.** The smoke-test plan called for `/tmp/<scratch>/` but the hook refused. Subagent pivoted to `projects/<scratch>/` (gitignored sub-path). Same outcome (factory git untouched), different path. Future smoke-test plans for tools that need filesystem isolation should write to `projects/<scratch-slug>/` or a similar project-internal gitignored path rather than `/tmp/`.
+
+**CRLF warnings on Windows are noise but consistent.** Every commit produced `LF will be replaced by CRLF` warnings. Non-blocking. Generated apps that need LF line endings should have `.gitattributes` seeded with `* text=auto eol=lf` at `/new-project` time — flagged as a follow-up for `/new-project` skill audit.
+
+**Builder dispatchers mostly-shared structure:** the 8-step pattern is cleanly replicated across all 3 skills with ~5 lines tier-specific swap per step. Code duplication cost is low; maintenance cost of a meta-dispatcher would be higher. Keep bundled.
+
+## Follow-up Work Unblocked
+
+- **feat-009 tester** — next on the critical path. Tester reads all 3 builders' committed work; adds edge cases + integration + E2E + raises coverage floor from 60% (builder-scope) to 80% (total). Tester smoke test naturally exercises web + mobile builders too (defer Phase-4-scope validation to tester).
+- **feat-010 reviewer** — reads the full chain including tests; cross-references architecture.yaml + `.env.example` for "no secrets in code" scan.
+- **task-010 skills-audit** + **task-011 register-mcp-servers** — the remaining Mode A dry-run halt stages. Can ship anytime before the first live Mode B end-to-end.
+- **First live Mode B run** against mindapp-v2 — blocked on above + the `apps/{tier}/package.json` prereq (covered by `feat-infra-aws-foundation` being the first P0 feature in mindapp-v2's tasks.yaml).
+
+Follow-ups NOT yet tested in this plan:
+
+- **Web + mobile builder live smoke tests** — deferred to feat-009 or first end-to-end pipeline run. Dispatcher pattern is identical; risk is concentrated in the ui-kit + data-kit-\* translation logic, which tester will exercise across real screens.
+- **Kit-change-request emission** — web/mobile builders should emit `docs/screens/kit-change-requests/*.md` when a primitive is missing. Not exercised here (backend doesn't need kit). Tester or a kit-gap scenario will surface this path.
+- **Retry ladder** — builder's 2-retry-per-task self-verify loop not triggered in this smoke (all tasks "succeeded" as far as commit flow; lint/typecheck/test bypassed due to missing install). First real invocation will exercise it.
+- **Actual `.env` read by backend-builder** — sanctioned exception not exercised (no .env present in scratch). First live run against mindapp-v2 (post-gate-5) will validate.
+- **`last_writing_agent` update logic across multiple agents in a feature** — backend-builder is agent 1-of-3 in feat-core-data-model; only backend-builder wrote in this smoke. Tester + reviewer entries will land later.

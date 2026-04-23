@@ -114,7 +114,7 @@ Runs ONCE per feature at the start of `runFeature()`.
    - If not exists → proceed to step 3
 3. `git worktree add -b {branch} .claude/worktrees/{worktree} origin/main` — fresh branch from origin/main
 4. Capture `git rev-parse origin/main` → `{sha}`; compose `opened_from` as `main@{sha7}` (first 7 chars)
-5. **Hide the lockfile from the worktree's git tracking.** Append `.feature-context.json` to `.git/worktrees/{worktree}/info/exclude` so `git status --porcelain` inside the worktree never reports it as dirty AND `git worktree remove` doesn't refuse during close-feature. Path is factory-relative: `<project-root>/.git/worktrees/{worktree}/info/exclude`. Create the `info/` directory if missing.
+5. **Hide the lockfile from git's tracking.** Append `.feature-context.json` to **`.git/info/exclude`** (the common/shared exclude file at the main working tree's `.git/` — NOT the per-worktree `.git/worktrees/{slug}/info/exclude`, which is NOT consulted by `git status` inside a linked worktree per feat-008 Phase 4 findings). `.git/info/exclude` is shared across all worktrees; appending `.feature-context.json` once is idempotent (check if the line already exists; don't duplicate). This ensures `git status --porcelain` inside any worktree ignores the lockfile AND `git worktree remove` succeeds without `--force` during close-feature.
 6. Write `.claude/worktrees/{worktree}/.feature-context.json` with:
    - `version: "1.0"`
    - `feature_id`, `worktree`, `branch` (from args)
