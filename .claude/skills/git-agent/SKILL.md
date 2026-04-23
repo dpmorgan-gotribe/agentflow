@@ -114,7 +114,8 @@ Runs ONCE per feature at the start of `runFeature()`.
    - If not exists → proceed to step 3
 3. `git worktree add -b {branch} .claude/worktrees/{worktree} origin/main` — fresh branch from origin/main
 4. Capture `git rev-parse origin/main` → `{sha}`; compose `opened_from` as `main@{sha7}` (first 7 chars)
-5. Write `.claude/worktrees/{worktree}/.feature-context.json` with:
+5. **Hide the lockfile from the worktree's git tracking.** Append `.feature-context.json` to `.git/worktrees/{worktree}/info/exclude` so `git status --porcelain` inside the worktree never reports it as dirty AND `git worktree remove` doesn't refuse during close-feature. Path is factory-relative: `<project-root>/.git/worktrees/{worktree}/info/exclude`. Create the `info/` directory if missing.
+6. Write `.claude/worktrees/{worktree}/.feature-context.json` with:
    - `version: "1.0"`
    - `feature_id`, `worktree`, `branch` (from args)
    - `opened_at: <now-ISO>`
@@ -123,7 +124,7 @@ Runs ONCE per feature at the start of `runFeature()`.
    - `agent_history: []`
    - `last_writing_agent: null`
    - `status: "open"`
-6. Validate the lockfile via `node scripts/validate-feature-context.mjs <path>` → must exit 0
+7. Validate the lockfile via `node scripts/validate-feature-context.mjs <path>` → must exit 0
 
 ### Output (success)
 
@@ -179,10 +180,10 @@ Runs at end of `runFeature()` after every agent in `agent_sequence[]` has comple
 5. Attempt merge: `git merge --no-ff {branch} -m "Merge {branch}: {feature_id}"`.
 6. **On clean merge:**
    - Capture merge commit: `git rev-parse HEAD` → `mergeSha`
-   - `git worktree remove .claude/worktrees/{worktree}`
-   - `git branch -d {branch}` (local only; remote persists for audit)
-   - Update lockfile (if it survived worktree removal — write after the removal): `status: "closed"`, `merge_sha`, append agent_history entry `{ agent: "git-agent", op: "close-feature", outcome: "success", finished_at: <now>, commit_sha: mergeSha }`
-     - Note: `git worktree remove` removes the directory. Persist the closed-lockfile at `.claude/worktrees/{worktree}.closed.json` instead (housekeeping sweeps later).
+   - `git push origin main` — push main to origin so `git branch -d` (safe-delete in step below) can verify the feature branch's history is on origin
+   - `git worktree remove .claude/worktrees/{worktree}` (the `info/exclude` entry written at checkout-feature step 5 makes the lockfile invisible to this op, so `--force` is not needed)
+   - `git branch -d {branch}` — safe-delete (remote branch persists at origin for audit)
+   - Persist the closed-lockfile at `.claude/worktrees/{worktree}.closed.json`: copy the pre-removal lockfile contents + set `status: "closed"`, `merge_sha`, append agent_history entry `{ agent: "git-agent", op: "close-feature", outcome: "success", finished_at: <now>, commit_sha: mergeSha }`.
    - Return success.
 7. **On conflict:**
    - Parse `git diff --name-only --diff-filter=U` → `conflictingFiles[]`
