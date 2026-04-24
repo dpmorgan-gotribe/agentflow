@@ -6,7 +6,8 @@
 - Generated apps live under `projects/<name>/` and are independent git repos
 - To create a new project: run `/new-project <name>` (see `.claude/skills/new-project/SKILL.md`)
 - To refresh agentic resources in an existing project without losing user content: `/new-project <name> --force`
-- To drive the end-to-end pipeline for a project (analyze → design → architect → pm → build): `/start-build <name>` (see `.claude/skills/start-build/SKILL.md`). Auto-detects where the pipeline left off and resumes. `/start-build <name> --dry-run` previews the walk.
+- Design + planning is HITL-gated, run one skill at a time: `/analyze` → `/mockups` → (gate 2: `/pick-style`) → `/stylesheet` → `/screens` → `/user-flows-generator` → (gate 4: design signoff) → `/architect` → (gate 5: fill .env + drop `docs/credentials-confirmed.txt`) → `/pm --mode=tasks`.
+- Then `/start-build <name>` to run the autonomous build phase (Mode B): opens parallel git worktrees per feature from `docs/tasks.yaml`, runs each feature's `agent_sequence` (builder → security → tester → reviewer), merges to main. Refuses to run until all Mode A artifacts + gate-5 are in place. `/start-build <name> --dry-run` previews the feature DAG wave plan.
 - The factory↔project distinction is load-bearing: never edit a project's `.claude/agents/` expecting it to propagate back to the factory
 
 ## Project Specification

@@ -1,266 +1,264 @@
 ---
 name: start-build
-description: Drive the full end-to-end pipeline for a project — invokes the orchestrator binary (task 035) which walks Mode A stages (analyze → mockups → stylesheet → screens → visual-review → user-flows → architect → pm) respecting HITL gates, then Mode B (parallel feature-graph build from docs/tasks.yaml). Auto-detects pipeline state so it can be run on fresh scaffolds, half-completed projects, or projects waiting at Mode B.
-when_to_use: after `/new-project <name>` has scaffolded a project and the user is ready to let the pipeline run; resumes from wherever the project left off; when the user says "start building", "run the pipeline", "kick off the build"
-argument-hint: "<project> [--flags=<csv>] [--dry-run] [--resume-from-stage=<name>] [--resume-feature-graph] [--auto-merge-after-reviewer]"
+description: Kick off the autonomous build phase (Mode B) for a project — reads docs/tasks.yaml, opens parallel git worktrees per feature, runs each feature's agent_sequence (builder → security → tester → reviewer), merges to main. Invoked AFTER gates 1-5 have resolved manually via /analyze, /mockups, /stylesheet, /screens, /user-flows-generator, /architect, /pm. Refuses to run until all Mode A artifacts + gate signoffs are in place.
+when_to_use: after /pm has produced docs/tasks.yaml AND gate 5 has resolved (docs/credentials-confirmed.txt contains `proceed` or `defer:`); when the user says "start building", "kick off the build", "run Mode B", "ship it"
+argument-hint: "<project> [--flags=<csv>] [--dry-run] [--auto-merge-after-reviewer] [--max-concurrent=<N>]"
 allowed-tools: Read Bash Grep Glob
 model: inherit
 ---
 
-# /start-build — End-to-end pipeline driver
+# /start-build — Mode B autonomous build driver
 
-Single entry point that takes a project from wherever-it-is to shipped code. Delegates all real work to `orchestrator/` (task-035 binary at factory root). This skill adds: project-name validation, state-aware argument assembly, and a consistent transcript.
+Invokes the factory orchestrator (`orchestrator/` at factory root, task 035) in feature-graph mode against a named project. Does NOT walk Mode A stages — those are driven by explicit user invocations of the individual skills (`/analyze`, `/mockups`, `/stylesheet`, `/screens`, `/user-flows-generator`, `/architect`, `/pm`) with HITL gates in between.
 
-Pipeline walk the orchestrator executes (ref: `orchestrator/src/stages-array.ts`):
+Once this skill fires, the build runs autonomously to completion (or retry-exhaustion). No more human-in-the-loop until a reviewer flags a feature as `blocked` or all retries exhaust.
+
+## The intended pipeline
 
 ```
-Mode A — linear, one stage at a time:
-  analyze              → gate 1 (requirements)
-  skills-audit(design)
-  mockups              → gate 2 (pick-style)
-  stylesheet           → gate 3 (design-system)
-  screens
-  visual-review
-  user-flows           → gate 4 (design sign-off)
-  architect            → gate 5 (credentials .env file-drop)
-  pm --mode=tasks
-  skills-audit(build)
-  register-mcp(build)
-  git-agent-bootstrap
+MODE A — design + planning, HITL-gated, manually driven:
 
-Mode B — feature-graph parallel build:
-  for each feat-* in docs/tasks.yaml:
-    git-agent opens worktree → agent_sequence runs → git-agent merges
-  (concurrent up to maxConcurrentFeatures, respecting depends_on)
+  /analyze                               → gate 1  (requirements signoff)
+  /mockups                               → gate 2  (pick-style: pick one of N styles)
+  /stylesheet                            → gate 3  (design-system signoff, binds ui-kit version)
+  /screens
+  /visual-review                         (optional — skip with operator note)
+  /user-flows-generator                  → gate 4  (design sign-off; binds screensManifestHash)
+  /architect                             → gate 5  (credentials: fill .env, drop docs/credentials-confirmed.txt)
+  /pm --mode=tasks                       (emits docs/tasks.yaml v2)
+
+MODE B — build, autonomous, this skill owns it:
+
+  /start-build <project>
+    ↓
+  orchestrator feature-graph:
+    1. git-agent-bootstrap (creates .claude/worktrees/)
+    2. For each feat-* in tasks.yaml respecting depends_on:
+       a. git-agent checkout-feature  (worktree + branch)
+       b. run feature.agent_sequence  (backend / web / mobile / security / tester / reviewer)
+       c. git-agent close-feature     (merge to main; conflicts route back)
+    3. Exit when last feature merges or retries exhaust
 ```
 
-The orchestrator auto-detects pipeline state (`orchestrator/src/project-state.ts`): each stage counts as complete only if its canonical artifact exists on disk. On invocation it resumes from the first incomplete stage. When every Mode A stage is done, it drops into Mode B.
+`/start-build` is the single autonomous seam. Everything before it is deliberate, user-initiated work. Everything after it is orchestrator-owned.
 
 ## Arguments
 
-- `<project>` (required) — project directory name under `projects/`. Must exist.
-- `--flags=<csv>` — feature flags passed through to stages (e.g. `nanobanana` for image generation)
-- `--dry-run` — report the walk plan + first missing skill, but invoke nothing
-- `--resume-from-stage=<name>` — override auto-detection; force resume at a named stage
-- `--resume-feature-graph` — skip Mode A entirely, go straight to Mode B (only valid if `docs/tasks.yaml` already exists)
-- `--auto-merge-after-reviewer` — skip gate 6 (pr-review) in Mode B; merge as soon as the reviewer agent approves
+- `<project>` (required) — project directory under `projects/`. Must exist and must have passed Mode A (see §Prerequisites).
+- `--flags=<csv>` — forwarded to the orchestrator's stage dispatch (e.g. `nanobanana` for image generation; ignored in Mode B most of the time)
+- `--dry-run` — simulate the feature DAG walk, report which features would run in which wave + estimated cost; invoke no agents
+- `--auto-merge-after-reviewer` — skip gate 6 (pr-review); merge each feature as soon as its reviewer agent approves
+- `--max-concurrent=<N>` — override `maxConcurrentFeatures` (default from `~/.claude/models.yaml`, typically 3)
 
 Rejected inputs:
 
-- Missing `<project>` → error with a list of available projects under `projects/`
-- `<project>` names a directory that doesn't exist → error with guidance to run `/new-project <name> --proposal "..."` first
-- Both `--resume-from-stage` and `--resume-feature-graph` → error (mutually exclusive)
+- Missing `<project>` → error with a list of available `projects/*/`
+- `<project>` exists but `docs/tasks.yaml` is missing → error: "Mode A has not completed. Run /pm --mode=tasks first (or start from /analyze if earlier stages are also missing)."
+- `docs/credentials-confirmed.txt` missing or starts with `abort` → error: "Gate 5 has not resolved. Populate .env per .env.example, then write `proceed` (or `defer:...`) to docs/credentials-confirmed.txt."
 
-## Prerequisites
+## Prerequisites (hard gates before Mode B can fire)
 
-- `projects/<project>/` exists (scaffolded via `/new-project`)
-- `orchestrator/` is built (`pnpm --filter orchestrator build` ran at least once) OR invoke via `pnpm --filter orchestrator start` which tsx-runs source directly
-- Factory workspace has its `node_modules/` installed (`pnpm install` at factory root)
+Check each; abort on any missing:
+
+| Artifact                                           | Stage that writes it    | If missing, run                    |
+| -------------------------------------------------- | ----------------------- | ---------------------------------- |
+| `projects/<p>/docs/brief-summary.json`             | `/analyze`              | `/analyze`                         |
+| `projects/<p>/docs/selected-style.json`            | `/mockups` + gate 2     | `/mockups` then `/pick-style`      |
+| `projects/<p>/packages/ui-kit/package.json`        | `/stylesheet` + gate 3  | `/stylesheet`                      |
+| `projects/<p>/docs/screens-manifest.json`          | `/screens`              | `/screens`                         |
+| `projects/<p>/docs/user-flows-manifest.json`       | `/user-flows-generator` | `/user-flows-generator`            |
+| `projects/<p>/docs/signoff-*.json` (approved:true) | gate 4                  | signoff gate 4 (HITL or file-drop) |
+| `projects/<p>/.claude/architecture.yaml`           | `/architect`            | `/architect`                       |
+| `projects/<p>/.env.example`                        | `/architect`            | `/architect`                       |
+| `projects/<p>/docs/credentials-confirmed.txt`      | gate 5 (user)           | user fills .env + drops the file   |
+| `projects/<p>/docs/tasks.yaml` (version 2.0)       | `/pm --mode=tasks`      | `/pm --mode=tasks`                 |
+
+The orchestrator will also validate `docs/tasks.yaml` against `schemas/tasks.schema.json` before any feature fires.
 
 ## Steps
 
 ### 1. Parse + validate arguments
 
-Extract `<project>` from `` (first positional). If empty, list projects and exit with a non-zero status:
+Extract `<project>` from positional. If empty, list projects and exit:
 
 ```
 /start-build requires a project name.
 Available projects:
-  - revolution-pictures
-  - hatch-2
-  - mindapp
-Usage: /start-build <project> [--flags=...] [--dry-run]
+  - revolution-pictures (ready for Mode B — 12 features, 46 tasks)
+  - hatch-2            (ready for Mode B — 5 features merged, 3 pending)
+  - mindapp            (Mode A incomplete — run /analyze)
 ```
 
-Collect the flag pass-throughs (`--flags`, `--dry-run`, `--resume-from-stage`, `--resume-feature-graph`, `--auto-merge-after-reviewer`).
+(The status column is optional polish; for v1, just list names.)
 
-Reject mutually exclusive combinations:
+### 2. Prerequisite check
 
-- `--resume-from-stage=X --resume-feature-graph` → error: "pick one resume mode, not both"
+For each artifact in the §Prerequisites table, verify it exists. Missing artifact → emit a specific error pointing at the skill that would produce it. Do NOT attempt to run Mode A stages from this skill.
 
-### 2. Verify project directory
+Also verify `docs/credentials-confirmed.txt`:
 
-```bash
-test -d "projects/<project>"
-```
+- Missing → abort with gate-5 instructions
+- Starts with `abort` → abort with user's message
+- Starts with `proceed` → continue
+- Starts with `defer:A,B` → continue, but warn that features depending on deferred integrations may fail
 
-If missing, error:
+### 3. Confirm (live runs)
 
-```
-Project directory projects/<project>/ does not exist.
-Run this first: /new-project <project> --proposal "<one-line description>"
-```
-
-### 3. State detection (informational; orchestrator does the authoritative detection)
-
-Quick grep for the canonical artifacts so the skill's own transcript can tell the user where we are before the orchestrator fires:
-
-| Artifact exists                                | Stage complete  |
-| ---------------------------------------------- | --------------- |
-| `projects/<p>/docs/brief-summary.json`         | analyze         |
-| `projects/<p>/docs/mockups/manifest.json`      | mockups         |
-| `projects/<p>/docs/design-system-preview.html` | stylesheet      |
-| `projects/<p>/docs/screens-manifest.json`      | screens         |
-| `projects/<p>/docs/visual-review/report.json`  | visual-review   |
-| `projects/<p>/docs/user-flows-manifest.json`   | user-flows      |
-| `projects/<p>/.claude/architecture.yaml`       | architect       |
-| `projects/<p>/docs/tasks.yaml`                 | pm              |
-| `projects/<p>/docs/signoff-*.json`             | gate 4 resolved |
-| `projects/<p>/docs/credentials-confirmed.txt`  | gate 5 resolved |
-
-Emit a one-line status block:
+Unless `--dry-run`:
 
 ```
-Project state: revolution-pictures
-  ✓ analyze   ✓ mockups   ✓ stylesheet   ✓ screens   (visual-review skipped)
-  ✓ user-flows   ✓ architect   ✓ pm   · gate-5 proceed
-  → Mode B (feature-graph) next — 12 features, 46 tasks
-```
+About to run Mode B for revolution-pictures:
+  - 12 features, 46 tasks
+  - concurrent features: 3 (from ~/.claude/models.yaml)
+  - budget cap: $150
+  - auto-merge-after-reviewer: false
 
-### 4. Build the orchestrator command
-
-Default form:
-
-```bash
-pnpm --filter orchestrator start generate <project> [forwarded flags]
-```
-
-Auto-inject `--resume-feature-graph` when ALL of the following hold AND the user didn't override:
-
-- `projects/<p>/docs/tasks.yaml` exists
-- `projects/<p>/docs/signoff-*.json` exists with `approved: true`
-- `projects/<p>/docs/credentials-confirmed.txt` starts with `proceed` or `defer:`
-
-This lets `/start-build <p>` be the canonical "just go" command at any pipeline position.
-
-### 5. Confirm before running (live mode)
-
-**If `--dry-run` is set, skip this step and go straight to step 6.**
-
-For live runs, because Mode B spends real Claude-Agent-SDK budget, print the plan first and ask for confirmation:
-
-```
-About to run:
-  pnpm --filter orchestrator start generate revolution-pictures --resume-feature-graph
-
-Budget cap (from ~/.claude/models.yaml): $25.00
-Mode B will dispatch 46 tasks across 12 features in parallel worktrees.
+Features will be built in git worktrees under .claude/worktrees/.
+Each feature runs: backend → web → mobile → security → tester → reviewer → git-agent merge.
+The orchestrator will NOT pause for human input during Mode B unless a reviewer
+flags a feature as `blocked` or retries exhaust.
 
 Proceed? [y/N]
 ```
 
-**Exception**: if the user passed `--dry-run`, the orchestrator is free — just run it. If the user passed `--flags=autonomous` (future), skip the prompt.
+User says no → exit 0 with no work done.
 
-For the v1 skill, always require confirmation for live Mode B. Bypass flag TBD.
-
-### 6. Execute
-
-Shell out:
+### 4. Invoke the orchestrator
 
 ```bash
 cd <factory-root>
-pnpm --filter orchestrator start generate <project> [flags]
+pnpm --filter orchestrator start generate <project> --resume-feature-graph [flags]
 ```
 
-Stream stdout to the skill transcript unchanged. The orchestrator already emits:
+The `--resume-feature-graph` flag skips Mode A entirely — the orchestrator goes straight to `git-agent-bootstrap` + the feature loop. Forwards `--flags`, `--dry-run`, `--auto-merge-after-reviewer`, `--max-concurrent`.
 
-- Starting stage headers
-- Per-stage `stage=<name> output=<hash> cost=<usd>`
-- Gate-pause messages (e.g. "Gate 2 waiting for pick-style / HITL server at :4241")
-- Error messages with retry-ladder status (attempts 1/3, 2/3, etc.)
+Stream stdout verbatim. The orchestrator emits structured log lines:
 
-### 7. Report exit
+```
+[feature-graph] wave 1: opening feat-project-bootstrap
+[git-agent] worktree created at .claude/worktrees/feat-project-bootstrap
+[web-frontend-builder] dispatching react-next skill
+[web-frontend-builder] wrote apps/web/src/... (N files)
+[web-frontend-builder] happy-path tests: 8 written, 8 pass
+[tester] edge-case tests: 12 written, 12 pass, coverage 82%
+[reviewer] approved
+[git-agent] merging feat-project-bootstrap → main
+[feature-graph] wave 2: unblocking feat-cms-content-model, feat-booking-inquiry, ...
+```
+
+### 5. Report exit
 
 On exit 0:
 
 ```
 /start-build revolution-pictures complete.
-Committed to projects/revolution-pictures/main (or feature branches merged).
-Total spend: $X.XX
+12/12 features merged to main.
+Total spend: $87.20 / $150 budget
+Branches remaining: (none — all merged)
+Feature branch diffs: git log --graph --oneline main~30..main
 ```
 
-On non-zero, surface the failing stage + its last retry:
+On non-zero, surface the failing feature + its state:
 
 ```
-/start-build revolution-pictures halted at stage `screens` (retry 3/3 failed).
-See projects/revolution-pictures/pipeline/screens/error.log for details.
-Resume with: /start-build revolution-pictures --resume-from-stage=screens
+/start-build revolution-pictures halted.
+Failed feature: feat-booking-inquiry (attempt 3/3 of web-frontend-builder failed)
+See .claude/worktrees/feat-booking-inquiry/ for in-progress state
+Logs: projects/revolution-pictures/pipeline/feature-graph/feat-booking-inquiry.log
+Resume with: /start-build revolution-pictures  (orchestrator picks up where it left off)
 ```
 
-### 8. Self-verify
+### 6. Self-verify
 
-- `projects/<project>/` unchanged except for artifacts the orchestrator wrote (`pipeline/`, `docs/`, new `.claude/state/` entries)
-- No secrets logged to transcript (orchestrator redacts; skill just proxies)
-- Exit code matches orchestrator's exit code verbatim
+- Exit code matches orchestrator's exit code
+- No secrets in transcript (orchestrator redacts)
+- Active worktrees cleaned up only by git-agent close-feature; mid-run crash leaves worktrees for inspection
+
+## What this skill does NOT do
+
+- **Does NOT run Mode A.** `/analyze`, `/mockups`, `/stylesheet`, `/screens`, `/user-flows-generator`, `/architect`, `/pm` are invoked by the user, one at a time, with HITL gate pauses between them. That manual cadence is deliberate: each gate is a human inspection point where the user can course-correct cheaply before the next stage spends more budget.
+- **Does NOT scaffold a new project.** Use `/new-project <name> --proposal "..."` for that.
+- **Does NOT pick a style, pick vendors, or author tasks.** Those decisions happen in `/mockups` + `/pick-style`, `/architect`, `/pm` respectively.
+- **Does NOT skip gates.** If gate 5's `docs/credentials-confirmed.txt` is missing, the skill refuses.
 
 ## Error paths
 
-- **Orchestrator binary missing**: `pnpm --filter orchestrator …` fails with `no such package`. Error: "Factory orchestrator/ package not found — run `pnpm install` at factory root."
-- **Orchestrator reports stage budget exceeded**: surface the budget-tracker error + recommend editing `~/.claude/models.yaml` `perPipelineMaxUsd`
-- **HITL gate waiting indefinitely**: orchestrator handles the wait loop + its own timeout; this skill just streams the "gate waiting" message so the user knows to open the web UI or drop the file
-- **Mid-stage crash**: orchestrator writes `pipeline/<stage>/error.log` + sets retry counter. `/start-build <p>` again picks up at the failed stage (same stage-resume semantics)
+- **Prereq missing** → abort with exact skill to run (see table above)
+- **`docs/tasks.yaml` version ≠ 2.0** → abort: "tasks.yaml is v1 or malformed. Re-run /pm --mode=tasks."
+- **`docs/credentials-confirmed.txt: abort`** → exit 0 with user message: "Gate 5 aborted by operator; no build fired."
+- **Orchestrator binary missing** → error: "Factory orchestrator/ package not found. Run `pnpm install` at factory root."
+- **Budget exceeded mid-run** → orchestrator halts + writes state; `/start-build` resumes on next invocation
+- **A feature's reviewer returns `blocked`** → orchestrator routes back to the named builder for up to 3 attempts; persistent block → feature marked failed, orchestrator continues with other features where possible
 
 ## Examples
 
-### Fresh project, full walk
+### Happy path — revolution-pictures after manual Mode A
 
 ```
 /start-build revolution-pictures
-→ analyze starts; gate 1 at 5 USD
-→ mockups starts; gate 2 web UI at :4241 for pick-style
-→ ...
-→ Mode B dispatches feat-project-bootstrap
-→ exit 0 after all 12 features merge
+→ Prereq check: all 10 artifacts present ✓
+→ docs/credentials-confirmed.txt: proceed ✓
+→ 12 features, 46 tasks, $150 budget
+→ Proceed? y
+→ orchestrator runs...
+→ exit 0: 12/12 features merged, $87 spent
 ```
 
-### Dry-run to inspect
+### Dry-run
 
 ```
 /start-build revolution-pictures --dry-run
-→ prints the stage walk + first missing skill (if any)
-→ does not invoke any agent
+→ Prereq check: all 10 artifacts present ✓
+→ Wave plan:
+    Wave 1: feat-project-bootstrap
+    Wave 2: feat-cms-content-model, feat-booking-inquiry, feat-contact-inquiry,
+            feat-not-found, feat-analytics, feat-devops-ci  (6 concurrent, cap 3 → 2 sub-waves)
+    Wave 3: feat-home, feat-galleries, feat-services, feat-about
+    Wave 4: feat-case-studies
+→ Estimated cost: $72-110 (based on per-feature budget-tracker estimates)
+→ No agents invoked.
 ```
 
-### Resume just Mode B (skip Mode A entirely)
+### Gate 5 not resolved
 
 ```
-/start-build revolution-pictures --resume-feature-graph
-→ skips the 12 Mode A stages
-→ reads docs/tasks.yaml + opens worktrees
+/start-build revolution-pictures
+→ docs/credentials-confirmed.txt missing
+→ ABORT: Gate 5 has not resolved.
+→ Run: populate .env per .env.example, then write `proceed` to docs/credentials-confirmed.txt
 ```
 
-### Skip design-gate, rerun architect
+### Resume after a crash / cancellation
 
 ```
-/start-build revolution-pictures --resume-from-stage=architect
-→ re-runs architect through pm (regenerates architecture.yaml + tasks.yaml)
-→ then flows into Mode B
+/start-build revolution-pictures  # 3 features already merged, process killed mid-4th
+→ Orchestrator detects 3 merged features + 1 half-complete worktree
+→ Resumes feat-booking-inquiry from its last attempt state
+→ Continues through remaining DAG
 ```
 
-## Factory ↔ project distinction
+## Factory ↔ project scope
 
-`/start-build` is a **factory-level skill**. It lives at `.claude/skills/start-build/SKILL.md` in the factory root; it does NOT get copied into `projects/<name>/.claude/skills/`. Rationale: the skill's job is to invoke the factory's `orchestrator/` binary against a named project — so it must run from factory root where that binary is installed.
-
-If a user wants to invoke build from inside a project dir, they step up one level and run `/start-build <project>` from the factory — or use the raw `pnpm --filter orchestrator start generate <project>` command, which works from any subdirectory thanks to the `factoryRoot` resolution in `orchestrator/src/cli.ts`.
+Factory-level skill only. Lives at `.claude/skills/start-build/SKILL.md` in the factory root. Not copied into `projects/<name>/.claude/skills/` by `/new-project` — it invokes the factory's `orchestrator/` binary against a named project, so it must run from factory root.
 
 ## Integration points
 
-- **Task 035 orchestrator** — the binary this skill wraps. `orchestrator/src/cli.ts` is the entrypoint; `orchestrator/src/cli-runner.ts` handles the resume logic + dry-run mode; `orchestrator/src/project-state.ts` is the state detector.
-- **Task 036 HITL gates** — the orchestrator spawns gate servers per stage; this skill is oblivious, just streams the "gate waiting" message.
-- **`/new-project`** — precondition. `/start-build` fails loudly if the project hasn't been scaffolded.
-- **All pipeline skills** (`/analyze`, `/mockups`, `/stylesheet`, `/screens`, `/visual-review`, `/user-flows-generator`, `/architect`, `/pm`, etc.) — the orchestrator invokes them in sequence. Each skill is invoked via the Agent SDK with the project's CWD as the working directory.
-- **`~/.claude/models.yaml`** + `projects/<p>/.claude/models.yaml` — budget caps are read by `orchestrator/src/model-config.ts` before any stage fires.
+- **Task 035 orchestrator** — the binary this skill wraps (`orchestrator/src/cli.ts`)
+- **`orchestrator/src/feature-graph.ts`** — the Mode B implementation this skill triggers via `--resume-feature-graph`
+- **Task 036 HITL gates** — irrelevant to Mode B (no human gates after gate 5); orchestrator does not spawn gate servers during feature-graph phase
+- **`git-agent`** — the worktree lifecycle owner; orchestrator invokes it at feature boundaries
+- **Builders (`backend-builder`, `web-frontend-builder`, `mobile-frontend-builder`)** — invoked inside each feature worktree per agent_sequence
+- **`tester`, `reviewer`** — final two agents in every agent_sequence
 
 ## Acceptance criteria
 
 - [ ] `.claude/skills/start-build/SKILL.md` exists with the frontmatter above
 - [ ] Accepts `<project>` as required positional; rejects with available-projects list when missing
-- [ ] Rejects when `projects/<project>/` doesn't exist (points at `/new-project`)
-- [ ] Rejects `--resume-from-stage` + `--resume-feature-graph` combination
-- [ ] State-detection block reads the same 8 canonical artifacts `project-state.ts` checks
-- [ ] Auto-injects `--resume-feature-graph` when tasks.yaml + signoff + credentials-confirmed all exist
+- [ ] Checks all 10 prerequisite artifacts before invoking orchestrator
+- [ ] Parses `docs/credentials-confirmed.txt` and respects `proceed` / `defer:` / `abort` / missing
+- [ ] Always invokes orchestrator with `--resume-feature-graph` flag
+- [ ] Does NOT run Mode A stages under any circumstances
+- [ ] Does NOT scaffold projects
 - [ ] Confirms before live Mode B run; skips confirmation for `--dry-run`
-- [ ] Delegates all real work to `pnpm --filter orchestrator start generate` — no agent invocation inside the skill itself
 - [ ] Exit code matches orchestrator's exit code
-- [ ] `--dry-run` path exits without invoking any agent
-- [ ] Factory-level only (NOT copied by `/new-project` into per-project skill dirs)
+- [ ] Factory-level only (NOT copied into per-project skill dirs)
