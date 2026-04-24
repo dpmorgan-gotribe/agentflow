@@ -21,6 +21,8 @@ export interface CliOptions {
   dryRun?: boolean;
   /** Skip gate 6 (pr-review) — wired into Mode B when live runs land. */
   autoMergeAfterReviewer?: boolean;
+  /** Override Mode B's `maxConcurrentFeatures` (default 4). */
+  maxConcurrent?: number;
   /**
    * Test hook — override Mode B's `InvokeAgentFn`. When set, the CLI uses
    * this instead of `createInvokeAgent`'s real SDK wiring. Production code
@@ -191,11 +193,23 @@ export async function runCli(
       retryCounters,
       invokeAgent,
       ...(opts.autoMergeAfterReviewer ? { autoMergeAfterReviewer: true } : {}),
+      ...(opts.maxConcurrent
+        ? { maxConcurrentFeatures: opts.maxConcurrent }
+        : {}),
     };
     const result = await runFeatureGraph(tasks, graphCtx);
     messages.push(`Features completed: ${result.completed.length}`);
     messages.push(`Features failed:    ${result.failed.length}`);
     messages.push(`Total cost:         $${result.totalCostUsd.toFixed(2)}`);
+    if (result.failed.length > 0) {
+      messages.push("");
+      messages.push("Failed features:");
+      for (const id of result.failed) {
+        const fr = result.featureResults[id];
+        const reason = fr?.abortReason ?? "(no reason recorded)";
+        messages.push(`  ✗ ${id} — ${reason}`);
+      }
+    }
     return {
       exitCode: result.failed.length > 0 ? 1 : 0,
       messages,

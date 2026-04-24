@@ -159,11 +159,33 @@ export async function runFeature(
     branch: feature.branch,
     priority: feature.priority,
   };
-  const worktreeCwd = `.claude/worktrees/${feature.worktree}`;
+  // Absolute path: SDK's child_process.spawn would otherwise resolve a
+  // project-relative cwd against the orchestrator's process.cwd() (factory
+  // root), which is the wrong dir.
+  const worktreeCwd = `${ctx.projectRoot}/.claude/worktrees/${feature.worktree}`;
   const taskOutcomes: Record<string, "completed" | "failed"> = {};
   let totalCostUsd = 0;
   let attempts = 0;
   let lastWritingAgent: AgentSequenceMember | undefined;
+
+  // 0. Fast-skip — if every task in this feature is already status: completed,
+  //    the feature was finished in a prior run (or by a prior smoke test) and
+  //    merged to main. Don't re-checkout / re-run / re-merge. Cheap idempotency
+  //    that keeps resumed pipelines from duplicating work.
+  if (
+    feature.tasks.length > 0 &&
+    feature.tasks.every((t) => t.status === "completed")
+  ) {
+    for (const t of feature.tasks) taskOutcomes[t.id] = "completed";
+    return {
+      featureId: feature.id,
+      status: "completed",
+      durationMs: Date.now() - startedAt,
+      attempts: 0,
+      totalCostUsd: 0,
+      taskOutcomes,
+    };
+  }
 
   // 1. Checkout feature worktree
   const checkout = await ctx.invokeAgent({

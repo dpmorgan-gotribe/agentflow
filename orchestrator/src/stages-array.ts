@@ -2,18 +2,20 @@ import type { PipelineStage } from "@repo/orchestrator-contracts";
 import { z } from "zod";
 
 /**
- * Placeholder output schema — accepts any object with `success: boolean`
- * and optional warnings. Real per-stage schemas are authored by task 034b
- * (`StageSchemas[stageName]`); this stub lets runPipeline walk the array
- * end-to-end before those schemas land, and each stage swaps in its
- * concrete schema once 034b ships.
+ * Placeholder output schema — fully permissive. Real per-stage schemas
+ * are authored by task 034b (`StageSchemas[stageName]`); until those
+ * land, this stub MUST accept anything the skill emits (including null,
+ * empty string, missing structured_output) so `runPipeline` walks the
+ * array end-to-end without false-negative aborts. Each stage swaps in
+ * its concrete schema once 034b ships; false positives are caught at
+ * that layer.
+ *
+ * Earlier this schema was `z.object({success,warnings}).passthrough()`
+ * which tripped `layer5-exhausted` on skills that completed successfully
+ * but didn't emit a trailing `{...}` JSON object. The placeholder's job
+ * is to let the pipeline walk; real validation is per-stage work.
  */
-const PlaceholderStageOutput = z
-  .object({
-    success: z.boolean(),
-    warnings: z.array(z.string()).optional(),
-  })
-  .passthrough();
+const PlaceholderStageOutput = z.unknown();
 
 /**
  * Mode A stage array — refactor-003 + refactor-004 canonical order.

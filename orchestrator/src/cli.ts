@@ -40,6 +40,11 @@ program
     "--auto-merge-after-reviewer",
     "skip gate 6 (pr-review) — auto-merge once reviewer approves",
   )
+  .option(
+    "--max-concurrent <n>",
+    "Mode B feature-graph concurrency cap (default: 4)",
+    (v) => parseInt(v, 10),
+  )
   .action(
     async (
       projectName: string | undefined,
@@ -49,6 +54,7 @@ program
         resumeFeatureGraph?: boolean;
         dryRun?: boolean;
         autoMergeAfterReviewer?: boolean;
+        maxConcurrent?: number;
       },
     ) => {
       const optsForRunner: Parameters<typeof runCli>[0] = { flags: opts.flags };
@@ -60,6 +66,8 @@ program
       if (opts.dryRun) optsForRunner.dryRun = opts.dryRun;
       if (opts.autoMergeAfterReviewer)
         optsForRunner.autoMergeAfterReviewer = opts.autoMergeAfterReviewer;
+      if (opts.maxConcurrent && opts.maxConcurrent > 0)
+        optsForRunner.maxConcurrent = opts.maxConcurrent;
       const result = await runCli(optsForRunner, factoryRoot);
       for (const line of result.messages) {
         // eslint-disable-next-line no-console
