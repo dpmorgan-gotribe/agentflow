@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli-runner.js";
+import type { InvokeAgentFn } from "../src/feature-graph.js";
+import type { QueryFn } from "../src/stage-runner.js";
 
 let factoryRoot: string;
 
@@ -165,5 +167,241 @@ describe("runCli — flags + budget reporting", () => {
     expect(
       result.messages.some((m) => /Budget cap: \d+\.\d{2} USD/.test(m)),
     ).toBe(true);
+  });
+});
+
+// ─── Live run (Task 3 wiring) ────────────────────────────────────────
+
+/**
+ * Async-iterable terminal-result stub matching the `SDKMessage` stream.
+ * Used as the body of `queryFnOverride` in Mode A tests.
+ */
+function makeSuccessQuery(
+  script?: (
+    invocationIndex: number,
+    promptStr: string,
+  ) => {
+    subtype?: "success" | "error_during_execution";
+    structured_output?: unknown;
+    total_cost_usd?: number;
+  },
+): QueryFn & { calls: Array<{ prompt: string }> } {
+  const calls: Array<{ prompt: string }> = [];
+  const fn: QueryFn = ({ prompt }) => {
+    const invIdx = calls.length;
+    const promptStr = typeof prompt === "string" ? prompt : "<streaming>";
+    calls.push({ prompt: promptStr });
+    const plan = script?.(invIdx, promptStr) ?? {
+      subtype: "success" as const,
+      structured_output: { success: true },
+      total_cost_usd: 0.01,
+    };
+
+    async function* gen(): AsyncGenerator<unknown, void> {
+      yield {
+        type: "result",
+        subtype: plan.subtype ?? "success",
+        duration_ms: 1,
+        duration_api_ms: 1,
+        is_error: (plan.subtype ?? "success") !== "success",
+        num_turns: 1,
+        result: "",
+        stop_reason: "end_turn",
+        total_cost_usd: plan.total_cost_usd ?? 0.01,
+        usage: {},
+        modelUsage: {},
+        permission_denials: [],
+        ...(plan.structured_output !== undefined
+          ? { structured_output: plan.structured_output }
+          : {}),
+        ...((plan.subtype ?? "success") !== "success"
+          ? { errors: ["forced"] }
+          : {}),
+        uuid: "00000000-0000-0000-0000-000000000000",
+        session_id: "test-session",
+      };
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return gen() as any;
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (fn as any).calls = calls;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return fn as any;
+}
+
+describe("runCli — live Mode B (feature-graph)", () => {
+  it("runs feature-graph with stubbed invokeAgent and exits 0", async () => {
+    scaffoldProject("alpha", {
+      "docs/brief-summary.json": "{}",
+      "docs/mockups/manifest.json": "{}",
+      "docs/tasks.yaml": [
+        'version: "2.0"',
+        "features:",
+        "  - id: feat-auth",
+        "    worktree: feat-auth",
+        "    branch: feat/auth",
+        "    priority: P1",
+        "    depends_on: []",
+        "    skip: []",
+        "    agent_sequence: [backend-builder]",
+        "    tasks:",
+        "      - id: api",
+        "        agent: backend-builder",
+        "        depends_on: []",
+        "        skills: []",
+        "        screens: []",
+        "warnings: []",
+        "",
+      ].join("\n"),
+    });
+
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        if (args.gitOp?.op === "checkout-feature") {
+          return {
+            taskStatus: {},
+            errors: {},
+            gitAgentOutput: {
+              op: "checkout-feature",
+              success: true,
+              worktreePath: `.claude/worktrees/${args.gitOp.worktree}`,
+              lockfilePath: `.claude/worktrees/${args.gitOp.worktree}.lock`,
+              branch: args.gitOp.branch,
+              featureId: args.gitOp.featureId,
+            },
+            costUsd: 0,
+          };
+        }
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput: {
+            op: "close-feature",
+            success: true,
+            conflict: false,
+            mergeSha: "abc1234",
+            featureId: "feat-auth",
+          },
+          costUsd: 0,
+        };
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.05,
+      };
+    };
+
+    const result = await runCli(
+      {
+        flags: "",
+        projectName: "alpha",
+        resumeFeatureGraph: true,
+        invokeAgentOverride: invokeAgent,
+      },
+      factoryRoot,
+    );
+    const joined = result.messages.join("\n");
+    expect(result.exitCode).toBe(0);
+    expect(joined).toContain("Features completed: 1");
+    expect(joined).toContain("Features failed:    0");
+    expect(joined).toContain("Ready to invoke.");
+  });
+});
+
+describe("runCli — live Mode A", () => {
+  it("walks remaining stages with a stubbed queryFn and exits 0", async () => {
+    scaffoldProject("alpha", { "docs/brief-summary.json": "{}" });
+    // Project needs a models.yaml that resolves every agent in STAGES.
+    writeFileSync(
+      join(factoryRoot, "projects", "alpha", ".claude", "models.yaml"),
+      [
+        "version: '1.0'",
+        "defaults:",
+        "  design: claude-sonnet-4-6",
+        "  planning: claude-sonnet-4-6",
+        "  build: claude-sonnet-4-6",
+        "agents:",
+        "  analyst: { tier: planning, effort: medium, budgetUsd: 1 }",
+        "  ui-designer: { tier: design, effort: medium, budgetUsd: 1 }",
+        "  architect: { tier: planning, effort: medium, budgetUsd: 1 }",
+        "  project-manager: { tier: planning, effort: medium, budgetUsd: 1 }",
+        "  skills-agent: { tier: planning, effort: medium, budgetUsd: 1 }",
+        "  git-agent: { tier: build, effort: medium, budgetUsd: 1 }",
+        "budget:",
+        "  perPipelineMaxUsd: 100",
+        "",
+      ].join("\n"),
+    );
+
+    const queryFn = makeSuccessQuery(() => ({
+      subtype: "success",
+      structured_output: { success: true },
+      total_cost_usd: 0.01,
+    }));
+
+    const result = await runCli(
+      {
+        flags: "",
+        projectName: "alpha",
+        resumeFromStage: "analyze",
+        queryFnOverride: queryFn,
+        waitForGateOverride: async () => ({ approved: true }),
+      },
+      factoryRoot,
+    );
+    const joined = result.messages.join("\n");
+    expect(result.exitCode).toBe(0);
+    expect(joined).toContain("Ready to invoke.");
+    expect(joined).toContain("Stages completed:");
+    expect(joined).toContain("Stages failed:    0");
+    // Every stage fires queryFn exactly once on success.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((queryFn as any).calls.length).toBeGreaterThan(0);
+  });
+
+  it("exits 1 when a stage fails (queryFn reports error subtype)", async () => {
+    scaffoldProject("alpha", { "docs/brief-summary.json": "{}" });
+    writeFileSync(
+      join(factoryRoot, "projects", "alpha", ".claude", "models.yaml"),
+      [
+        "defaults:",
+        "  planning: claude-sonnet-4-6",
+        "  design: claude-sonnet-4-6",
+        "  build: claude-sonnet-4-6",
+        "agents:",
+        "  analyst: { tier: planning, effort: medium, budgetUsd: 1 }",
+        "  ui-designer: { tier: design, effort: medium, budgetUsd: 1 }",
+        "  architect: { tier: planning, effort: medium, budgetUsd: 1 }",
+        "  project-manager: { tier: planning, effort: medium, budgetUsd: 1 }",
+        "  skills-agent: { tier: planning, effort: medium, budgetUsd: 1 }",
+        "  git-agent: { tier: build, effort: medium, budgetUsd: 1 }",
+        "",
+      ].join("\n"),
+    );
+
+    // Always error — stage-runner will exhaust layer5 cap and return failure.
+    const queryFn = makeSuccessQuery(() => ({
+      subtype: "error_during_execution",
+      total_cost_usd: 0.01,
+    }));
+
+    const result = await runCli(
+      {
+        flags: "",
+        projectName: "alpha",
+        resumeFromStage: "analyze",
+        queryFnOverride: queryFn,
+        waitForGateOverride: async () => ({ approved: true }),
+      },
+      factoryRoot,
+    );
+    const joined = result.messages.join("\n");
+    expect(result.exitCode).toBe(1);
+    expect(joined).toContain("Stages failed:    1");
+    expect(joined).toContain("Aborted at:       analyze");
   });
 });

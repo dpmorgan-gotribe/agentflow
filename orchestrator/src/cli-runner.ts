@@ -1,6 +1,8 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { BudgetTracker } from "./budget-tracker.js";
+import type { InvokeAgentFn } from "./feature-graph.js";
+import type { WaitForGateFn } from "./pipeline.js";
 import {
   detectStageCompletions,
   firstIncompleteStage,
@@ -8,6 +10,7 @@ import {
   type StageCompletion,
 } from "./project-state.js";
 import { readBudgetCaps } from "./model-config.js";
+import type { QueryFn } from "./stage-runner.js";
 import { STAGES, getStage } from "./stages-array.js";
 
 export interface CliOptions {
@@ -18,6 +21,24 @@ export interface CliOptions {
   dryRun?: boolean;
   /** Skip gate 6 (pr-review) — wired into Mode B when live runs land. */
   autoMergeAfterReviewer?: boolean;
+  /**
+   * Test hook — override Mode B's `InvokeAgentFn`. When set, the CLI uses
+   * this instead of `createInvokeAgent`'s real SDK wiring. Production code
+   * leaves this undefined.
+   */
+  invokeAgentOverride?: InvokeAgentFn;
+  /**
+   * Test hook — override Mode A's SDK `query()`. When set, `runPipeline`'s
+   * stage-runner uses this instead of the real SDK. Production code leaves
+   * this undefined.
+   */
+  queryFnOverride?: QueryFn;
+  /**
+   * Test hook — override Mode A's gate waiter. When set, replaces the
+   * default file-drop watcher (which blocks on human action). Tests pass
+   * an auto-approve stub.
+   */
+  waitForGateOverride?: WaitForGateFn;
 }
 
 export interface CliResult {
@@ -126,15 +147,100 @@ export async function runCli(
     return { exitCode: 0, messages };
   }
 
-  // Live run — not yet wired in Phase 9. Surface the expected behavior
-  // rather than attempt a real SDK call that would need agents we don't
-  // have yet.
+  // ── Live run ─────────────────────────────────────────────────────
   messages.push("");
-  messages.push(
-    "Live run is not yet wired. See task-035 Phase 9 + downstream feat-005, feat-006 plans.",
-  );
-  messages.push("Use --dry-run to inspect the pipeline walk.");
-  return { exitCode: 1, messages };
+  messages.push("Ready to invoke.");
+
+  const { runPipeline, fileDropWaitForGate } = await import("./pipeline.js");
+  const { runFeatureGraph } = await import("./feature-graph.js");
+  const { createInvokeAgent } = await import("./invoke-agent.js");
+  const { RetryCounters } = await import("./retry-counters.js");
+  const { randomUUID } = await import("node:crypto");
+
+  const pipelineRunId = randomUUID();
+  const retryCounters = new RetryCounters();
+  const invokeAgent: InvokeAgentFn =
+    opts.invokeAgentOverride ??
+    createInvokeAgent({
+      projectRoot,
+      budget,
+      flags,
+    });
+
+  if (opts.resumeFeatureGraph) {
+    const { loadTasksYaml } = await import("./tasks-loader.js");
+    let tasks;
+    try {
+      tasks = loadTasksYaml(projectRoot);
+    } catch (err) {
+      messages.push(
+        `Failed to load docs/tasks.yaml: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { exitCode: 1, messages };
+    }
+    const graphCtx: Parameters<typeof runFeatureGraph>[1] = {
+      projectRoot,
+      pipelineRunId,
+      budget,
+      retryCounters,
+      invokeAgent,
+      ...(opts.autoMergeAfterReviewer ? { autoMergeAfterReviewer: true } : {}),
+    };
+    const result = await runFeatureGraph(tasks, graphCtx);
+    messages.push(`Features completed: ${result.completed.length}`);
+    messages.push(`Features failed:    ${result.failed.length}`);
+    messages.push(`Total cost:         $${result.totalCostUsd.toFixed(2)}`);
+    return {
+      exitCode: result.failed.length > 0 ? 1 : 0,
+      messages,
+    };
+  }
+
+  // Mode A — slice STAGES starting at resumeStage. Strip the first
+  // stage's `dependsOn` since earlier stages are presumed satisfied
+  // (detected via project-state.ts).
+  const startIdx = STAGES.findIndex((s) => s.name === resumeStage);
+  if (startIdx < 0) {
+    messages.push(`Unknown stage '${resumeStage}' — cannot resume.`);
+    return { exitCode: 1, messages };
+  }
+  const stages = STAGES.slice(startIdx).map((s, i) => {
+    if (i === 0) {
+      const { dependsOn: _omit, ...rest } = s;
+      void _omit;
+      return rest;
+    }
+    return s;
+  });
+
+  const runCtx: Parameters<typeof runPipeline>[0]["runCtx"] = {
+    projectRoot,
+    pipelineRunId,
+    budget,
+    retryCounters,
+    flags,
+    ...(opts.queryFnOverride ? { queryFn: opts.queryFnOverride } : {}),
+  };
+  const result = await runPipeline({
+    projectRoot,
+    pipelineRunId,
+    flags,
+    runCtx,
+    stages,
+    waitForGate: opts.waitForGateOverride ?? fileDropWaitForGate(),
+  });
+  messages.push(`Stages completed: ${result.stagesCompleted.length}`);
+  messages.push(`Stages failed:    ${result.stagesFailed.length}`);
+  messages.push(`Total cost:       $${result.totalCostUsd.toFixed(2)}`);
+  if (result.abortedAt) {
+    messages.push(
+      `Aborted at:       ${result.abortedAt} (${result.abortReason ?? "?"})`,
+    );
+  }
+  return {
+    exitCode: result.stagesFailed.length > 0 ? 1 : 0,
+    messages,
+  };
 }
 
 function resolveProjectRoot(
