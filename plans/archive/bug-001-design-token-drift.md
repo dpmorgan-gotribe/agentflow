@@ -1,10 +1,11 @@
 ---
 id: bug-001-design-token-drift
 type: bug
-status: draft
+status: completed
 author-agent: claude
 created: 2026-04-24
 updated: 2026-04-24
+completed-at: 2026-04-24
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -174,3 +175,42 @@ Layer B + C: out-of-scope for this bug plan; tracked in follow-up plans.
 ## Attempt Log
 
 <!-- Populated by executing agent. -->
+
+
+## Attempt log
+
+### Attempt 1 — 2026-04-24 — completed across three layers
+
+All three layers of the fix approach shipped via a plan-triage sequence.
+
+**Layer A — hatch-2 globals.css token import** (hatch-2 commits 31b3439 + d6083b3, 2026-04-24)
+
+- apps/web/app/globals.css: deleted the hardcoded `:root` placeholder block; added `@import "../../../packages/ui-kit/src/tokens/tokens.css";` at the top (3-up relative path, not 4-up — count bug caught by build).
+- apps/web/tailwind.config.ts: renamed all `--typography-fontFamily-*` references to `--font-family-*` (matching the kit's actual token var names); added `secondary`/`highlight` color tokens.
+- apps/web/app/layout.tsx: next/font/google imports for Space Grotesk + Bricolage Grotesque + Fraunces, attached via html className.
+- Validation: 92/92 app tests + 14-route build + dev-smoke 200 on `/`. Compiled CSS payload contains `#fffbf2` cream + `#f24e1e` riso orange + "Space Grotesk" + "Bricolage Grotesque".
+
+**Layer B — ship the missing primitives** (feat-013, closed 2026-04-24)
+
+- Shipped 16 kit primitives (12 core + 4 extended) in hatch-2 via feat-013 Agent 1 (b9e0d21) + Agent 2 (4e0bf48) + JSDOM test fix (dc1c497).
+- Migrated 6 hatch-2 consumers to `@repo/ui-kit` imports.
+- Kit version bumped `0.1.0-tokens-only` → `0.2.0-primitives`.
+- 60/60 kit tests + 92/92 app tests green; build clean; TODO-swap-for-kit comments removed from all 5 component files.
+- Kit API gaps noted for future work: Button `asChild`, Card polymorphic `as`, chip-style RadioGroup/CheckboxGroup.
+
+**Layer C — factory-level prevention** (refactor-006, closed 2026-04-24)
+
+- .claude/skills/stylesheet/SKILL.md step 9 rewritten from aspirational 20-row table to prescriptive 12-core-mandatory + 8-extended-on-demand contract.
+- Step 18 alarm upgraded from soft warning to HARD GATE (returns `success: false` with abort-reason when <12 core primitives shipped).
+- scripts/verify-024.mjs extended with `--primitives-count` CLI mode — walks primitives/, asserts all 12 mandatory directories present, emits structured JSON.
+- Gate verified on hatch-2 (pass, 16 shipped) + hatch (fail, 0 shipped). The six pre-refactor projects would now all fail fast instead of silently shipping tokens-only.
+
+**Root-cause summary**
+
+Three overlapping issues. **RC1**: my scaffold authoring during feat-scaffold wrote placeholder tokens into globals.css despite the kit shipping real tokens.css (my mistake — a real builder following react-next SKILL.md's canonical layout would probably have imported). **RC2**: /stylesheet SKILL.md promised 20 primitives but never actually shipped any — factory-wide pattern across 6 projects. **RC3**: no logo asset ever produced by the design pipeline (this one NOT closed by this bug; a separate gap to file later if a project needs branded identity).
+
+**Lessons learned**
+
+- "The kit is tokens-only" became a self-reinforcing myth because the kit literally was tokens-only, and the factory's SKILL.md was aspirational. feat-013 + refactor-006 broke both halves of the loop.
+- Inline scaffold authoring is risky — the subagent that would've followed react-next SKILL.md more faithfully might have gotten the token import right. My shortcut introduced the placeholder.
+- Compiled-CSS payload grep is a cheap + reliable post-validation pattern — catches token-substitution bugs without needing full browser automation.
