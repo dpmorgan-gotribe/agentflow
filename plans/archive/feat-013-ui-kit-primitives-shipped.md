@@ -1,10 +1,11 @@
 ---
 id: feat-013-ui-kit-primitives-shipped
 type: feature
-status: draft
+status: completed
 author-agent: claude
 created: 2026-04-24
 updated: 2026-04-24
+completed-at: 2026-04-24
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -154,3 +155,20 @@ Update `.claude/skills/stylesheet/SKILL.md` step 9–11 (the primitives/patterns
 ## Attempt Log
 
 <!-- Populated by executing agent. -->
+
+
+## Attempt log (auto-populated)
+
+### Attempt 1 — 2026-04-24 — completed
+
+- Agent 1 (kit primitives) committed b9e0d21 — 16 primitives + cn/cva + barrel + 60 test cases (~2142 LOC)
+- Agent 2 (migration + validate) committed 4e0bf48 — 6 apps/web consumers migrated to kit, typecheck + 92/92 app tests + build all green
+- Test-fix follow-up committed dc1c497 — JSDOM-compatible queries in Avatar + Select tests; 60/60 kit tests now pass
+- Factory alarm added to .claude/skills/stylesheet/SKILL.md step 18 — warns when <12 primitives shipped (pending refactor-006 for hard gate)
+
+**Outcome**: hatch-2 ships with real kit primitives wired end-to-end. 60 kit tests + 92 app tests = 152 green. Kit version bumped 0.1.0-tokens-only → 0.2.0-primitives.
+
+**Kit API gaps noted for future work** (not blocking):
+- Button polymorphic `asChild` for `<Link><Button>` patterns (currently double-wraps with tabIndex=-1)
+- Card polymorphic `as` prop for semantic element substitution (`<figure>`, `<section>`, etc.)
+- Chip-style RadioGroup/CheckboxGroup (shipped Radio is traditional round-bullet; chip toggles for budget/discipline selectors kept hand-rolled)

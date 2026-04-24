@@ -570,6 +570,20 @@ The outline-on-hover + dashed rectangle is a universal affordance: hovering reve
 - Run `pnpm typecheck` in the monorepo
 - Run `pnpm lint` against the kit (the ESLint plugin is disabled on kit internals via `overrides` per 022b — it applies to `apps/*` only)
 - `validate-consumer` is NOT run against the kit itself — its purpose is to scan `apps/**`, which don't exist yet at this stage
+- **Primitives-shipped alarm (feat-013)** — count `.tsx` files under `packages/ui-kit/src/primitives/`:
+
+  ```bash
+  find packages/ui-kit/src/primitives -maxdepth 2 -name '*.tsx' -not -name '*.test.tsx' 2>/dev/null | wc -l
+  ```
+
+  Threshold: ≥12. If below threshold, append warning to return JSON:
+
+  ```
+  primitives-not-shipped: authored N of 12 minimum core primitives — gate-3 componentsApproved[] is aspirational; downstream builders will fall back to plain HTML/Tailwind for missing primitives, degrading visual fidelity to design-system-preview.html.
+  ```
+
+  Six projects (hatch, gotribe-v1, mindapp, mindapp-v2, runclub, test-app) shipped tokens-only without this alarm firing; refactor-006 rewrites this step to a hard gate. Until refactor-006 lands, treat this as a loud warning.
+
 - Emit return JSON
 
 ## Full asset-download wave (second of two)
