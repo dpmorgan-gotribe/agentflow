@@ -6,6 +6,7 @@
 - Generated apps live under `projects/<name>/` and are independent git repos
 - To create a new project: run `/new-project <name>` (see `.claude/skills/new-project/SKILL.md`)
 - To refresh agentic resources in an existing project without losing user content: `/new-project <name> --force`
+- To drive the end-to-end pipeline for a project (analyze → design → architect → pm → build): `/start-build <name>` (see `.claude/skills/start-build/SKILL.md`). Auto-detects where the pipeline left off and resumes. `/start-build <name> --dry-run` previews the walk.
 - The factory↔project distinction is load-bearing: never edit a project's `.claude/agents/` expecting it to propagate back to the factory
 
 ## Project Specification

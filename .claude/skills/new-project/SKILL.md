@@ -395,7 +395,7 @@ rolling back — partial state is easier to debug than an invisible cleanup.
   "backups": ["projects/<name>/.claude/agents/analyst.md.bak-2026-04-18T00-00-00Z", "..."],
   "innerRepoPath": "projects/<name>/apps-and-packages",
   "draftResult": null,
-  "nextStep": "Author brief.md at projects/<name>/brief.md, then run /validate-brief."
+  "nextStep": "Author brief.md at projects/<name>/brief.md (or rely on drafted content if --proposal was supplied), then run `/start-build <name>` from the factory root to drive the end-to-end pipeline (analyze → design → architect → pm → build). `/start-build --dry-run` previews the walk without invoking agents."
 }
 ```
 
