@@ -289,40 +289,117 @@ The derivation is deterministic. Document it in `packages/ui-kit/src/tokens/READ
 
 Downstream: step 14's public barrel exports EVERY component in the plan (primitives + patterns + custom patterns + layouts). Step 17's preview renders EVERY component with its analyst-derived screen count (or "Available, no current screens use it" for unused canonicals).
 
-### 9. Generate primitives (minimum 20)
+### 9. Generate primitives (12 core mandatory + 8 extended on-demand)
 
-Each primitive ships `{Name}.tsx` + `{Name}.variants.ts` + `{Name}.stories.tsx` + `index.ts`. Required variants per primitive:
+Primitives are the kit's non-negotiable surface. **Historical gap (refactor-006):** before this rewrite, this step said "generate ≥20" in the aspirational voice and six projects (hatch, gotribe-v1, mindapp, mindapp-v2, runclub, test-app) shipped tokens-only without a single primitive. Step 18's self-verify is now a hard gate: <12 primitives = stage fails.
 
-| Primitive              | Required variants                                                                                                             |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `Button`               | primary, secondary, ghost, destructive + sizes sm/md/lg + icon-only + disabled + loading                                      |
-| `Input`                | text, email, password, number, search + with-icon + with-error + disabled. `id`/`name` + `aria-describedby` for error linkage |
-| `Textarea`             | default, with-error, auto-resize                                                                                              |
-| `Select`               | native + styled (accessible; not a raw `<div>`)                                                                               |
-| `Checkbox`             | default, indeterminate, disabled                                                                                              |
-| `Radio` + `RadioGroup` | default, disabled; keyboard navigation within group                                                                           |
-| `Switch`               | default, disabled                                                                                                             |
-| `Slider`               | default, range, with-value                                                                                                    |
-| `Card`                 | default, interactive (hoverable), elevated; header/body/footer slots                                                          |
-| `Dialog`               | default, fullscreen (mobile); focus trap, Esc-to-close, backdrop                                                              |
-| `Drawer`               | left, right, bottom; mobile-first                                                                                             |
-| `Popover`              | default, anchored                                                                                                             |
-| `Tooltip`              | default, keyboard-accessible                                                                                                  |
-| `Toast`                | info, success, warning, error; auto-dismiss + action slot                                                                     |
-| `Badge`                | neutral, info, success, warning, error                                                                                        |
-| `Avatar`               | image, initials, fallback; size sm/md/lg                                                                                      |
-| `Skeleton`             | text, rect, circle, custom                                                                                                    |
-| `Separator`            | horizontal, vertical                                                                                                          |
-| `Tabs`                 | underline, pills; keyboard navigation                                                                                         |
-| `Accordion`            | single, multiple; animated                                                                                                    |
+**Reference implementation:** hatch-2's `packages/ui-kit/src/primitives/` (shipped by feat-013, commit `b9e0d21`). Use its file layout + `cn`/`cva` utility pattern + variant shapes as the template. ~2100 LOC across 16 primitives + tests is the shipped benchmark.
 
-**Every primitive requires:**
+#### 9a. Prerequisite files (author once, re-use across primitives)
 
-- Default, hover, focus-visible, active, disabled interaction states
-- Accessibility: proper ARIA, keyboard navigation, focus management, contrast AA minimum
-- Dark mode via CSS variables (automatic if `tokens.css` is correct)
-- Responsive behavior
-- CVA-based variant definition — **never** ad-hoc `className` switching
+1. **`src/lib/cn.ts`** — clsx + tailwind-merge composition:
+
+   ```ts
+   import { clsx, type ClassValue } from "clsx";
+   import { twMerge } from "tailwind-merge";
+   export function cn(...inputs: ClassValue[]) {
+     return twMerge(clsx(inputs));
+   }
+   ```
+
+2. **`src/lib/cva.ts`** — class-variance-authority re-export:
+
+   ```ts
+   export { cva, cx, type VariantProps } from "class-variance-authority";
+   ```
+
+3. **`package.json` runtime deps** — add: `class-variance-authority ^0.7.1`, `clsx ^2.1.1`, `tailwind-merge ^2.5.5`. DevDeps: `@testing-library/react ^16.1.0`, `@testing-library/jest-dom ^6.6.3`, `vitest ^2.1.8`, `jsdom ^25.0.1`, `@types/react ^19.0.2`. PeerDeps: `react ^19`, `react-dom ^19`.
+
+4. **`vitest.config.ts` + `vitest.setup.ts`** — jsdom environment, import `@testing-library/jest-dom/vitest` in setup.
+
+5. **`tsconfig.json`** — extends the monorepo root with `"jsx": "react-jsx"` and `"moduleResolution": "bundler"`.
+
+#### 9b. Per-primitive file layout (identical for every primitive)
+
+```
+packages/ui-kit/src/primitives/{kebab-name}/
+├── {kebab-name}.tsx         # React component — uses cn() + cva-derived variants
+├── {kebab-name}.variants.ts # cva() call — variant prop definitions (OPTIONAL for single-variant primitives like FormField)
+├── {kebab-name}.test.tsx    # happy-path: 3-5 tests — renders, variants apply, a11y
+└── index.ts                 # export * from "./{kebab-name}"
+```
+
+Then `packages/ui-kit/src/primitives/index.ts` barrel re-exports every primitive directory's index.
+
+#### 9c. Core mandatory roster (12 primitives — hard-gate by step 18)
+
+The subagent MUST author a `.tsx` + `.test.tsx` for each of these 12. Skipping any fails the stage.
+
+| Primitive     | Props / variants (minimum)                                                                                                                                                                                  | Style-specific binding from selected-style                                                                                                                                                                                           |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Button**    | `variant: primary \| secondary \| ghost \| destructive` × `size: sm \| md \| lg` + `iconOnly?: boolean` + `loading?: boolean` (sets `aria-busy`). Forwards ref; native `<button>` semantics.                | Radius from `tokens.radius.button` (style-4 → `rounded-full` pill; style-0 → `rounded-md`). Primary hover: if style declares `shadow.offsetHover` (style-4 riso overprint), emit `box-shadow: 4px 4px 0 var(--color-secondary-500)`. |
+| **Input**     | `type: text \| email \| password \| number \| search \| tel \| url` + `hasError?: boolean` (sets `aria-invalid`). Forwards ref.                                                                             | Border `var(--color-border-default)`; focus ring `var(--color-accent-500)`. Radius from `tokens.radius.input` (usually matches Card — sharp for style-4).                                                                            |
+| **Textarea**  | Same as Input + `rows?: number` + auto-resize option.                                                                                                                                                       | Same styling as Input.                                                                                                                                                                                                               |
+| **Select**    | Native `<select>` with `appearance-none` + custom chevron SVG data-URI. Same `hasError` as Input.                                                                                                           | Chevron color = `var(--color-text-primary)`.                                                                                                                                                                                         |
+| **Checkbox**  | `<input type="checkbox">` + custom box. Supports `indeterminate` ref-set.                                                                                                                                   | Checked fill = `var(--color-secondary-500)` (style-4) OR `var(--color-accent-500)` per style characteristic.                                                                                                                         |
+| **Radio**     | `<input type="radio">` + custom circle. Same fill logic as Checkbox.                                                                                                                                        | Circular.                                                                                                                                                                                                                            |
+| **Card**      | `interactive?: boolean` (hover elevates + translates), optional `CardHeader` / `CardBody` / `CardFooter` subcomponents.                                                                                     | Radius from `tokens.radius.card` (style-4 → `rounded-none` sharp corners — the characteristic).                                                                                                                                      |
+| **Badge**     | `variant: default \| accent \| secondary \| highlight` × `size: sm \| md`.                                                                                                                                  | Pill (rounded-full) regardless of style. Text-xs uppercase tracking-wide.                                                                                                                                                            |
+| **Avatar**    | `src?: string` + `alt?: string` + `initials?: string` (auto-computes from alt if absent) + `size: sm \| md \| lg`.                                                                                          | Square (no radius) — matches brutalist/riso aesthetics. Round only if style characteristic declares `avatar.round: true`.                                                                                                            |
+| **Separator** | `orientation: horizontal \| vertical` + `emphasis: subtle \| default \| strong` → maps to `--color-border-{subtle,default,strong}`.                                                                         | —                                                                                                                                                                                                                                    |
+| **Tabs**      | `<Tabs>` root + `<TabsList>` + `<TabsTrigger>` + `<TabsContent>`. `variant: underline \| pills`. Keyboard: ArrowLeft/Right/Up/Down/Home/End. `aria-selected` + `role="tab"`.                                | —                                                                                                                                                                                                                                    |
+| **FormField** | Composite: `<label>` + child (Input/Textarea/Select) + optional `error?: string` + optional `hint?: string`. Uses React.cloneElement to inject `id`, `aria-describedby`, `aria-invalid` on the child input. | —                                                                                                                                                                                                                                    |
+
+#### 9d. Extended roster (8 primitives — ship on-demand per signoff)
+
+Author these ONLY IF the gate-3 signoff's `componentsApproved[]` names them (i.e., the analyst/previous stage flagged them as used). If not referenced, skip — don't silently author. Skipping an unreferenced extended primitive does NOT fail the stage.
+
+| Primitive        | When to ship                                                          |
+| ---------------- | --------------------------------------------------------------------- |
+| **Breadcrumbs**  | when analyst observed breadcrumb navigation on any screen             |
+| **EmptyState**   | when any screen has `empty-state` variant metadata                    |
+| **PageHeader**   | when multi-section pages use a shared page-title + description block  |
+| **Notification** | when the project has contact-form or transactional flows              |
+| **Dialog**       | when any flow includes a modal confirmation                           |
+| **Drawer**       | when mobile-first design implies slide-in nav                         |
+| **Popover**      | when tooltip-rich or dropdown-menu UI is signed off                   |
+| **Skeleton**     | when loading states are explicitly designed (most projects skip this) |
+
+Primitives outside both rosters (Toast, Accordion, Slider, Switch, Tooltip) are authored only on explicit project demand and documented as "extended" in the kit's CHANGELOG.
+
+#### 9e. Shared authoring rules (apply to every primitive)
+
+- **Class composition via `cn()`** — never concatenate className strings by hand; never ad-hoc-switch variants via inline conditionals. Variants go through `cva()` in the companion `.variants.ts` file.
+- **No raw hex or inline styles** — all colors via `var(--color-*)` through Tailwind token classes. Exception: inline `style={{ backgroundImage: "url(data:image/svg+xml;...)" }}` is acceptable for data-URI icons (custom Select chevron, Checkbox mark). Record these as `inline-style-tokens-exempt` in the returned warnings so 022b's ESLint exempts the specific file.
+- **Accessibility minimums per primitive**: focus-visible ring (2px offset), ARIA role where semantic HTML doesn't provide it, keyboard navigation on composites (Tabs arrow keys; RadioGroup arrow keys), `aria-describedby` linkage between FormField and its error/hint, `aria-invalid` on error state, `aria-busy` on Button loading, `aria-current="page"` on Breadcrumbs terminal item.
+- **Default to server components** — only add `"use client"` when the primitive NEEDS interactivity. Button/Input/Card/Badge/Avatar are server-safe. Tabs, Checkbox with ref-set-indeterminate, and FormField with dynamic error linkage need client. Flag in the primitive's JSDoc header so consumers know.
+- **Tests per primitive**: at minimum 3 cases — renders with canonical props, applies variant-class changes, carries expected a11y attribute. Use `@testing-library/react` + `@testing-library/jest-dom` matchers. Mock `next/navigation` + external modules only at the app boundary, not in the kit.
+- **Dark-mode support**: the kit's `tokens.css` defines a `.dark` selector block with the inverted palette. Primitives read CSS vars, so dark-mode works automatically — test does NOT need to exercise both modes; the visual-review stage handles that.
+- **Version bump** — first successful primitive-shipping run bumps `package.json.version` from `0.1.0-tokens-only` to `0.2.0-primitives` (semver minor per "new primitive surface" per the versioning policy below).
+
+#### 9f. Public barrel (`src/index.ts`)
+
+```ts
+// Primitives (12 mandatory + any shipped extended)
+export * from "./primitives/button";
+export * from "./primitives/input";
+// ... one line per primitive directory
+
+// Utilities
+export { cn } from "./lib/cn";
+export { cva, cx, type VariantProps } from "./lib/cva";
+
+// Runtime token access (the 022b-sanctioned escape hatch)
+export { default as tokens } from "./tokens/tokens.json";
+```
+
+If the TS/Node version rejects direct JSON import, create `src/tokens/index.ts` that reads tokens.json via `import` with `resolveJsonModule: true` in tsconfig, then re-export. Feat-013's hatch-2 kit uses this workaround.
+
+#### 9g. JSDOM gotchas (learned from feat-013)
+
+- **Avatar with `src`** — outer `<span role="img">` + inner `<img>` both match `getByRole("img")`. Tests must disambiguate via `getByAltText()` for the inner img.
+- **Select chevron data-URI** — JSDOM silently drops complex `style={{ backgroundImage: "url(data:image/svg+xml;...)" }}` values, which ALSO clears the entire inline style attribute. Don't test the URL directly; assert the companion `appearance-none` Tailwind class OR skip the test with a comment.
+- **React 19 + vitest** — ensure `esbuild.jsx: "automatic"` in `vitest.config.ts` or JSX transforms to the classic runtime and tests fail with `ReferenceError: React is not defined`.
 
 ### 10. Generate patterns (minimum 12 canonical + N custom)
 
@@ -570,21 +647,29 @@ The outline-on-hover + dashed rectangle is a universal affordance: hovering reve
 - Run `pnpm typecheck` in the monorepo
 - Run `pnpm lint` against the kit (the ESLint plugin is disabled on kit internals via `overrides` per 022b — it applies to `apps/*` only)
 - `validate-consumer` is NOT run against the kit itself — its purpose is to scan `apps/**`, which don't exist yet at this stage
-- **Primitives-shipped alarm (feat-013)** — count `.tsx` files under `packages/ui-kit/src/primitives/`:
+- **Primitives-shipped HARD GATE (refactor-006)** — count non-test `.tsx` files under `packages/ui-kit/src/primitives/`:
 
   ```bash
-  find packages/ui-kit/src/primitives -maxdepth 2 -name '*.tsx' -not -name '*.test.tsx' 2>/dev/null | wc -l
+  node scripts/verify-024.mjs --primitives-count
+  # OR inline:
+  find packages/ui-kit/src/primitives -maxdepth 3 -name '*.tsx' -not -name '*.test.tsx' 2>/dev/null | wc -l
   ```
 
-  Threshold: ≥12. If below threshold, append warning to return JSON:
+  **Threshold: ≥12 core primitives** (the mandatory roster from step 9c). If below threshold, the stage **fails** — return `success: false` with abort-reason:
 
   ```
-  primitives-not-shipped: authored N of 12 minimum core primitives — gate-3 componentsApproved[] is aspirational; downstream builders will fall back to plain HTML/Tailwind for missing primitives, degrading visual fidelity to design-system-preview.html.
+  primitives-shipped-gate-failed: authored N of 12 mandatory core primitives.
+  Missing: [list-from-roster-minus-shipped].
+  gate-3 componentsApproved[] cannot be approved until the core roster ships —
+  downstream builders have no import surface. Re-author missing primitives then
+  re-run /stylesheet.
   ```
 
-  Six projects (hatch, gotribe-v1, mindapp, mindapp-v2, runclub, test-app) shipped tokens-only without this alarm firing; refactor-006 rewrites this step to a hard gate. Until refactor-006 lands, treat this as a loud warning.
+  Orchestrator (035) retries via Layer 5 stage-level retry (up to 3 attempts). After exhaustion, human review via normal failed-stage escalation.
 
-- Emit return JSON
+  **History (what this gate prevents):** before refactor-006, this was a soft warning. Six projects (hatch, gotribe-v1, mindapp, mindapp-v2, runclub, test-app) shipped tokens-only — hatch-2 surfaced the gap at build time when builders fell back to plain HTML + Tailwind. Bug-001 Layer B (feat-013) retro-shipped hatch-2's kit; refactor-006 closes the systemic hole.
+
+- Emit return JSON (include `primitivesShipped: string[]` — the kebab-names of every primitive directory under `src/primitives/`)
 
 ## Full asset-download wave (second of two)
 

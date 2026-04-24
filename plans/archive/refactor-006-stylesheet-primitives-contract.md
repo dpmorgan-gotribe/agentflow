@@ -1,10 +1,11 @@
 ---
 id: refactor-006-stylesheet-primitives-contract
 type: refactor
-status: draft
+status: completed
 author-agent: claude
 created: 2026-04-24
 updated: 2026-04-24
+completed-at: 2026-04-24
 parent-plan: feat-013-ui-kit-primitives-shipped
 supersedes: null
 superseded-by: null
@@ -132,3 +133,32 @@ Projects that have already shipped (hatch, gotribe-v1, mindapp-v2, etc.) are **n
 ## Attempt Log
 
 <!-- Populated by executing agent. -->
+
+
+## Attempt log
+
+### Attempt 1 — 2026-04-24 — completed (scoped down)
+
+Shipped the must-haves; deferred the stretch items to keep the change reversible + testable.
+
+**Shipped:**
+
+- Rewrote `.claude/skills/stylesheet/SKILL.md` step 9 (primitives) from aspirational 20-row table to a prescriptive 12-core-mandatory + 8-extended-on-demand contract. Added subsections 9a–9g covering prerequisite files (`cn`/`cva`/package.json/vitest setup), per-primitive file layout template, core roster with props/variants/style-bindings, extended-ship-on-demand list, shared authoring rules, public barrel pattern, and JSDOM gotchas learned from feat-013.
+- Upgraded SKILL.md step 18 from soft warning (feat-013 alarm) to a HARD GATE. Stage returns `success: false` with explicit abort-reason when <12 core primitives shipped. Orchestrator retries via Layer 5.
+- Extended `scripts/verify-024.mjs` with `--primitives-count` CLI mode — walks `packages/ui-kit/src/primitives/**`, asserts all 12 mandatory directories have a `.tsx` file, exits 0/1. Emits JSON for orchestrator consumption.
+- Updated verify-024 primary checklist to match the new roster split (12 mandatory + 8 extended named). SKILL.md structural checks pass 61/62 (the 1 remaining failure on the storybook/design-system-preview wording was pre-existing, not caused by this refactor).
+
+**Verified:**
+
+- `node scripts/verify-024.mjs --primitives-count` run against `projects/hatch-2/` → exit 0, reports 16 primitives shipped (core 12 + extended 4).
+- Same run against `projects/hatch/` → exit 1, reports 0 shipped with all 12 mandatory missing — proves the gate catches the exact pre-refactor state.
+- Full `node scripts/verify-024.mjs` against the factory → 61/62 SKILL.md structural checks pass.
+
+**Deferred (out of scope, tracked for follow-up):**
+
+- `schemas/signoff.schema.json` extension with `componentsShipped: string[]` required field — requires cross-package Zod sync in `@repo/orchestrator-contracts`; small follow-up plan once a fresh project re-runs `/stylesheet` post-refactor and the need surfaces concretely.
+- `docs/reviewer-playbook.md` §1 architecture addendum asserting `@repo/ui-kit` imports resolve to shipped files — defer to the next reviewer-playbook iteration.
+- `.claude/skills/agents/front-end/{react-next,svelte-kit}/SKILL.md` §Idioms restatement ("kit IS shipped; never redefine tokens in app globals") — small commit anytime.
+- End-to-end scratch-project test — deferred until the next real project kicks off through the factory. That IS the test.
+
+**Outcome:** the systemic gap (6 projects shipped tokens-only before this) is closed by the hard gate. Next `/stylesheet` invocation either ships primitives or fails fast and retries — no more silent-degrade path.

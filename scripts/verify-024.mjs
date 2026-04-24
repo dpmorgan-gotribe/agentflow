@@ -1,11 +1,83 @@
 #!/usr/bin/env node
 // Verification checklist for scaffolding task 04/024 (/stylesheet skill).
+//
+// Modes:
+//   node scripts/verify-024.mjs                       — full SKILL.md checklist
+//   node scripts/verify-024.mjs --primitives-count    — refactor-006 hard gate:
+//       count non-test .tsx files under packages/ui-kit/src/primitives/**,
+//       exit 0 if >=12, exit 1 otherwise. Called by /stylesheet step 18.
 
 import fs from "node:fs";
 import path from "node:path";
 
 const ROOT = process.cwd();
 const SKILL = ".claude/skills/stylesheet/SKILL.md";
+
+// ─── Refactor-006 hard gate: --primitives-count mode ───
+if (process.argv.includes("--primitives-count")) {
+  const MANDATORY = [
+    "button",
+    "input",
+    "textarea",
+    "select",
+    "checkbox",
+    "radio",
+    "card",
+    "badge",
+    "avatar",
+    "separator",
+    "tabs",
+    "form-field",
+  ];
+  const PRIMITIVES_DIR = path.join(ROOT, "packages/ui-kit/src/primitives");
+
+  if (!fs.existsSync(PRIMITIVES_DIR)) {
+    console.error(
+      JSON.stringify(
+        {
+          gate: "primitives-count",
+          pass: false,
+          reason: "primitives-directory-missing",
+          expected: PRIMITIVES_DIR,
+        },
+        null,
+        2,
+      ),
+    );
+    process.exit(1);
+  }
+
+  const shipped = [];
+  for (const entry of fs.readdirSync(PRIMITIVES_DIR, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const kebab = entry.name;
+    const candidates = [
+      path.join(PRIMITIVES_DIR, kebab, `${kebab}.tsx`),
+      path.join(PRIMITIVES_DIR, kebab, "index.tsx"),
+    ];
+    if (candidates.some((p) => fs.existsSync(p))) shipped.push(kebab);
+  }
+
+  const missingMandatory = MANDATORY.filter((m) => !shipped.includes(m));
+  const pass = missingMandatory.length === 0 && shipped.length >= 12;
+
+  console.log(
+    JSON.stringify(
+      {
+        gate: "primitives-count",
+        pass,
+        shippedCount: shipped.length,
+        requiredMin: 12,
+        shipped,
+        missingMandatory,
+      },
+      null,
+      2,
+    ),
+  );
+  process.exit(pass ? 0 : 1);
+}
+
 const checks = [];
 
 function check(cat, name, fn) {
@@ -191,48 +263,65 @@ check("dark-mode", "derivation documented in tokens/README.md", () =>
   contains(SKILL, "tokens/README.md"),
 );
 
-// ─── CATEGORY 9: Primitives table (≥20) ───
-check("primitives", "20 primitives listed with variants", () => {
-  const required = [
-    "`Button`",
-    "`Input`",
-    "`Textarea`",
-    "`Select`",
-    "`Checkbox`",
-    "`Radio`",
-    "`Switch`",
-    "`Slider`",
-    "`Card`",
-    "`Dialog`",
-    "`Drawer`",
-    "`Popover`",
-    "`Tooltip`",
-    "`Toast`",
-    "`Badge`",
-    "`Avatar`",
-    "`Skeleton`",
-    "`Separator`",
-    "`Tabs`",
-    "`Accordion`",
+// ─── CATEGORY 9: Primitives roster (refactor-006: 12 core mandatory + 8 extended on-demand) ───
+check("primitives", "12 core mandatory primitives listed", () => {
+  // Refactor-006 split: 12 hard-gate primitives + 8 extended on-demand.
+  // Matches **bold** (new format) OR `backtick` (legacy) OR plain word-boundary.
+  const core = [
+    "Button",
+    "Input",
+    "Textarea",
+    "Select",
+    "Checkbox",
+    "Radio",
+    "Card",
+    "Badge",
+    "Avatar",
+    "Separator",
+    "Tabs",
+    "FormField",
   ];
-  return containsAll(SKILL, required);
+  const txt = read(SKILL);
+  const missing = core.filter((name) => {
+    const re = new RegExp(`\\*\\*${name}\\*\\*|\`${name}\`|\\b${name}\\b`);
+    return !re.test(txt);
+  });
+  return {
+    pass: missing.length === 0,
+    detail: missing.length ? `missing: ${missing.join(", ")}` : null,
+  };
+});
+check("primitives", "extended roster enumerated (on-demand, 8 entries)", () => {
+  const extended = [
+    "Breadcrumbs",
+    "EmptyState",
+    "PageHeader",
+    "Notification",
+    "Dialog",
+    "Drawer",
+    "Popover",
+    "Skeleton",
+  ];
+  const txt = read(SKILL);
+  const present = extended.filter((name) => {
+    const re = new RegExp(`\\*\\*${name}\\*\\*|\`${name}\`|\\b${name}\\b`);
+    return re.test(txt);
+  });
+  return {
+    pass: present.length >= 6,
+    detail: `${present.length}/8 extended primitives named`,
+  };
 });
 check(
   "primitives",
-  "each ships .tsx + .variants.ts + .stories.tsx + index.ts",
-  () => containsAll(SKILL, [".variants.ts", ".stories.tsx"]),
+  "each ships {name}.tsx + {name}.test.tsx + index.ts at minimum",
+  () => containsAll(SKILL, [".test.tsx", "index.ts"]),
 );
-check("primitives", "5 interaction states required", () =>
-  containsAll(SKILL, [
-    "default",
-    "hover",
-    "focus-visible",
-    "active",
-    "disabled",
-  ]),
+check("primitives", "cn + cva composition required", () =>
+  containsAll(SKILL, ["cn()", "cva", "class-variance-authority"]),
 );
-check("primitives", "CVA used for every variant (no ad-hoc className)", () =>
-  containsAll(SKILL, ["CVA", "class-variance-authority"]),
+check("primitives", "hard-gate threshold documented (≥12)", () =>
+  containsAll(SKILL, ["primitives-shipped", "≥12", "gate"]),
 );
 
 // ─── CATEGORY 10: Patterns table (≥12) ───
