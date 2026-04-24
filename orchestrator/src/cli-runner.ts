@@ -9,7 +9,7 @@ import {
   skillExists,
   type StageCompletion,
 } from "./project-state.js";
-import { readBudgetCaps } from "./model-config.js";
+import { readBudgetCaps, readProviderConfig } from "./model-config.js";
 import type { QueryFn } from "./stage-runner.js";
 import { STAGES, getStage } from "./stages-array.js";
 
@@ -119,6 +119,12 @@ export async function runCli(
   messages.push(
     `Budget cap: ${caps.perPipelineMaxUsd.toFixed(2)} USD per pipeline`,
   );
+
+  // feat-017: surface the active auth backend so it's obvious at run-time
+  // which quota/bill the SDK calls will hit. Resolved from
+  // AGENTFLOW_PROVIDER > project models.yaml > global models.yaml > default.
+  const providerConfig = readProviderConfig(projectRoot);
+  messages.push(`Auth provider: ${providerConfig.provider}`);
 
   if (opts.dryRun) {
     messages.push("");

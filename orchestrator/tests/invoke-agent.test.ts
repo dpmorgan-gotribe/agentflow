@@ -581,6 +581,124 @@ describe("invokeAgent — budget exceeded pre-call", () => {
   });
 });
 
+describe("invokeAgent — auth provider wiring (feat-017)", () => {
+  it("defaults to forceLoginMethod: 'claudeai' and strips ANTHROPIC_API_KEY", async () => {
+    const originalKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "sk-ant-stale";
+    try {
+      const budget = mkBudget();
+      const queryFn = makeFakeQuery(() => ({
+        subtype: "success",
+        structured_output: { taskOutcomes: { t1: "completed" } },
+        total_cost_usd: 0.01,
+      }));
+      const invoke = createInvokeAgent({
+        projectRoot,
+        budget,
+        flags: [],
+        queryFn,
+        modelConfigOverride: {
+          globalPath: globalYaml,
+          projectPath: join(projectRoot, "no-project.yaml"),
+        },
+      });
+      await invoke({
+        agent: "backend-builder",
+        cwd: projectRoot,
+        featureContext,
+        tasks: [task1],
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const opts = (queryFn as any).calls[0].options;
+      expect(opts.forceLoginMethod).toBe("claudeai");
+      expect(opts.env.ANTHROPIC_API_KEY).toBeUndefined();
+    } finally {
+      if (originalKey === undefined) {
+        delete process.env.ANTHROPIC_API_KEY;
+      } else {
+        process.env.ANTHROPIC_API_KEY = originalKey;
+      }
+    }
+  });
+
+  it("injects CLAUDE_CODE_USE_BEDROCK=1 when provider=bedrock", async () => {
+    writeFileSync(
+      globalYaml,
+      `provider: bedrock\nawsRegion: us-east-2\ndefaults:\n  build: claude-sonnet-4-6\nagents:\n  backend-builder: { tier: build, effort: medium, budgetUsd: 2 }\n`,
+    );
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      structured_output: { taskOutcomes: { t1: "completed" } },
+      total_cost_usd: 0.01,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = (queryFn as any).calls[0].options;
+    expect(opts.env.CLAUDE_CODE_USE_BEDROCK).toBe("1");
+    expect(opts.env.AWS_REGION).toBe("us-east-2");
+    expect(opts.forceLoginMethod).toBeUndefined();
+  });
+
+  it("sets forceLoginMethod: 'console' when provider=anthropic-api + key present", async () => {
+    const originalKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "sk-ant-real";
+    try {
+      writeFileSync(
+        globalYaml,
+        `provider: anthropic-api\ndefaults:\n  build: claude-sonnet-4-6\nagents:\n  backend-builder: { tier: build, effort: medium, budgetUsd: 2 }\n`,
+      );
+      const budget = mkBudget();
+      const queryFn = makeFakeQuery(() => ({
+        subtype: "success",
+        structured_output: { taskOutcomes: { t1: "completed" } },
+        total_cost_usd: 0.01,
+      }));
+      const invoke = createInvokeAgent({
+        projectRoot,
+        budget,
+        flags: [],
+        queryFn,
+        modelConfigOverride: {
+          globalPath: globalYaml,
+          projectPath: join(projectRoot, "no-project.yaml"),
+        },
+      });
+      await invoke({
+        agent: "backend-builder",
+        cwd: projectRoot,
+        featureContext,
+        tasks: [task1],
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const opts = (queryFn as any).calls[0].options;
+      expect(opts.forceLoginMethod).toBe("console");
+      expect(opts.env.ANTHROPIC_API_KEY).toBe("sk-ant-real");
+    } finally {
+      if (originalKey === undefined) {
+        delete process.env.ANTHROPIC_API_KEY;
+      } else {
+        process.env.ANTHROPIC_API_KEY = originalKey;
+      }
+    }
+  });
+});
+
 describe("invokeAgent — cost tracking across multiple invocations", () => {
   it("accumulates cost from two sequential invocations", async () => {
     const budget = mkBudget();

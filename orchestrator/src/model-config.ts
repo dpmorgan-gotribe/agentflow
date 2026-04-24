@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { Provider, type ProviderConfig } from "@repo/orchestrator-contracts";
 import yaml from "js-yaml";
 
 /**
@@ -11,8 +12,14 @@ import yaml from "js-yaml";
  * soft per-invocation hint — the hard per-stage cap lives on
  * `PipelineStage.budgetUsd`, and the pipeline-wide ceiling is enforced by
  * `BudgetTracker` via `perPipelineMaxUsd`.
+ *
+ * `provider` + `providerConfig` carry the auth-backend selection (feat-017).
+ * They're resolved from the same YAML files via a top-level `provider:` key;
+ * see docs/agent-sdk-auth-providers.md for precedence + semantics.
  */
 export interface ModelConfig {
+  provider: Provider;
+  providerConfig: ProviderConfig;
   model: string;
   effort: "low" | "medium" | "high" | "max";
   budgetUsd: number;
@@ -26,6 +33,14 @@ export interface BudgetCaps {
 interface RawYaml {
   version?: string;
   extends?: string;
+  /** Top-level auth provider selection (feat-017). */
+  provider?: string;
+  /** For `anthropic-api`: env var name holding the key. */
+  apiKeyEnvVar?: string;
+  /** For `bedrock`: AWS region override. */
+  awsRegion?: string;
+  /** For `vertex`: GCP project override. */
+  gcpProject?: string;
   defaults?: Record<string, string>;
   agents?: Record<
     string,
@@ -46,10 +61,70 @@ const DEFAULT_EFFORT: ModelConfig["effort"] = "medium";
 const DEFAULT_BUDGET_USD = 5;
 const DEFAULT_PIPELINE_MAX_USD = 150;
 
+/**
+ * Factory default auth provider. Subscription mode is chosen so the factory
+ * operator's Claude Max quota covers SDK calls (zero incremental cost). A
+ * public-product distribution can override this build-time constant in
+ * `orchestrator/src/defaults.ts` — see docs/agent-sdk-auth-providers.md
+ * §"Public product release path".
+ */
+const FACTORY_DEFAULT_PROVIDER: Provider = "claude-max-subscription";
+
 function loadYaml(path: string): RawYaml {
   if (!existsSync(path)) return {};
   const parsed = yaml.load(readFileSync(path, "utf8"));
   return (parsed ?? {}) as RawYaml;
+}
+
+/**
+ * Resolve the auth-provider config from merged YAML + env.
+ *
+ * Precedence (highest → lowest):
+ *   1. `process.env.AGENTFLOW_PROVIDER` — session-level override
+ *   2. `<projectRoot>/.claude/models.yaml` top-level `provider:`
+ *   3. `~/.claude/models.yaml` top-level `provider:`
+ *   4. Factory fallback: `claude-max-subscription`
+ *
+ * Provider-specific fields (`apiKeyEnvVar`, `awsRegion`, `gcpProject`) are
+ * resolved project-wins from the same files. An invalid provider value
+ * (typo, unknown enum) throws a clear zod validation error.
+ */
+function resolveProviderConfig(
+  globalCfg: RawYaml,
+  projectCfg: RawYaml,
+): ProviderConfig {
+  const envOverride = process.env.AGENTFLOW_PROVIDER;
+  const rawProvider =
+    envOverride ??
+    projectCfg.provider ??
+    globalCfg.provider ??
+    FACTORY_DEFAULT_PROVIDER;
+
+  const parseResult = Provider.safeParse(rawProvider);
+  if (!parseResult.success) {
+    const validValues = Provider.options.join(", ");
+    const source = envOverride
+      ? "AGENTFLOW_PROVIDER env var"
+      : projectCfg.provider
+        ? "project .claude/models.yaml `provider:`"
+        : "global ~/.claude/models.yaml `provider:`";
+    throw new Error(
+      `Invalid auth provider '${rawProvider}' from ${source}. ` +
+        `Valid values: ${validValues}. ` +
+        `See docs/agent-sdk-auth-providers.md.`,
+    );
+  }
+
+  const apiKeyEnvVar = projectCfg.apiKeyEnvVar ?? globalCfg.apiKeyEnvVar;
+  const awsRegion = projectCfg.awsRegion ?? globalCfg.awsRegion;
+  const gcpProject = projectCfg.gcpProject ?? globalCfg.gcpProject;
+
+  return {
+    provider: parseResult.data,
+    ...(apiKeyEnvVar ? { apiKeyEnvVar } : {}),
+    ...(awsRegion ? { awsRegion } : {}),
+    ...(gcpProject ? { gcpProject } : {}),
+  };
 }
 
 /**
@@ -59,6 +134,10 @@ function loadYaml(path: string): RawYaml {
  * `agentName` selects the agent entry; tier→model lookup uses the merged
  * `defaults` map. `ANTHROPIC_MODEL` env var overrides the resolved model
  * as the final escape hatch (CLAUDE.md rule).
+ *
+ * Returns `{ provider, providerConfig, model, effort, budgetUsd }`; auth
+ * backend selection is per-run (not per-agent) — see
+ * docs/agent-sdk-auth-providers.md.
  */
 export function readModelConfig(
   agentName: string,
@@ -102,7 +181,39 @@ export function readModelConfig(
   const effort = agent.effort ?? DEFAULT_EFFORT;
   const budgetUsd = agent.budgetUsd ?? DEFAULT_BUDGET_USD;
 
-  return { model, effort, budgetUsd };
+  const providerConfig = resolveProviderConfig(globalCfg, projectCfg);
+
+  return {
+    provider: providerConfig.provider,
+    providerConfig,
+    model,
+    effort,
+    budgetUsd,
+  };
+}
+
+/**
+ * Read the resolved auth-provider config without resolving a specific
+ * agent's model/effort/budget. Used by `cli-runner.ts` to log the active
+ * provider at startup; also useful for other run-level wiring that wants
+ * just the provider selection.
+ *
+ * Same precedence as `readModelConfig`'s provider branch:
+ *   AGENTFLOW_PROVIDER > project `provider:` > global `provider:` > factory default.
+ */
+export function readProviderConfig(
+  projectRoot: string,
+  opts?: { globalPath?: string; projectPath?: string },
+): ProviderConfig {
+  const globalPath =
+    opts?.globalPath ?? join(homedir(), ".claude", "models.yaml");
+  const projectPath =
+    opts?.projectPath ?? join(projectRoot, ".claude", "models.yaml");
+
+  const globalCfg = loadYaml(globalPath);
+  const projectCfg = loadYaml(projectPath);
+
+  return resolveProviderConfig(globalCfg, projectCfg);
 }
 
 /**

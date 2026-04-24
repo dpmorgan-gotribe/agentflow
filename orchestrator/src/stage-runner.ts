@@ -6,6 +6,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { query as realQuery } from "@anthropic-ai/claude-agent-sdk";
 import type { PipelineStage } from "@repo/orchestrator-contracts";
+import { resolveAuthOptions } from "./auth-provider.js";
 import type { BudgetTracker } from "./budget-tracker.js";
 import { BudgetExceededError } from "./budget-tracker.js";
 import { readModelConfig, type ModelConfig } from "./model-config.js";
@@ -197,8 +198,14 @@ function buildOptions(
   ctx: RunContext,
   modelConfig: ModelConfig,
 ): Options {
-  const env: Record<string, string | undefined> = {
+  // Resolve auth backend FIRST: `env` may be mutated (ANTHROPIC_API_KEY
+  // stripped for subscription mode; CLAUDE_CODE_USE_BEDROCK injected for
+  // bedrock; etc.). Our pipeline-specific env vars layer on top.
+  const auth = resolveAuthOptions(modelConfig.providerConfig, {
     ...process.env,
+  });
+  const env: Record<string, string | undefined> = {
+    ...auth.env,
     CLAUDE_PIPELINE_FLAGS: ctx.flags.join(","),
   };
   if (stage.gateEnabled && ctx.gateApiBase) {
@@ -211,6 +218,9 @@ function buildOptions(
     cwd: ctx.projectRoot,
     env,
     maxBudgetUsd: stage.budgetUsd,
+    ...(auth.forceLoginMethod
+      ? { forceLoginMethod: auth.forceLoginMethod }
+      : {}),
   };
 }
 

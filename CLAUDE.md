@@ -45,6 +45,7 @@
 - To bypass config entirely for debugging: `ANTHROPIC_MODEL=claude-sonnet-4-6`
 - Resolution order: `ANTHROPIC_MODEL` > project `.claude/models.yaml` > `~/.claude/models.yaml`
 - The TypeScript `readModelConfig()` that merges these lives in the orchestrator (task 035)
+- Auth provider config lives in the same `models.yaml` under the top-level `provider:` key — see `docs/agent-sdk-auth-providers.md` for the 4 options + precedence rules. Factory default is `claude-max-subscription` (uses your logged-in Claude Code session; no per-token API bill).
 
 ## Plan/Archive System (NON-NEGOTIABLE)
 

@@ -2,18 +2,24 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readBudgetCaps, readModelConfig } from "../src/model-config.js";
+import {
+  readBudgetCaps,
+  readModelConfig,
+  readProviderConfig,
+} from "../src/model-config.js";
 
 let tmpDir: string;
 let globalPath: string;
 let projectPath: string;
 const originalEnv = process.env.ANTHROPIC_MODEL;
+const originalProviderEnv = process.env.AGENTFLOW_PROVIDER;
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "model-config-"));
   globalPath = join(tmpDir, "global.yaml");
   projectPath = join(tmpDir, "project.yaml");
   delete process.env.ANTHROPIC_MODEL;
+  delete process.env.AGENTFLOW_PROVIDER;
 });
 
 afterEach(() => {
@@ -22,6 +28,11 @@ afterEach(() => {
     delete process.env.ANTHROPIC_MODEL;
   } else {
     process.env.ANTHROPIC_MODEL = originalEnv;
+  }
+  if (originalProviderEnv === undefined) {
+    delete process.env.AGENTFLOW_PROVIDER;
+  } else {
+    process.env.AGENTFLOW_PROVIDER = originalProviderEnv;
   }
 });
 
@@ -180,5 +191,112 @@ describe("readBudgetCaps", () => {
     expect(caps.perStageMaxUsd.analyze).toBe(5); // project overrides
     expect(caps.perStageMaxUsd.mockups).toBe(10); // global preserved
     expect(caps.perStageMaxUsd.screens).toBe(30); // project-only added
+  });
+});
+
+// ─── feat-017: auth-provider resolution ───────────────────────────────
+
+describe("readModelConfig — provider resolution (feat-017)", () => {
+  it("defaults to 'claude-max-subscription' when no config and no env override", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  planning: claude-opus-4-7\nagents:\n  analyst: { tier: planning }\n`,
+    );
+    const cfg = readModelConfig("analyst", tmpDir, { globalPath, projectPath });
+    expect(cfg.provider).toBe("claude-max-subscription");
+    expect(cfg.providerConfig.provider).toBe("claude-max-subscription");
+  });
+
+  it("reads provider from global models.yaml", () => {
+    writeFileSync(
+      globalPath,
+      `provider: anthropic-api\ndefaults:\n  planning: claude-opus-4-7\nagents:\n  analyst: { tier: planning }\n`,
+    );
+    const cfg = readModelConfig("analyst", tmpDir, { globalPath, projectPath });
+    expect(cfg.provider).toBe("anthropic-api");
+  });
+
+  it("project provider beats global provider", () => {
+    writeFileSync(
+      globalPath,
+      `provider: anthropic-api\ndefaults:\n  planning: claude-opus-4-7\nagents:\n  analyst: { tier: planning }\n`,
+    );
+    writeFileSync(projectPath, `provider: bedrock\n`);
+    const cfg = readModelConfig("analyst", tmpDir, { globalPath, projectPath });
+    expect(cfg.provider).toBe("bedrock");
+  });
+
+  it("AGENTFLOW_PROVIDER env var beats both YAML files", () => {
+    writeFileSync(
+      globalPath,
+      `provider: anthropic-api\ndefaults:\n  planning: claude-opus-4-7\nagents:\n  analyst: { tier: planning }\n`,
+    );
+    writeFileSync(projectPath, `provider: bedrock\n`);
+    process.env.AGENTFLOW_PROVIDER = "vertex";
+    const cfg = readModelConfig("analyst", tmpDir, { globalPath, projectPath });
+    expect(cfg.provider).toBe("vertex");
+  });
+
+  it("throws a zod-flavoured error on invalid provider in YAML", () => {
+    writeFileSync(
+      globalPath,
+      `provider: anthropic_api\ndefaults:\n  planning: claude-opus-4-7\nagents:\n  analyst: { tier: planning }\n`,
+    );
+    expect(() =>
+      readModelConfig("analyst", tmpDir, { globalPath, projectPath }),
+    ).toThrow(/Invalid auth provider 'anthropic_api'/);
+    expect(() =>
+      readModelConfig("analyst", tmpDir, { globalPath, projectPath }),
+    ).toThrow(/claude-max-subscription/);
+  });
+
+  it("throws on invalid AGENTFLOW_PROVIDER env var value", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  planning: claude-opus-4-7\nagents:\n  analyst: { tier: planning }\n`,
+    );
+    process.env.AGENTFLOW_PROVIDER = "openai";
+    expect(() =>
+      readModelConfig("analyst", tmpDir, { globalPath, projectPath }),
+    ).toThrow(/Invalid auth provider 'openai' from AGENTFLOW_PROVIDER env var/);
+  });
+
+  it("parses apiKeyEnvVar / awsRegion / gcpProject from YAML", () => {
+    writeFileSync(
+      globalPath,
+      `provider: anthropic-api\napiKeyEnvVar: MY_CUSTOM_KEY\nawsRegion: eu-west-1\ngcpProject: my-project\ndefaults:\n  planning: claude-opus-4-7\nagents:\n  analyst: { tier: planning }\n`,
+    );
+    const cfg = readModelConfig("analyst", tmpDir, { globalPath, projectPath });
+    expect(cfg.providerConfig.apiKeyEnvVar).toBe("MY_CUSTOM_KEY");
+    expect(cfg.providerConfig.awsRegion).toBe("eu-west-1");
+    expect(cfg.providerConfig.gcpProject).toBe("my-project");
+  });
+
+  it("project apiKeyEnvVar overrides global apiKeyEnvVar", () => {
+    writeFileSync(
+      globalPath,
+      `provider: anthropic-api\napiKeyEnvVar: GLOBAL_KEY\ndefaults:\n  planning: claude-opus-4-7\nagents:\n  analyst: { tier: planning }\n`,
+    );
+    writeFileSync(projectPath, `apiKeyEnvVar: PROJECT_KEY\n`);
+    const cfg = readModelConfig("analyst", tmpDir, { globalPath, projectPath });
+    expect(cfg.providerConfig.apiKeyEnvVar).toBe("PROJECT_KEY");
+  });
+});
+
+describe("readProviderConfig — standalone", () => {
+  it("returns factory default when no YAML files exist", () => {
+    // neither globalPath nor projectPath is written
+    const cfg = readProviderConfig(tmpDir, { globalPath, projectPath });
+    expect(cfg.provider).toBe("claude-max-subscription");
+    expect(cfg.apiKeyEnvVar).toBeUndefined();
+    expect(cfg.awsRegion).toBeUndefined();
+    expect(cfg.gcpProject).toBeUndefined();
+  });
+
+  it("resolves provider without needing a specific agent entry", () => {
+    writeFileSync(globalPath, `provider: bedrock\nawsRegion: us-east-2\n`);
+    const cfg = readProviderConfig(tmpDir, { globalPath, projectPath });
+    expect(cfg.provider).toBe("bedrock");
+    expect(cfg.awsRegion).toBe("us-east-2");
   });
 });

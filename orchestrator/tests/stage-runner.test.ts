@@ -341,6 +341,82 @@ describe("runStage — env var plumbing", () => {
   });
 });
 
+describe("runStage — auth provider wiring (feat-017)", () => {
+  it("defaults to forceLoginMethod: 'claudeai' and strips ANTHROPIC_API_KEY", async () => {
+    const originalKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "sk-ant-stale";
+    try {
+      const stage = makeStage();
+      const ctx = makeCtx();
+      const q = makeFakeQuery(() => ({
+        subtype: "success",
+        structured_output: { success: true, widgetCount: 1 },
+      }));
+      ctx.queryFn = q;
+      await runStage(stage, ctx);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const opts = (q as any).calls[0].options;
+      expect(opts.forceLoginMethod).toBe("claudeai");
+      expect(opts.env.ANTHROPIC_API_KEY).toBeUndefined();
+    } finally {
+      if (originalKey === undefined) {
+        delete process.env.ANTHROPIC_API_KEY;
+      } else {
+        process.env.ANTHROPIC_API_KEY = originalKey;
+      }
+    }
+  });
+
+  it("injects CLAUDE_CODE_USE_BEDROCK=1 and omits forceLoginMethod when provider=bedrock", async () => {
+    writeFileSync(
+      globalYaml,
+      `provider: bedrock\nawsRegion: eu-west-1\ndefaults:\n  planning: claude-opus-4-7\nagents:\n  analyst: { tier: planning, effort: max }\n`,
+    );
+    const stage = makeStage();
+    const ctx = makeCtx();
+    const q = makeFakeQuery(() => ({
+      subtype: "success",
+      structured_output: { success: true, widgetCount: 1 },
+    }));
+    ctx.queryFn = q;
+    await runStage(stage, ctx);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = (q as any).calls[0].options;
+    expect(opts.env.CLAUDE_CODE_USE_BEDROCK).toBe("1");
+    expect(opts.env.AWS_REGION).toBe("eu-west-1");
+    expect(opts.forceLoginMethod).toBeUndefined();
+  });
+
+  it("sets forceLoginMethod: 'console' when provider=anthropic-api + key present", async () => {
+    const originalKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "sk-ant-real";
+    try {
+      writeFileSync(
+        globalYaml,
+        `provider: anthropic-api\ndefaults:\n  planning: claude-opus-4-7\nagents:\n  analyst: { tier: planning, effort: max }\n`,
+      );
+      const stage = makeStage();
+      const ctx = makeCtx();
+      const q = makeFakeQuery(() => ({
+        subtype: "success",
+        structured_output: { success: true, widgetCount: 1 },
+      }));
+      ctx.queryFn = q;
+      await runStage(stage, ctx);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const opts = (q as any).calls[0].options;
+      expect(opts.forceLoginMethod).toBe("console");
+      expect(opts.env.ANTHROPIC_API_KEY).toBe("sk-ant-real");
+    } finally {
+      if (originalKey === undefined) {
+        delete process.env.ANTHROPIC_API_KEY;
+      } else {
+        process.env.ANTHROPIC_API_KEY = originalKey;
+      }
+    }
+  });
+});
+
 describe("runStage — SDK errors + stream anomalies", () => {
   it("captures thrown errors in warnings and retries", async () => {
     const stage = makeStage();

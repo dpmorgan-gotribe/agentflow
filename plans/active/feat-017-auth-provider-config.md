@@ -1,7 +1,9 @@
 ---
 id: feat-017-auth-provider-config
 type: feature
-status: draft
+status: in-progress
+approved-at: 2026-04-24
+approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-04-24
 updated: 2026-04-24

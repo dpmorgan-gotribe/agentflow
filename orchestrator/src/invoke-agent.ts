@@ -14,13 +14,14 @@ import type {
   Task,
 } from "@repo/orchestrator-contracts";
 import { GitAgentOutput as GitAgentOutputSchema } from "@repo/orchestrator-contracts";
+import { resolveAuthOptions } from "./auth-provider.js";
 import type { BudgetTracker } from "./budget-tracker.js";
 import type {
   GitOpInput,
   InvokeAgentFn,
   InvokeAgentResult,
 } from "./feature-graph.js";
-import { readModelConfig } from "./model-config.js";
+import { readModelConfig, type ModelConfig } from "./model-config.js";
 import type { QueryFn } from "./stage-runner.js";
 
 const execAsync = promisify(exec);
@@ -370,13 +371,7 @@ async function runLlmAgent(
   cfg.budget.assertUnderBudget(modelConfig.budgetUsd);
 
   const prompt = buildAgentPrompt(agent, args);
-  const options = buildAgentOptions(
-    args,
-    cfg,
-    modelConfig.model,
-    modelConfig.effort,
-    modelConfig.budgetUsd,
-  );
+  const options = buildAgentOptions(args, cfg, modelConfig);
 
   let result: SDKResultMessage | undefined;
   try {
@@ -480,12 +475,15 @@ function buildAgentPrompt(
 function buildAgentOptions(
   args: Parameters<InvokeAgentFn>[0],
   cfg: CreateInvokeAgentConfig,
-  model: string,
-  effort: "low" | "medium" | "high" | "max",
-  budgetUsd: number,
+  modelConfig: ModelConfig,
 ): Options {
-  const env: Record<string, string | undefined> = {
+  // Resolve auth backend FIRST (same pattern as stage-runner.buildOptions):
+  // provider-specific env vars layer in before our pipeline-specific keys.
+  const auth = resolveAuthOptions(modelConfig.providerConfig, {
     ...process.env,
+  });
+  const env: Record<string, string | undefined> = {
+    ...auth.env,
     CLAUDE_PIPELINE_FLAGS: cfg.flags.join(","),
     CLAUDE_FEATURE_ID: args.featureContext.id,
     CLAUDE_FEATURE_BRANCH: args.featureContext.branch,
@@ -495,11 +493,14 @@ function buildAgentOptions(
   }
 
   return {
-    model,
-    effort: effort as NonNullable<Options["effort"]>,
+    model: modelConfig.model,
+    effort: modelConfig.effort as NonNullable<Options["effort"]>,
     cwd: args.cwd,
     env,
-    maxBudgetUsd: budgetUsd,
+    maxBudgetUsd: modelConfig.budgetUsd,
+    ...(auth.forceLoginMethod
+      ? { forceLoginMethod: auth.forceLoginMethod }
+      : {}),
   };
 }
 

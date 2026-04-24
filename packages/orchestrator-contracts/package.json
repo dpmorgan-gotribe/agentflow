@@ -12,7 +12,8 @@
     "./stages": "./src/stages.ts",
     "./tasks": "./src/tasks.ts",
     "./feature-context": "./src/feature-context.ts",
-    "./git-agent": "./src/git-agent.ts"
+    "./git-agent": "./src/git-agent.ts",
+    "./model-config": "./src/model-config.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
