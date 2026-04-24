@@ -67,6 +67,20 @@ const CloseFeatureConflict = z.object({
   worktreePath: z.string(),
 });
 
+// close-feature — feature branch had no commits beyond main + the
+// worktree still has uncommitted files (feat-018 Phase B). After
+// Phase A's auto-commit lands this is a diagnostic-only failure mode:
+// it surfaces a builder that produced files but skipped commit, which
+// the orchestrator treats as a hard failure (not a conflict to retry).
+const CloseFeatureNoCommits = z.object({
+  op: z.literal("close-feature"),
+  success: z.literal(false),
+  conflict: z.literal(false),
+  reason: z.literal("feature-no-commits"),
+  worktreePath: z.string(),
+  dirtyFiles: z.array(z.string()).min(1),
+});
+
 // resolve-conflict-handoff — orchestration payload (no success/fail at this layer)
 const ResolveConflictHandoff = z.object({
   op: z.literal("resolve-conflict-handoff"),
@@ -102,6 +116,7 @@ export const GitAgentOutput = z.union([
   CheckoutFeatureFailure,
   CloseFeatureSuccess,
   CloseFeatureConflict,
+  CloseFeatureNoCommits,
   ResolveConflictHandoff,
   EmergencyAbort,
 ]);

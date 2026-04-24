@@ -34,6 +34,10 @@ function makeCtx(
       featureId: string;
       projectRoot: string;
     }) => Promise<{ approved: boolean; note?: string }>;
+    commitWorktreeChanges: (
+      cwd: string,
+      message: string,
+    ) => Promise<{ committed: boolean; sha?: string; warning?: string }>;
   }> = {},
 ) {
   return {
@@ -46,6 +50,13 @@ function makeCtx(
     // Tests exercising gate 6 behavior override this.
     waitForPrReviewGate:
       overrides.waitForPrReviewGate ?? (async () => ({ approved: true })),
+    // feat-018 Phase A: default no-op auto-commit stub. Tests that
+    // exercise commit behavior override this; everyone else gets a
+    // silent successful no-op so the helper doesn't try to run git
+    // against a tmp dir without a real repo.
+    commitWorktreeChanges:
+      overrides.commitWorktreeChanges ??
+      (async () => ({ committed: false }) as const),
     ...(overrides.autoMergeAfterReviewer !== undefined
       ? { autoMergeAfterReviewer: overrides.autoMergeAfterReviewer }
       : {}),
@@ -790,5 +801,200 @@ describe("runFeature — gate 6 (pr-review) integration", () => {
     const result = await runFeature(feature, ctx);
     expect(result.status).toBe("completed");
     expect(gateCalled).toBe(false);
+  });
+});
+
+// ─── feat-018 Phase A: auto-commit per agent step ─────────────────────
+
+describe("runFeature — auto-commit per agent step (feat-018 Phase A)", () => {
+  function okGitInvoke(): InvokeAgentFn {
+    return async (args) => {
+      if (args.agent === "git-agent") {
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput:
+            args.gitOp?.op === "checkout-feature" ? checkoutOk : closeOk,
+          costUsd: 0.001,
+        };
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+  }
+
+  it("calls commitWorktreeChanges once per successful agent step with the right message", async () => {
+    const feature = buildFeature(); // backend-builder + tester + reviewer
+    const commitCalls: Array<{ cwd: string; message: string }> = [];
+    const ctx = makeCtx(okGitInvoke(), {
+      commitWorktreeChanges: async (cwd, message) => {
+        commitCalls.push({ cwd, message });
+        return { committed: true, sha: `sha-${commitCalls.length}` };
+      },
+    });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed");
+    expect(commitCalls).toHaveLength(3); // builder + tester + reviewer
+
+    // Each message follows the contract:
+    //   "<agent>: <task-ids>\n\n[via orchestrator Mode B; feature: <id>]"
+    expect(commitCalls[0]!.message).toContain("backend-builder: auth-api");
+    expect(commitCalls[0]!.message).toContain(
+      "[via orchestrator Mode B; feature: feat-auth]",
+    );
+    expect(commitCalls[1]!.message).toContain("tester: auth-tests");
+    expect(commitCalls[2]!.message).toContain("reviewer: auth-review");
+
+    // All called against the worktree's absolute cwd.
+    for (const call of commitCalls) {
+      expect(call.cwd).toContain(".claude/worktrees/feat-auth");
+    }
+  });
+
+  it("comma-separates multiple task ids in the commit message", async () => {
+    const feature = buildFeature({
+      agent_sequence: ["backend-builder"],
+      tasks: [
+        {
+          id: "schema-a",
+          agent: "backend-builder",
+          depends_on: [],
+          skills: [],
+          status: "pending",
+          screens: [],
+        },
+        {
+          id: "schema-b",
+          agent: "backend-builder",
+          depends_on: [],
+          skills: [],
+          status: "pending",
+          screens: [],
+        },
+      ],
+    });
+    const commitCalls: Array<{ cwd: string; message: string }> = [];
+    const ctx = makeCtx(okGitInvoke(), {
+      commitWorktreeChanges: async (cwd, message) => {
+        commitCalls.push({ cwd, message });
+        return { committed: true, sha: "abc" };
+      },
+    });
+    await runFeature(feature, ctx);
+    expect(commitCalls).toHaveLength(1);
+    expect(commitCalls[0]!.message).toMatch(
+      /backend-builder: schema-a, schema-b/,
+    );
+  });
+
+  it("does NOT call commit when the agent step fails (preserves dirty worktree)", async () => {
+    const feature = buildFeature({
+      agent_sequence: ["backend-builder"],
+      tasks: [
+        {
+          id: "broken-task",
+          agent: "backend-builder",
+          depends_on: [],
+          skills: [],
+          status: "pending",
+          screens: [],
+        },
+      ],
+    });
+    const commitCalls: string[] = [];
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput:
+            args.gitOp?.op === "checkout-feature" ? checkoutOk : closeOk,
+          costUsd: 0.001,
+        };
+      }
+      // Always fail
+      return {
+        taskStatus: { "broken-task": "failed" },
+        errors: { "broken-task": "boom" },
+        costUsd: 0.1,
+      };
+    };
+    const ctx = makeCtx(invokeAgent, {
+      commitWorktreeChanges: async (_cwd, msg) => {
+        commitCalls.push(msg);
+        return { committed: true, sha: "abc" };
+      },
+    });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("failed");
+    expect(commitCalls).toEqual([]); // never called
+  });
+
+  it("never calls commit for the git-agent itself", async () => {
+    const feature = buildFeature();
+    const commitCalls: string[] = [];
+    const ctx = makeCtx(okGitInvoke(), {
+      commitWorktreeChanges: async (_cwd, msg) => {
+        commitCalls.push(msg);
+        return { committed: true, sha: "abc" };
+      },
+    });
+    await runFeature(feature, ctx);
+    // 3 build agents in sequence; no commit message starts with git-agent.
+    expect(commitCalls).toHaveLength(3);
+    for (const m of commitCalls) {
+      expect(m).not.toContain("git-agent:");
+    }
+  });
+
+  it("continues iteration after a commit warning (does NOT fail the feature)", async () => {
+    const feature = buildFeature();
+    const ctx = makeCtx(okGitInvoke(), {
+      commitWorktreeChanges: async (_cwd, message) => {
+        // Always warn — simulating a buggy git env.
+        return {
+          committed: false,
+          warning: `simulated warning for: ${message.split(":")[0]}`,
+        };
+      },
+    });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed");
+    expect(result.commitWarnings).toBeDefined();
+    expect(result.commitWarnings!.length).toBe(3);
+    expect(result.commitWarnings![0]).toContain("simulated warning");
+    expect(result.taskOutcomes).toEqual({
+      "auth-api": "completed",
+      "auth-tests": "completed",
+      "auth-review": "completed",
+    });
+  });
+
+  it("commitWarnings is undefined / empty when every commit succeeds", async () => {
+    const feature = buildFeature();
+    const ctx = makeCtx(okGitInvoke(), {
+      commitWorktreeChanges: async () => ({
+        committed: true,
+        sha: "abc1234",
+      }),
+    });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed");
+    expect(result.commitWarnings).toBeUndefined();
+  });
+
+  it("clean-tree no-op (committed: false, no warning) records nothing", async () => {
+    const feature = buildFeature();
+    const ctx = makeCtx(okGitInvoke(), {
+      commitWorktreeChanges: async () => ({ committed: false }),
+    });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed");
+    expect(result.commitWarnings).toBeUndefined();
   });
 });

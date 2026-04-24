@@ -213,6 +213,61 @@ async function runCloseFeature(
     // local-only — skip
   }
 
+  // feat-018 Phase B: defensive guard against the silent no-op merge
+  // mode. If the feature branch's HEAD === main's HEAD, no commits
+  // were made on the branch. There are two sub-cases:
+  //   1. Worktree is dirty → builders authored code but skipped commit;
+  //      Phase A should have caught this. Surface as a hard failure
+  //      so the orchestrator + the operator see it.
+  //   2. Worktree is clean → legitimate no-op feature (e.g. config-
+  //      only). Log + continue; the merge below will succeed as
+  //      "already up to date" + the schema-valid CloseFeatureSuccess
+  //      will be returned.
+  let mainSha: string | null = null;
+  let branchSha: string | null = null;
+  try {
+    const mainRes = await execGit("git rev-parse main", projectRoot);
+    mainSha = mainRes.stdout.trim();
+  } catch {
+    mainSha = null;
+  }
+  try {
+    const branchRes = await execGit(
+      `git rev-parse ${shellQuote(branch)}`,
+      projectRoot,
+    );
+    branchSha = branchRes.stdout.trim();
+  } catch {
+    branchSha = null;
+  }
+
+  if (mainSha !== null && branchSha !== null && mainSha === branchSha) {
+    let dirtyFiles: string[] = [];
+    try {
+      const status = await execGit("git status --porcelain", worktreePath);
+      dirtyFiles = status.stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    } catch {
+      dirtyFiles = [];
+    }
+    if (dirtyFiles.length > 0) {
+      return {
+        op: "close-feature",
+        success: false,
+        conflict: false,
+        reason: "feature-no-commits",
+        worktreePath,
+        dirtyFiles,
+      };
+    }
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[runCloseFeature] feature ${gitOp.featureId}: branch === main and worktree clean — likely a no-op feature. Proceeding with no-op merge.`,
+    );
+  }
+
   // Checkout main + merge feature branch.
   try {
     await execGit("git checkout main", projectRoot);
@@ -582,6 +637,99 @@ function translateOutcomes(
   }
 
   return { taskStatus, errors };
+}
+
+// ─── auto-commit helper (feat-018 Phase A) ───────────────────────────
+
+/**
+ * Result of a `commitWorktreeChanges` call.
+ *   - `committed: true`  → a commit was created on HEAD; `sha` is its SHA.
+ *   - `committed: false` + no `warning` → clean tree, no-op task (legitimate).
+ *   - `committed: false` + `warning`    → git command failed; caller decides
+ *     whether to surface the warning or abort. Never throws.
+ */
+export interface CommitResult {
+  committed: boolean;
+  sha?: string;
+  warning?: string;
+}
+
+/**
+ * Auto-commit any pending changes inside a feature worktree. Mode B's
+ * builders/testers/reviewers don't run `git commit` themselves; this
+ * helper closes that gap so close-feature has real commits to merge.
+ *
+ * Contract:
+ *   - clean tree → `{ committed: false }` (no warning — legitimate no-op)
+ *   - dirty tree happy path → `git add -A && git commit -m '<msg>'` then
+ *     `git rev-parse HEAD` → `{ committed: true, sha }`
+ *   - any git failure → `{ committed: false, warning: "..." }` (no throw)
+ *
+ * The default `defaultExecGit` throws on non-zero exit; we catch + treat
+ * thrown errors as exit-code-non-zero results so injected stubs that
+ * return `{ code: 1 }` AND the production wrapper that throws both work.
+ */
+export async function commitWorktreeChanges(
+  cwd: string,
+  message: string,
+  exec: ExecGitFn = defaultExecGit,
+): Promise<CommitResult> {
+  const status = await safeExec(exec, "git status --porcelain", cwd);
+  if (status.code !== 0) {
+    return { committed: false, warning: `git status failed: ${status.stderr}` };
+  }
+  if (status.stdout.trim() === "") {
+    // Clean tree — legitimate no-op task (e.g. config-only).
+    return { committed: false };
+  }
+
+  const add = await safeExec(exec, "git add -A", cwd);
+  if (add.code !== 0) {
+    return { committed: false, warning: `git add failed: ${add.stderr}` };
+  }
+
+  // Replace single quotes with backticks so the shell-quoted -m argument
+  // can't be broken by a stray apostrophe in the message.
+  const safeMsg = message.replace(/'/g, "`");
+  const commit = await safeExec(exec, `git commit -m '${safeMsg}'`, cwd);
+  if (commit.code !== 0) {
+    return { committed: false, warning: `git commit failed: ${commit.stderr}` };
+  }
+
+  const rev = await safeExec(exec, "git rev-parse HEAD", cwd);
+  if (rev.code !== 0) {
+    return {
+      committed: false,
+      warning: `git rev-parse HEAD failed: ${rev.stderr}`,
+    };
+  }
+  return { committed: true, sha: rev.stdout.trim() };
+}
+
+/**
+ * Wrapper around an `ExecGitFn` that normalizes thrown errors into a
+ * `{ code, stdout, stderr }` result so callers can branch on `code` only.
+ */
+async function safeExec(
+  exec: ExecGitFn,
+  cmd: string,
+  cwd: string,
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  try {
+    return await exec(cmd, cwd);
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string; code?: number };
+    return {
+      stdout: typeof e.stdout === "string" ? e.stdout : "",
+      stderr:
+        typeof e.stderr === "string"
+          ? e.stderr
+          : err instanceof Error
+            ? err.message
+            : String(err),
+      code: typeof e.code === "number" && e.code !== 0 ? e.code : 1,
+    };
+  }
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────

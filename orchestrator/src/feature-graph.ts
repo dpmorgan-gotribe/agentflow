@@ -9,6 +9,10 @@ import type {
 import { GitAgentOutput as GitAgentOutputSchema } from "@repo/orchestrator-contracts";
 import type { BudgetTracker } from "./budget-tracker.js";
 import { waitForGateDecision } from "./gate-server-lifecycle.js";
+import {
+  type CommitResult,
+  commitWorktreeChanges as defaultCommitWorktreeChanges,
+} from "./invoke-agent.js";
 import type { RetryCounters } from "./retry-counters.js";
 import { saveState } from "./state-persistence.js";
 
@@ -22,6 +26,16 @@ export type WaitForPrReviewGateFn = (args: {
   featureId: string;
   projectRoot: string;
 }) => Promise<GateResolution>;
+
+/**
+ * Auto-commit hook used by `runFeature` to stage + commit a build
+ * agent's worktree changes after each successful invocation (feat-018
+ * Phase A). Injectable for tests so we don't need a real git repo.
+ */
+export type CommitWorktreeChangesFn = (
+  cwd: string,
+  message: string,
+) => Promise<CommitResult>;
 
 /**
  * Surface of a build-agent for `feature.skip[]` logic. Tester / reviewer /
@@ -118,6 +132,12 @@ export interface FeatureGraphContext {
    * `waitForGateDecision` (file-drop at `docs/gate-6-approved-{id}.txt`).
    */
   waitForPrReviewGate?: WaitForPrReviewGateFn;
+  /**
+   * Override the auto-commit helper. Default delegates to
+   * `invoke-agent.ts::commitWorktreeChanges` with the real git CLI.
+   * Tests inject a stub to avoid touching a real worktree.
+   */
+  commitWorktreeChanges?: CommitWorktreeChangesFn;
 }
 
 export type FeatureStatus = "completed" | "failed" | "aborted";
@@ -132,6 +152,11 @@ export interface FeatureResult {
   abortReason?: string;
   /** Per-task terminal outcome across all agents in the sequence. */
   taskOutcomes: Record<string, "completed" | "failed">;
+  /**
+   * Warnings raised by the per-step auto-commit helper (feat-018 Phase A).
+   * Empty when every commit succeeded or was a legitimate no-op.
+   */
+  commitWarnings?: string[];
 }
 
 export interface FeatureGraphResult {
@@ -164,9 +189,15 @@ export async function runFeature(
   // root), which is the wrong dir.
   const worktreeCwd = `${ctx.projectRoot}/.claude/worktrees/${feature.worktree}`;
   const taskOutcomes: Record<string, "completed" | "failed"> = {};
+  const commitWarnings: string[] = [];
   let totalCostUsd = 0;
   let attempts = 0;
   let lastWritingAgent: AgentSequenceMember | undefined;
+  // feat-018 Phase A: auto-commit hook. Default to the real helper bound
+  // to the real git CLI; tests inject a stub via ctx.commitWorktreeChanges.
+  const commitChanges: CommitWorktreeChangesFn =
+    ctx.commitWorktreeChanges ??
+    ((cwd, message) => defaultCommitWorktreeChanges(cwd, message));
 
   // 0. Fast-skip — if every task in this feature is already status: completed,
   //    the feature was finished in a prior run (or by a prior smoke test) and
@@ -216,6 +247,7 @@ export async function runFeature(
       totalCostUsd,
       taskOutcomes,
       `checkout-feature failed: ${JSON.stringify(checkoutParsed ?? checkout.gitAgentOutput)}`,
+      commitWarnings,
     );
   }
 
@@ -295,6 +327,42 @@ export async function runFeature(
           totalCostUsd,
           taskOutcomes,
           `task ${t.id} failed after ${TASK_RETRY_CAP} attempts: ${result.errors[t.id] ?? "n/a"}`,
+          commitWarnings,
+        );
+      }
+    }
+
+    // feat-018 Phase A: every task assigned to this agent succeeded —
+    // stage + commit the worktree so close-feature has a real merge to
+    // do. One commit per agent step (not per task) keeps the log
+    // readable. We never abort the feature on a commit warning; we
+    // record it + continue. After Phase A this should rarely fire — if
+    // it does, close-feature's Phase B guard catches the dirty tree.
+    const completedIds = agentTasks
+      .filter((t) => taskOutcomes[t.id] === "completed")
+      .map((t) => t.id);
+    if (completedIds.length > 0) {
+      const message =
+        `${agentName}: ${completedIds.join(", ")}\n\n` +
+        `[via orchestrator Mode B; feature: ${feature.id}]`;
+      try {
+        const commit = await commitChanges(worktreeCwd, message);
+        if (commit.warning) {
+          commitWarnings.push(`${agentName}: ${commit.warning}`);
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[runFeature] auto-commit warning for ${feature.id}/${agentName}: ${commit.warning}`,
+          );
+        }
+      } catch (err) {
+        // Defensive — `commitWorktreeChanges` is contracted not to
+        // throw, but a buggy stub or unexpected exception shouldn't
+        // fail the feature. Log + continue.
+        const msg = err instanceof Error ? err.message : String(err);
+        commitWarnings.push(`${agentName}: commit threw: ${msg}`);
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[runFeature] auto-commit threw for ${feature.id}/${agentName}: ${msg}`,
         );
       }
     }
@@ -328,6 +396,7 @@ export async function runFeature(
         totalCostUsd,
         taskOutcomes,
         `gate-6-rejected: ${decision.note ?? "no note"}`,
+        commitWarnings,
       );
     }
   }
@@ -351,6 +420,7 @@ export async function runFeature(
       totalCostUsd,
       taskOutcomes,
       closeResult.reason ?? "close-feature failed",
+      commitWarnings,
     );
   }
 
@@ -361,6 +431,8 @@ export async function runFeature(
     attempts,
     totalCostUsd,
     taskOutcomes,
+    undefined,
+    commitWarnings,
   );
 }
 
@@ -412,6 +484,24 @@ async function attemptCloseFeature(
 
     if (parsed.success === true && parsed.conflict === false) {
       return { success: true, costUsd };
+    }
+
+    // feat-018 Phase B: feature-no-commits diagnostic — the branch
+    // had no commits beyond main AND the worktree was dirty. After
+    // Phase A's auto-commit lands this should never fire; if it does,
+    // surface it as a hard failure (not a conflict to retry).
+    if (
+      parsed.success === false &&
+      parsed.conflict === false &&
+      "reason" in parsed &&
+      parsed.reason === "feature-no-commits"
+    ) {
+      const dirty = "dirtyFiles" in parsed ? parsed.dirtyFiles : [];
+      return {
+        success: false,
+        costUsd,
+        reason: `feature-no-commits: builders produced files but no commit was made (dirty: ${dirty.join(", ")})`,
+      };
     }
 
     // Conflict path
@@ -493,6 +583,7 @@ function finish(
   totalCostUsd: number,
   taskOutcomes: Record<string, "completed" | "failed">,
   abortReason?: string,
+  commitWarnings?: readonly string[],
 ): FeatureResult {
   const result: FeatureResult = {
     featureId,
@@ -503,6 +594,9 @@ function finish(
     taskOutcomes,
   };
   if (abortReason) result.abortReason = abortReason;
+  if (commitWarnings && commitWarnings.length > 0) {
+    result.commitWarnings = [...commitWarnings];
+  }
   return result;
 }
 

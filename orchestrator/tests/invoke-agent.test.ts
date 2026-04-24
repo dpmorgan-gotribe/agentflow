@@ -10,7 +10,11 @@ import { join } from "node:path";
 import type { Task } from "@repo/orchestrator-contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BudgetExceededError, BudgetTracker } from "../src/budget-tracker.js";
-import { createInvokeAgent, type ExecGitFn } from "../src/invoke-agent.js";
+import {
+  commitWorktreeChanges,
+  createInvokeAgent,
+  type ExecGitFn,
+} from "../src/invoke-agent.js";
 import type { QueryFn } from "../src/stage-runner.js";
 
 /**
@@ -732,5 +736,267 @@ describe("invokeAgent — cost tracking across multiple invocations", () => {
       tasks: [task1],
     });
     expect(budget.getCumulative()).toBeCloseTo(0.08, 4);
+  });
+});
+
+// ─── feat-018 Phase A: commitWorktreeChanges ──────────────────────────
+
+describe("commitWorktreeChanges (feat-018 Phase A)", () => {
+  it("clean tree → { committed: false }, no warning, no add/commit calls", async () => {
+    const execGit = makeExecGit([
+      { match: /git status --porcelain/, stdout: "" },
+    ]);
+    const result = await commitWorktreeChanges(
+      "/tmp/worktree",
+      "backend-builder: t1",
+      execGit,
+    );
+    expect(result).toEqual({ committed: false });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const calls = (execGit as any).calls as string[];
+    expect(calls).toEqual(["git status --porcelain"]);
+  });
+
+  it("dirty tree happy path → { committed: true, sha }", async () => {
+    const execGit = makeExecGit([
+      {
+        match: /git status --porcelain/,
+        stdout: " M src/foo.ts\n?? src/bar.ts\n",
+      },
+      { match: /git add -A/, stdout: "" },
+      { match: /git commit -m/, stdout: "[feat/auth abc1234] msg\n" },
+      { match: /git rev-parse HEAD/, stdout: "abc1234def5678\n" },
+    ]);
+    const result = await commitWorktreeChanges(
+      "/tmp/worktree",
+      "backend-builder: t1, t2",
+      execGit,
+    );
+    expect(result.committed).toBe(true);
+    expect(result.sha).toBe("abc1234def5678");
+    expect(result.warning).toBeUndefined();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const calls = (execGit as any).calls as string[];
+    expect(calls[0]).toBe("git status --porcelain");
+    expect(calls[1]).toBe("git add -A");
+    expect(calls[2]).toMatch(/^git commit -m '.*backend-builder: t1, t2/);
+    expect(calls[3]).toBe("git rev-parse HEAD");
+  });
+
+  it("git add fails → { committed: false, warning: 'git add failed: ...' }", async () => {
+    const execGit = makeExecGit([
+      { match: /git status --porcelain/, stdout: " M src/x.ts\n" },
+      {
+        match: /git add -A/,
+        throwInstead: Object.assign(new Error("permission denied"), {
+          stderr: "fatal: permission denied",
+          code: 128,
+        }),
+      },
+    ]);
+    const result = await commitWorktreeChanges(
+      "/tmp/worktree",
+      "tester: t1",
+      execGit,
+    );
+    expect(result.committed).toBe(false);
+    expect(result.warning).toContain("git add failed");
+    expect(result.warning).toContain("permission denied");
+    expect(result.sha).toBeUndefined();
+  });
+
+  it("git commit fails → { committed: false, warning: 'git commit failed: ...' }", async () => {
+    const execGit = makeExecGit([
+      { match: /git status --porcelain/, stdout: " M src/x.ts\n" },
+      { match: /git add -A/, stdout: "" },
+      {
+        match: /git commit -m/,
+        throwInstead: Object.assign(new Error("commit hook rejected"), {
+          stderr: "pre-commit hook failed",
+          code: 1,
+        }),
+      },
+    ]);
+    const result = await commitWorktreeChanges(
+      "/tmp/worktree",
+      "reviewer: t1",
+      execGit,
+    );
+    expect(result.committed).toBe(false);
+    expect(result.warning).toContain("git commit failed");
+    expect(result.warning).toContain("pre-commit hook failed");
+  });
+
+  it("message with single quotes → quotes replaced with backticks; commit succeeds", async () => {
+    let commitCmd = "";
+    const execGit: ExecGitFn = async (cmd) => {
+      if (/git status --porcelain/.test(cmd)) {
+        return { stdout: " M src/x.ts\n", stderr: "", code: 0 };
+      }
+      if (/git add -A/.test(cmd)) {
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      if (/git commit -m/.test(cmd)) {
+        commitCmd = cmd;
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      if (/git rev-parse HEAD/.test(cmd)) {
+        return { stdout: "abcdef0\n", stderr: "", code: 0 };
+      }
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const result = await commitWorktreeChanges(
+      "/tmp/worktree",
+      "agent: don't break the shell",
+      execGit,
+    );
+    expect(result.committed).toBe(true);
+    expect(result.sha).toBe("abcdef0");
+    // The single quote in "don't" must have been swapped for a backtick
+    // so the outer single-quoted -m argument doesn't break.
+    expect(commitCmd).not.toContain("don't");
+    expect(commitCmd).toContain("don`t");
+  });
+
+  it("git status fails → { committed: false, warning: 'git status failed: ...' }", async () => {
+    const execGit = makeExecGit([
+      {
+        match: /git status --porcelain/,
+        throwInstead: Object.assign(new Error("not a git repo"), {
+          stderr: "fatal: not a git repository",
+          code: 128,
+        }),
+      },
+    ]);
+    const result = await commitWorktreeChanges(
+      "/tmp/not-a-repo",
+      "agent: t1",
+      execGit,
+    );
+    expect(result.committed).toBe(false);
+    expect(result.warning).toContain("git status failed");
+  });
+});
+
+// ─── feat-018 Phase B: close-feature defensive checks ─────────────────
+
+describe("invokeAgent — close-feature feature-no-commits guard", () => {
+  it("branch === main + dirty tree → returns feature-no-commits failure", async () => {
+    const budget = mkBudget();
+    const execGit = makeExecGit([
+      { match: /git fetch origin main/, stdout: "" },
+      { match: /git rev-parse main/, stdout: "abc1234\n" },
+      { match: /git rev-parse feat\/auth/, stdout: "abc1234\n" },
+      {
+        match: /git status --porcelain/,
+        stdout: " M src/foo.ts\n?? src/bar.ts\n",
+      },
+    ]);
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: false,
+      conflict: false,
+      reason: "feature-no-commits",
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = result.gitAgentOutput as any;
+    expect(out.dirtyFiles).toEqual(["M src/foo.ts", "?? src/bar.ts"]);
+  });
+
+  it("branch === main + clean tree → success (no-op merge OK)", async () => {
+    const budget = mkBudget();
+    const execGit = makeExecGit([
+      { match: /git fetch origin main/, stdout: "" },
+      { match: /git rev-parse main/, stdout: "abc1234\n" },
+      { match: /git rev-parse feat\/auth/, stdout: "abc1234\n" },
+      { match: /git status --porcelain/, stdout: "" },
+      { match: /git checkout main/, stdout: "" },
+      { match: /git merge --no-ff/, stdout: "Already up to date.\n" },
+      {
+        match: /git rev-parse HEAD/,
+        stdout: "abc1234def5678901234567890abcdef12345678\n",
+      },
+    ]);
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: true,
+      conflict: false,
+    });
+  });
+
+  it("branch !== main → existing code path unchanged", async () => {
+    const budget = mkBudget();
+    const execGit = makeExecGit([
+      { match: /git fetch origin main/, stdout: "" },
+      { match: /git rev-parse main/, stdout: "abc1234\n" },
+      { match: /git rev-parse feat\/auth/, stdout: "def5678\n" },
+      { match: /git checkout main/, stdout: "" },
+      { match: /git merge --no-ff/, stdout: "Fast-forward\n" },
+      {
+        match: /git rev-parse HEAD/,
+        stdout: "def5678901234567890abcdef1234567890abcd\n",
+      },
+    ]);
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: true,
+      conflict: false,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const calls = (execGit as any).calls as string[];
+    // Status was NOT called (branch differs from main) — defensive
+    // guard short-circuits to the existing merge path.
+    expect(calls.some((c) => /git status --porcelain/.test(c))).toBe(false);
   });
 });

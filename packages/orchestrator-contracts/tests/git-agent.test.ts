@@ -93,7 +93,7 @@ describe("git-agent — close-feature op", () => {
       lastWritingAgent: "web-frontend-builder",
       worktreePath: ".claude/worktrees/feat-password-reset",
     });
-    if (out.op === "close-feature" && !out.success) {
+    if (out.op === "close-feature" && !out.success && out.conflict === true) {
       expect(out.conflictingFiles).toHaveLength(1);
       expect(out.lastWritingAgent).toBe("web-frontend-builder");
     }
@@ -108,6 +108,34 @@ describe("git-agent — close-feature op", () => {
         conflictingFiles: [],
         lastWritingAgent: "web-frontend-builder",
         worktreePath: ".claude/worktrees/feat-x",
+      }),
+    ).toThrow();
+  });
+
+  it("accepts feature-no-commits payload (feat-018 Phase B)", () => {
+    const out = GitAgentOutput.parse({
+      op: "close-feature",
+      success: false,
+      conflict: false,
+      reason: "feature-no-commits",
+      worktreePath: ".claude/worktrees/feat-cms",
+      dirtyFiles: ["apps/web/sanity-schemas/index.ts", "apps/web/seed.ts"],
+    });
+    if (out.op === "close-feature" && !out.success && out.conflict === false) {
+      expect(out.reason).toBe("feature-no-commits");
+      expect(out.dirtyFiles).toHaveLength(2);
+    }
+  });
+
+  it("rejects feature-no-commits with empty dirtyFiles", () => {
+    expect(() =>
+      GitAgentOutput.parse({
+        op: "close-feature",
+        success: false,
+        conflict: false,
+        reason: "feature-no-commits",
+        worktreePath: ".claude/worktrees/feat-x",
+        dirtyFiles: [],
       }),
     ).toThrow();
   });
