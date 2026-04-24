@@ -557,3 +557,13 @@ reference shape.)
 - `schemas/screens.schema.json` — v3.0 validator for screens.json
 - `scripts/validate-screens.mjs` — schema validation runner
 - `.claude/agents/analyst.md` — agent definition (inherited by subagents)
+
+## Gate 1 Handoff (post-stage HITL pause)
+
+When `/analyze` completes, the orchestrator pauses for human review of `docs/requirements.md`, `docs/brief-summary.json`, and each platform's `flows.md` / `screens.json` / `coverage.md`. To resume, write ONE of the following directives to **`docs/gate-1-approved.txt`**:
+
+- **`proceed`** — requirements approved; pipeline continues to `/skills-audit --scope=design` + `/mockups`
+- **`revise:<note>`** — reject with a note; pipeline halts. Re-run `/analyze --style-count=<N>` (or hand-edit artefacts) then drop a fresh `proceed`.
+- **`abort`** — stop the pipeline entirely; no further stages fire.
+
+File-watch is implemented in `orchestrator/src/gate-server-lifecycle.ts`. Directive parsing is strict (trailing whitespace + `#` comments ignored). Writing `proceed` is a one-way commit — analyst outputs become immutable for downstream stages; any post-signoff mutation drifts screens/flows hashes and invalidates gate 4 later.

@@ -834,3 +834,13 @@ Server lifecycle: started when orchestrator enters gate 3, killed when signoff i
 - [ ] `validate-consumer.ts` is NOT run against the kit itself in the verify step (glob targets `apps/*` only per 022b)
 - [ ] Post-stage `/verify-html` invocation wired via orchestrator
 - [ ] HITL gate 3 invariant: signoff binds `{ kitVersion, inputFingerprint }` — drift detection for downstream stages
+
+## Gate 3 Handoff (post-stage HITL pause)
+
+When `/stylesheet` completes, the orchestrator pauses for human review of `packages/ui-kit/` (primitives + patterns + layouts + Storybook) + `docs/design-system-preview.html`. To resume, write ONE of the following directives to **`docs/gate-3-approved.txt`**:
+
+- **`proceed`** — design-system approved; pipeline continues to `/screens`. The kit version at `packages/ui-kit/package.json.version` becomes the binding `uiKitVersion` for gate 4 sign-off.
+- **`revise:<note>`** — reject with a note; pipeline halts. Hand-patch the kit OR re-run `/stylesheet` after editing inputs (e.g. `docs/selected-style.json` dials), then drop a fresh `proceed`.
+- **`abort`** — stop the pipeline entirely.
+
+The orchestrator recomputes the kit's `inputFingerprint` on drop; if `packages/ui-kit` is dirty relative to the fingerprint recorded at stage start, the gate rejects with `stale-kit` and the operator must re-run `/stylesheet` to produce a fresh preview.

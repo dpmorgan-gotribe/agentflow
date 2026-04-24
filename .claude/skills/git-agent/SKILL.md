@@ -299,3 +299,17 @@ For every op:
 - **`GitAgentOutput` Zod schema** (in `@repo/orchestrator-contracts`) validates the return JSON; orchestrator rejects malformed outputs.
 - **`scripts/validate-feature-context.mjs`** validates the lockfile after every write.
 - **`cleanup-stale-worktrees`** (off-band): user-run housekeeping; scans for `status: closed` / `status: aborted` / `opened_at > staleWorktreeReapDays ago`. NOT invoked by the orchestrator.
+
+## Gate 6 Handoff (pre-merge HITL pause — PR review)
+
+After `reviewer` approves a feature and BEFORE `git-agent close-feature` merges to main, the orchestrator inserts gate 6 ("pr-review"). Default behavior: wait for human approval unless `--auto-merge-after-reviewer` is passed on the orchestrator CLI (per `orchestrator/src/feature-graph.ts` `FeatureGraphContext.autoMergeAfterReviewer`).
+
+To resolve gate 6, write ONE of the following directives to **`docs/gate-6-approved-{featureId}.txt`** (one file per feature — `{featureId}` is the `feat-*` slug):
+
+- **`approved`** — PR-review approved; `git-agent close-feature` runs, merging to main and returning a `CloseFeatureSuccess` payload.
+- **`changes:<note>`** — request changes with a note; pipeline routes back through the last builder in `agent_sequence[]` with the note as `retryContext.errorMessage`. Counts against the per-task retry cap (max 3).
+- **`abort`** — leave the feature branch open + un-merged. The worktree is preserved; the feature is marked `aborted` in the feature-graph result.
+
+When `--auto-merge-after-reviewer` is set, gate 6 is bypassed; reviewer's `approved` terminal verdict alone triggers `close-feature`. Recommended default: gate 6 ON for the first 3-5 autonomous runs (per investigate-002 answer #1 on autonomy boundaries); flip to auto-merge once trust builds.
+
+Integration: `orchestrator/src/gate-server-lifecycle.ts::waitForGateDecision({ gateType: "pr-review", featureId })` file-watches `docs/gate-6-approved-{featureId}.txt`. `tryResolveGateFile` + `readPrReviewDirective` parse the body; directive grammar is strict. The orchestrator passes the resolved `lastWritingAgent` + worktree path to `close-feature` post-approval; on conflict, `resolve-conflict-handoff` routes back to the builder with conflicting-file list + attempt counter.
