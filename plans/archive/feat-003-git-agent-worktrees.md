@@ -138,28 +138,32 @@ Depends on **refactor-004-task-driven-orchestration** for the `features[]` schem
 **Ready to mark completed.**
 
 ---
+
 # COMPLETION RECORD (appended to archived plan)
+
 completed: 2026-04-22
 outcome: success
 actual-files-changed:
-  - .claude/agents/git-agent.md (created)
-  - .claude/skills/new-project/SKILL.md (modified)
-  - .claude/templates/worktrees-README.md (created)
-  - plans/active.md (modified)
-  - plans/active/feat-003-git-agent-worktrees.md (modified)
-  - scaffolding/09-034b-output-contract-zod-schemas.md (modified)
-  - scaffolding/20-033-git-agent.md (modified)
-  - schemas/feature-context.schema.json (created)
-commits:
-  - hash: ef966b0
-    message: "feat-003: git-agent worktree lifecycle + feature-context lockfile"
-attempts: 1
-lessons:
-  - "5 ops (bootstrap/checkout-feature/close-feature/resolve-conflict-handoff/emergency-abort) captures the full lifecycle — 4 would have missed Mode A's final bootstrap step, 6 would have been over-specified."
-  - "resolve-conflict-handoff not running git ops itself (just updating the lockfile + returning context) is the right factoring — orchestrator owns the re-invocation; git-agent stays single-responsibility."
-  - ".claude/worktrees/ is gitignored so README.md inside it also gets ignored; moving to .claude/templates/worktrees-README.md + copying at /new-project time is the pattern for any docs in gitignored dirs."
-  - "merge --no-ff discipline: every feature produces one merge commit for auditability — fast-forward merges would hide per-feature history."
-test-results:
+
+- .claude/agents/git-agent.md (created)
+- .claude/skills/new-project/SKILL.md (modified)
+- .claude/templates/worktrees-README.md (created)
+- plans/active.md (modified)
+- plans/active/feat-003-git-agent-worktrees.md (modified)
+- scaffolding/09-034b-output-contract-zod-schemas.md (modified)
+- scaffolding/20-033-git-agent.md (modified)
+- schemas/feature-context.schema.json (created)
+  commits:
+- hash: ef966b0
+  message: "feat-003: git-agent worktree lifecycle + feature-context lockfile"
+  attempts: 1
+  lessons:
+- "5 ops (bootstrap/checkout-feature/close-feature/resolve-conflict-handoff/emergency-abort) captures the full lifecycle — 4 would have missed Mode A's final bootstrap step, 6 would have been over-specified."
+- "resolve-conflict-handoff not running git ops itself (just updating the lockfile + returning context) is the right factoring — orchestrator owns the re-invocation; git-agent stays single-responsibility."
+- ".claude/worktrees/ is gitignored so README.md inside it also gets ignored; moving to .claude/templates/worktrees-README.md + copying at /new-project time is the pattern for any docs in gitignored dirs."
+- "merge --no-ff discipline: every feature produces one merge commit for auditability — fast-forward merges would hide per-feature history."
+  test-results:
   summary: "spec-level verification complete; smoke test (synthetic 3-feature fixture) deferred to task 035 runtime"
-duration-minutes: 813
+  duration-minutes: 813
+
 ---

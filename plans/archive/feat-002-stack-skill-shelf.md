@@ -171,36 +171,40 @@ Depends on **refactor-004-task-driven-orchestration** (features[].tasks[] schema
 **Ready to mark completed.**
 
 ---
+
 # COMPLETION RECORD (appended to archived plan)
+
 completed: 2026-04-22
 outcome: success
 actual-files-changed:
-  - .claude/skills/agents/_template/SKILL.md (created)
-  - .claude/skills/agents/back-end/node-trpc-nest/SKILL.md (created)
-  - .claude/skills/agents/back-end/python-fastapi/SKILL.md (created)
-  - .claude/skills/agents/front-end/react-next/SKILL.md (created)
-  - .claude/skills/agents/front-end/svelte-kit/SKILL.md (created)
-  - .claude/skills/agents/mobile/expo-rn/SKILL.md (created)
-  - multi-agent-app-generation-blueprint.md (modified)
-  - plans/active.md (modified)
-  - plans/active/feat-002-stack-skill-shelf.md (modified)
-  - scaffolding/07-020-architect-agent.md (modified)
-  - scaffolding/09-034b-output-contract-zod-schemas.md (modified)
-  - scaffolding/14-028-backend-builder-agent.md (modified)
-  - scaffolding/15-029-web-frontend-builder.md (modified)
-  - scaffolding/16-030-mobile-frontend-builder.md (modified)
-  - scaffolding/23-038-skills-agent.md (modified)
-  - schemas/architecture.schema.json (created)
-commits:
-  - hash: effbf2b
-    message: "feat-002: tech-stack agnostic builders + per-stack skill shelf"
-attempts: 1
-lessons:
-  - "Authoring 5 shipped stack skills (react-next, svelte-kit, node-trpc-nest, python-fastapi, expo-rn) was the unlock — draft auto-authoring is a long-tail feature, not the primary path."
-  - "Non-React kit consumption pattern (CSS + data-kit-* attribute contract) needed explicit documentation in each non-React stack skill; otherwise svelte-kit/vue-nuxt builders would try to import React components and fail."
-  - "Blueprint §17 supersession is cleaner than rewriting — the rationale for React-as-default is preserved as the fallback when brief is silent."
-  - "Stack-slug enum in architecture.schema.json is the right boundary — `additionalProperties: false` on the stack subtree rejects typos + nonexistent stacks at ajv validation time before they reach skill-resolution."
-test-results:
+
+- .claude/skills/agents/\_template/SKILL.md (created)
+- .claude/skills/agents/back-end/node-trpc-nest/SKILL.md (created)
+- .claude/skills/agents/back-end/python-fastapi/SKILL.md (created)
+- .claude/skills/agents/front-end/react-next/SKILL.md (created)
+- .claude/skills/agents/front-end/svelte-kit/SKILL.md (created)
+- .claude/skills/agents/mobile/expo-rn/SKILL.md (created)
+- multi-agent-app-generation-blueprint.md (modified)
+- plans/active.md (modified)
+- plans/active/feat-002-stack-skill-shelf.md (modified)
+- scaffolding/07-020-architect-agent.md (modified)
+- scaffolding/09-034b-output-contract-zod-schemas.md (modified)
+- scaffolding/14-028-backend-builder-agent.md (modified)
+- scaffolding/15-029-web-frontend-builder.md (modified)
+- scaffolding/16-030-mobile-frontend-builder.md (modified)
+- scaffolding/23-038-skills-agent.md (modified)
+- schemas/architecture.schema.json (created)
+  commits:
+- hash: effbf2b
+  message: "feat-002: tech-stack agnostic builders + per-stack skill shelf"
+  attempts: 1
+  lessons:
+- "Authoring 5 shipped stack skills (react-next, svelte-kit, node-trpc-nest, python-fastapi, expo-rn) was the unlock — draft auto-authoring is a long-tail feature, not the primary path."
+- "Non-React kit consumption pattern (CSS + data-kit-\* attribute contract) needed explicit documentation in each non-React stack skill; otherwise svelte-kit/vue-nuxt builders would try to import React components and fail."
+- "Blueprint §17 supersession is cleaner than rewriting — the rationale for React-as-default is preserved as the fallback when brief is silent."
+- "Stack-slug enum in architecture.schema.json is the right boundary — `additionalProperties: false` on the stack subtree rejects typos + nonexistent stacks at ajv validation time before they reach skill-resolution."
+  test-results:
   summary: "schema subtree validates; 5 stack skill frontmatters parse; each skill has required 8 sections; no runtime smoke test (deferred to task 035 body)"
-duration-minutes: 813
+  duration-minutes: 813
+
 ---

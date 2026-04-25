@@ -866,86 +866,90 @@ The walkthrough confirmed:
 **Ready to mark completed.**
 
 ---
+
 # COMPLETION RECORD (appended to archived plan)
+
 completed: 2026-04-22
 outcome: success
 actual-files-changed:
-  - .claude/hooks/detect-loop.mjs (modified)
-  - .claude/skills/analyze/SKILL.md (modified)
-  - .claude/skills/analyze/flows.md (modified)
-  - .claude/skills/analyze/integrations.md (created)
-  - .claude/skills/analyze/styles.md (modified)
-  - .claude/skills/mockups/SKILL.md (modified)
-  - .claude/skills/new-project/SKILL.md (modified)
-  - .claude/skills/pick-style/SKILL.md (created)
-  - .claude/skills/screens/SKILL.md (created)
-  - .claude/skills/stylesheet/SKILL.md (created)
-  - .claude/skills/user-flows-generator/SKILL.md (created)
-  - .claude/skills/visual-review/SKILL.md (created)
-  - .claude/skills/visual-review/rubric.md (created)
-  - .claude/templates/mockups-index-template.html (modified)
-  - .claude/templates/user-flows-template.html (created)
-  - .gitignore (modified)
-  - .mcp.json (created)
-  - docs/022b-verification.md (modified)
-  - docs/refactor-003-checklist.md (created)
-  - docs/refactor-003-checklist.md (modified)
-  - mcp-defaults-design.json (created)
-  - multi-agent-app-generation-blueprint.md (modified)
-  - package.json (modified)
-  - plans/active.md (modified)
-  - plans/active/refactor-003-pipeline-reorder-architect-credentials.md (created)
-  - plans/active/refactor-003-pipeline-reorder-architect-credentials.md (modified)
-  - plans/archive/refactor-002-analyst-refactor-001-alignment.md (modified)
-  - pnpm-lock.yaml (modified)
-  - proposals/hatch-proposal.md (created)
-  - scaffolding/000-scaffolding-index.md (modified)
-  - scaffolding/020-architect-agent.md (modified)
-  - scaffolding/021-pm-agent.md (modified)
-  - scaffolding/022-ui-designer-agent.md (modified)
-  - scaffolding/023-mockups-skill.md (modified)
-  - scaffolding/024-stylesheet-skill.md (modified)
-  - scaffolding/025-screens-skill.md (modified)
-  - scaffolding/026-turborepo-scaffold.md (modified)
-  - scaffolding/027-shared-packages.md (modified)
-  - scaffolding/028-backend-builder-agent.md (modified)
-  - scaffolding/029-web-frontend-builder.md (modified)
-  - scaffolding/030-mobile-frontend-builder.md (modified)
-  - scaffolding/034b-output-contract-zod-schemas.md (modified)
-  - scaffolding/035-orchestrator-core.md (modified)
-  - scaffolding/036-hitl-gates.md (modified)
-  - scaffolding/038-skills-agent.md (modified)
-  - scaffolding/040-app-store-compliance.md (modified)
-  - scaffolding/041-mcp-server-registration.md (modified)
-  - schemas/signoff.schema.json (created)
-  - schemas/visual-review-report.schema.json (created)
-  - scripts/aggregate-components.mjs (created)
-  - scripts/build-screens-manifest.mjs (created)
-  - scripts/build-user-flows.mjs (created)
-  - scripts/verify-024.mjs (created)
-  - scripts/verify-025.mjs (created)
-  - scripts/verify-025b.mjs (created)
-  - scripts/verify-refactor-003.mjs (created)
-  - scripts/verify-refactor-003.mjs (modified)
-  - scripts/visual-review-aggregate.mjs (created)
-  - scripts/visual-review-inline-emit.mjs (created)
-  - scripts/visual-review-preflight.mjs (created)
-commits:
-  - hash: 3c2a55a
-    message: "refactor-003: pipeline reorder + late architect + gate 5 credentials"
-  - hash: 4242913
-    message: "refactor-003: add verification checklist script + rendered report"
-  - hash: 949b5c4
-    message: "refactor-003: rename pending scaffolding files by build order"
-  - hash: f44f796
-    message: "refactor-003: consolidate pipeline reorder implementation + walkthrough"
-attempts: 3
-lessons:
-  - "Moving architect + PM post-signoff let vendor decisions reflect actually-approved design; pre-refactor architect had to guess at user intent."
-  - "Gate 5 file-drop mechanic (docs/credentials-confirmed.txt) beats an HTTP server for credentials — no agent ever touches .env."
-  - "The walkthrough on mindapp-v2 validated the full design pipeline end-to-end; this kind of smoke test catches integration gaps scaffolding review misses."
-  - "Three-way deployment enum (vendor/self-hosted/declined) handles every integration cleanly — declined was the missing third we didn't know we needed until brief review surfaced it."
-test-results:
+
+- .claude/hooks/detect-loop.mjs (modified)
+- .claude/skills/analyze/SKILL.md (modified)
+- .claude/skills/analyze/flows.md (modified)
+- .claude/skills/analyze/integrations.md (created)
+- .claude/skills/analyze/styles.md (modified)
+- .claude/skills/mockups/SKILL.md (modified)
+- .claude/skills/new-project/SKILL.md (modified)
+- .claude/skills/pick-style/SKILL.md (created)
+- .claude/skills/screens/SKILL.md (created)
+- .claude/skills/stylesheet/SKILL.md (created)
+- .claude/skills/user-flows-generator/SKILL.md (created)
+- .claude/skills/visual-review/SKILL.md (created)
+- .claude/skills/visual-review/rubric.md (created)
+- .claude/templates/mockups-index-template.html (modified)
+- .claude/templates/user-flows-template.html (created)
+- .gitignore (modified)
+- .mcp.json (created)
+- docs/022b-verification.md (modified)
+- docs/refactor-003-checklist.md (created)
+- docs/refactor-003-checklist.md (modified)
+- mcp-defaults-design.json (created)
+- multi-agent-app-generation-blueprint.md (modified)
+- package.json (modified)
+- plans/active.md (modified)
+- plans/active/refactor-003-pipeline-reorder-architect-credentials.md (created)
+- plans/active/refactor-003-pipeline-reorder-architect-credentials.md (modified)
+- plans/archive/refactor-002-analyst-refactor-001-alignment.md (modified)
+- pnpm-lock.yaml (modified)
+- proposals/hatch-proposal.md (created)
+- scaffolding/000-scaffolding-index.md (modified)
+- scaffolding/020-architect-agent.md (modified)
+- scaffolding/021-pm-agent.md (modified)
+- scaffolding/022-ui-designer-agent.md (modified)
+- scaffolding/023-mockups-skill.md (modified)
+- scaffolding/024-stylesheet-skill.md (modified)
+- scaffolding/025-screens-skill.md (modified)
+- scaffolding/026-turborepo-scaffold.md (modified)
+- scaffolding/027-shared-packages.md (modified)
+- scaffolding/028-backend-builder-agent.md (modified)
+- scaffolding/029-web-frontend-builder.md (modified)
+- scaffolding/030-mobile-frontend-builder.md (modified)
+- scaffolding/034b-output-contract-zod-schemas.md (modified)
+- scaffolding/035-orchestrator-core.md (modified)
+- scaffolding/036-hitl-gates.md (modified)
+- scaffolding/038-skills-agent.md (modified)
+- scaffolding/040-app-store-compliance.md (modified)
+- scaffolding/041-mcp-server-registration.md (modified)
+- schemas/signoff.schema.json (created)
+- schemas/visual-review-report.schema.json (created)
+- scripts/aggregate-components.mjs (created)
+- scripts/build-screens-manifest.mjs (created)
+- scripts/build-user-flows.mjs (created)
+- scripts/verify-024.mjs (created)
+- scripts/verify-025.mjs (created)
+- scripts/verify-025b.mjs (created)
+- scripts/verify-refactor-003.mjs (created)
+- scripts/verify-refactor-003.mjs (modified)
+- scripts/visual-review-aggregate.mjs (created)
+- scripts/visual-review-inline-emit.mjs (created)
+- scripts/visual-review-preflight.mjs (created)
+  commits:
+- hash: 3c2a55a
+  message: "refactor-003: pipeline reorder + late architect + gate 5 credentials"
+- hash: 4242913
+  message: "refactor-003: add verification checklist script + rendered report"
+- hash: 949b5c4
+  message: "refactor-003: rename pending scaffolding files by build order"
+- hash: f44f796
+  message: "refactor-003: consolidate pipeline reorder implementation + walkthrough"
+  attempts: 3
+  lessons:
+- "Moving architect + PM post-signoff let vendor decisions reflect actually-approved design; pre-refactor architect had to guess at user intent."
+- "Gate 5 file-drop mechanic (docs/credentials-confirmed.txt) beats an HTTP server for credentials — no agent ever touches .env."
+- "The walkthrough on mindapp-v2 validated the full design pipeline end-to-end; this kind of smoke test catches integration gaps scaffolding review misses."
+- "Three-way deployment enum (vendor/self-hosted/declined) handles every integration cleanly — declined was the missing third we didn't know we needed until brief review surfaced it."
+  test-results:
   summary: "design pipeline validated E2E on mindapp-v2 (80 screens generated, 41 pass / 39 fail via rubric)"
-duration-minutes: 3693
+  duration-minutes: 3693
+
 ---

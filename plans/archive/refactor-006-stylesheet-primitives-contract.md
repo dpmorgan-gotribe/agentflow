@@ -134,7 +134,6 @@ Projects that have already shipped (hatch, gotribe-v1, mindapp-v2, etc.) are **n
 
 <!-- Populated by executing agent. -->
 
-
 ## Attempt log
 
 ### Attempt 1 — 2026-04-24 — completed (scoped down)

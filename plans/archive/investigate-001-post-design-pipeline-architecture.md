@@ -271,17 +271,21 @@ NOTE: Investigations are what agents escalate to at attempt #3 of a bug or featu
 -->
 
 ---
+
 # COMPLETION RECORD (appended to archived plan)
+
 completed: 2026-04-22
 outcome: success
 actual-files-changed: []
-commits: []  # investigation — no branch
+commits: [] # investigation — no branch
 attempts: 2
 lessons:
-  - "Bundling 5 entangled architectural questions into one investigation was the right call — splitting would have re-threaded the dependencies 5 times."
-  - "Delegating Phase 1+2 (source survey) to an Explore agent kept the main context clean; main agent synthesized Phase 3+4 recommendations."
-  - "Hypothesis-before-investigation discipline paid off — 3 of 5 hypotheses confirmed, 2 falsified with concrete evidence."
-test-results:
+
+- "Bundling 5 entangled architectural questions into one investigation was the right call — splitting would have re-threaded the dependencies 5 times."
+- "Delegating Phase 1+2 (source survey) to an Explore agent kept the main context clean; main agent synthesized Phase 3+4 recommendations."
+- "Hypothesis-before-investigation discipline paid off — 3 of 5 hypotheses confirmed, 2 falsified with concrete evidence."
+  test-results:
   summary: "n/a (investigation — no branch)"
-duration-minutes: 813
+  duration-minutes: 813
+
 ---

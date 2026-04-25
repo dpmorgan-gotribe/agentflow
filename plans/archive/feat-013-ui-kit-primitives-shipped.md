@@ -156,7 +156,6 @@ Update `.claude/skills/stylesheet/SKILL.md` step 9–11 (the primitives/patterns
 
 <!-- Populated by executing agent. -->
 
-
 ## Attempt log (auto-populated)
 
 ### Attempt 1 — 2026-04-24 — completed
@@ -169,6 +168,7 @@ Update `.claude/skills/stylesheet/SKILL.md` step 9–11 (the primitives/patterns
 **Outcome**: hatch-2 ships with real kit primitives wired end-to-end. 60 kit tests + 92 app tests = 152 green. Kit version bumped 0.1.0-tokens-only → 0.2.0-primitives.
 
 **Kit API gaps noted for future work** (not blocking):
+
 - Button polymorphic `asChild` for `<Link><Button>` patterns (currently double-wraps with tabIndex=-1)
 - Card polymorphic `as` prop for semantic element substitution (`<figure>`, `<section>`, etc.)
 - Chip-style RadioGroup/CheckboxGroup (shipped Radio is traditional round-bullet; chip toggles for budget/discipline selectors kept hand-rolled)

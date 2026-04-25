@@ -176,7 +176,6 @@ Layer B + C: out-of-scope for this bug plan; tracked in follow-up plans.
 
 <!-- Populated by executing agent. -->
 
-
 ## Attempt log
 
 ### Attempt 1 — 2026-04-24 — completed across three layers
