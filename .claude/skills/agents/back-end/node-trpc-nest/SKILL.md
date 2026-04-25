@@ -209,6 +209,27 @@ Workspace packages:
 - **Never inline middleware in a single file.** Extract to a reusable module — even if the first use is single-call.
 - **Never persist secrets at rest.** Password hashes via bcrypt (cost ≥ 10); JWT secrets in env only; webhook signing keys via env.
 
+## Self-verify (RUN BEFORE REPORTING TASK COMPLETE)
+
+After authoring code + tests for a task, run these commands IN ORDER from the worktree root. Each must succeed before you report `taskStatus: "completed"` for that task. ANY failure → set `taskStatus: "failed"` for the task and surface the stderr in the `errors` field of your return JSON.
+
+```bash
+# 1. Install: catches "I added a package.json line but the lockfile doesn't have it"
+pnpm install
+
+# 2. Typecheck: catches missing types, schema drift, Prisma client out-of-date
+pnpm --filter @repo/api typecheck
+
+# 3. Tests: runs the .test.ts files you authored
+pnpm --filter @repo/api test
+```
+
+After a Prisma schema change, also run `pnpm --filter @repo/api prisma generate` BEFORE step 2 so `@prisma/client` types match what your code expects.
+
+If you skip ANY of these commands, your task will fail downstream when feat-018's commit-discipline gate evaluates. The orchestrator will mark the feature failed via `feature-no-commits`. Save yourself the round-trip: run the three commands.
+
+If `pnpm install` fails because of a registry network issue, retry once with `--prefer-offline`. If still failing, report the failure verbatim — don't try to work around it.
+
 ## 8. References
 
 - [NestJS 11 docs](https://docs.nestjs.com/) — modules, DI, middleware

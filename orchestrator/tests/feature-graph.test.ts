@@ -38,6 +38,9 @@ function makeCtx(
       cwd: string,
       message: string,
     ) => Promise<{ committed: boolean; sha?: string; warning?: string }>;
+    installIfPackageJsonChanged: (
+      cwd: string,
+    ) => Promise<{ installed: boolean; warning?: string }>;
   }> = {},
 ) {
   return {
@@ -57,6 +60,13 @@ function makeCtx(
     commitWorktreeChanges:
       overrides.commitWorktreeChanges ??
       (async () => ({ committed: false }) as const),
+    // feat-019 Phase B: default no-op install-after-commit stub. Tests
+    // that exercise install behavior override this; everyone else gets
+    // a silent { installed: false } so the helper doesn't try to run
+    // `git diff-tree` + `pnpm install` against a tmp dir.
+    installIfPackageJsonChanged:
+      overrides.installIfPackageJsonChanged ??
+      (async () => ({ installed: false }) as const),
     ...(overrides.autoMergeAfterReviewer !== undefined
       ? { autoMergeAfterReviewer: overrides.autoMergeAfterReviewer }
       : {}),
@@ -996,5 +1006,155 @@ describe("runFeature — auto-commit per agent step (feat-018 Phase A)", () => {
     const result = await runFeature(feature, ctx);
     expect(result.status).toBe("completed");
     expect(result.commitWarnings).toBeUndefined();
+  });
+});
+
+// ─── feat-019 Phase B: install-after-commit ───────────────────────────
+
+describe("runFeature — install-after-commit (feat-019 Phase B)", () => {
+  function okGitInvoke(): InvokeAgentFn {
+    return async (args) => {
+      if (args.agent === "git-agent") {
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput:
+            args.gitOp?.op === "checkout-feature" ? checkoutOk : closeOk,
+          costUsd: 0.001,
+        };
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+  }
+
+  it("after successful commit + package.json change → install fires once per agent step", async () => {
+    const feature = buildFeature(); // backend-builder + tester + reviewer
+    const installCalls: string[] = [];
+    const ctx = makeCtx(okGitInvoke(), {
+      commitWorktreeChanges: async () => ({
+        committed: true,
+        sha: "abc1234",
+      }),
+      installIfPackageJsonChanged: async (cwd) => {
+        installCalls.push(cwd);
+        return { installed: true };
+      },
+    });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed");
+    // 3 build agents → 3 commit-then-install pairs.
+    expect(installCalls).toHaveLength(3);
+    for (const cwd of installCalls) {
+      expect(cwd).toContain(".claude/worktrees/feat-auth");
+    }
+    expect(result.commitWarnings).toBeUndefined();
+  });
+
+  it("after successful commit without package.json change → install helper called but no-op { installed: false }", async () => {
+    // The orchestrator calls the helper unconditionally on commit-success;
+    // the helper itself is what decides whether to run pnpm install.
+    // From runFeature's perspective: helper called, no warning bubbles.
+    const feature = buildFeature();
+    let helperCalls = 0;
+    const ctx = makeCtx(okGitInvoke(), {
+      commitWorktreeChanges: async () => ({
+        committed: true,
+        sha: "abc1234",
+      }),
+      installIfPackageJsonChanged: async () => {
+        helperCalls += 1;
+        return { installed: false };
+      },
+    });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed");
+    expect(helperCalls).toBe(3);
+    expect(result.commitWarnings).toBeUndefined();
+  });
+
+  it("install helper NOT called when commit didn't land (committed: false, clean tree)", async () => {
+    const feature = buildFeature();
+    let helperCalls = 0;
+    const ctx = makeCtx(okGitInvoke(), {
+      commitWorktreeChanges: async () => ({ committed: false }),
+      installIfPackageJsonChanged: async () => {
+        helperCalls += 1;
+        return { installed: false };
+      },
+    });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed");
+    expect(helperCalls).toBe(0);
+  });
+
+  it("install warning is appended to commitWarnings + surfaces in FeatureResult", async () => {
+    const feature = buildFeature();
+    const ctx = makeCtx(okGitInvoke(), {
+      commitWorktreeChanges: async () => ({
+        committed: true,
+        sha: "abc1234",
+      }),
+      installIfPackageJsonChanged: async () => ({
+        installed: false,
+        warning: "pnpm install failed (commit had package.json changes): boom",
+      }),
+    });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed");
+    expect(result.commitWarnings).toBeDefined();
+    expect(result.commitWarnings!.length).toBe(3);
+    for (const w of result.commitWarnings!) {
+      expect(w).toContain("pnpm install failed");
+    }
+  });
+
+  it("install failure does NOT abort the feature — next agent in sequence still runs", async () => {
+    const feature = buildFeature(); // backend-builder + tester + reviewer
+    const agentInvocations: string[] = [];
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput:
+            args.gitOp?.op === "checkout-feature" ? checkoutOk : closeOk,
+          costUsd: 0.001,
+        };
+      }
+      agentInvocations.push(args.agent);
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+    const ctx = makeCtx(invokeAgent, {
+      commitWorktreeChanges: async () => ({
+        committed: true,
+        sha: "abc1234",
+      }),
+      // First install fails; runFeature must continue iteration.
+      installIfPackageJsonChanged: async () => ({
+        installed: false,
+        warning: "pnpm install failed: registry 500",
+      }),
+    });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed");
+    // Every agent in the sequence ran despite the install warnings.
+    expect(agentInvocations).toEqual(["backend-builder", "tester", "reviewer"]);
+    expect(result.taskOutcomes).toEqual({
+      "auth-api": "completed",
+      "auth-tests": "completed",
+      "auth-review": "completed",
+    });
   });
 });

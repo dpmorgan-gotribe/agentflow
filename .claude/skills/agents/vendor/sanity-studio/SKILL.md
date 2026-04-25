@@ -20,15 +20,16 @@ Consumed by the `web-frontend-builder` as a prompt pack; not invoked as a slash 
 Run from `apps/web/`:
 
 ```bash
-pnpm add sanity@^3.75.0 next-sanity@^9.8.0 @sanity/client@^7.2.0 @sanity/image-url@^1.1.0 @sanity/vision@^3.75.0 styled-components@^6.1.13
-pnpm add -D @sanity/types@^3.75.0 @sanity/cli@^3.75.0
+pnpm add sanity@^5.22.0 next-sanity@^9.8.0 @sanity/client@^7.2.0 @sanity/image-url@^1.1.0 @sanity/vision@^5.22.0 styled-components@^6.1.13
+pnpm add -D @sanity/types@^5.22.0 @sanity/cli@^5.22.0
 ```
 
 Peer notes:
 
-- `styled-components` is a **hard peer** of Studio v3 — must be installed even though the surrounding app uses CSS modules or Tailwind. <!-- VERIFY: styled-components major pin against current sanity release -->
+- `styled-components` is a **hard peer** of Studio v5 — must be installed even though the surrounding app uses CSS modules or Tailwind.
 - `next-sanity` ≥9 requires Next.js ≥14 App Router; compatible with Next 15 server components.
 - Do NOT add `@sanity/next-loader` unless using the visual-editing overlay — it's optional.
+- **v5 is breaking-change territory** — see §v5 Breaking Changes below before authoring schemas. v3-era patterns (`__experimental_actions`, untyped `Rule` callbacks, `groqQuery()`) will throw at build or runtime.
 
 ## 2. Canonical layout
 
@@ -61,7 +62,7 @@ apps/web/
 **Schema authoring** — `apps/web/sanity-schemas/documents/caseStudy.ts`:
 
 ```ts
-import { defineType, defineField, defineArrayMember } from "sanity";
+import { defineType, defineField, defineArrayMember, type Rule } from "sanity";
 
 export const caseStudy = defineType({
   name: "caseStudy",
@@ -71,13 +72,13 @@ export const caseStudy = defineType({
     defineField({
       name: "title",
       type: "string",
-      validation: (r) => r.required().max(120),
+      validation: (rule: Rule) => rule.required().max(120),
     }),
     defineField({
       name: "slug",
       type: "slug",
       options: { source: "title", maxLength: 96 },
-      validation: (r) => r.required(),
+      validation: (rule: Rule) => rule.required(),
     }),
     defineField({
       name: "client",
@@ -92,7 +93,7 @@ export const caseStudy = defineType({
         defineField({
           name: "alt",
           type: "string",
-          validation: (r) => r.required(),
+          validation: (rule: Rule) => rule.required(),
         }),
       ],
     }),
@@ -108,7 +109,7 @@ export const caseStudy = defineType({
     defineField({
       name: "publishedAt",
       type: "datetime",
-      validation: (r) => r.required(),
+      validation: (rule: Rule) => rule.required(),
     }),
   ],
 });
@@ -179,6 +180,80 @@ Builders reference these via `process.env.X` in code — they **never read `.env
 - **`groq-store` vs `createClient`.** `groq-store` is deprecated for v3 Studios; use `createClient` from `@sanity/client` everywhere, including live-preview via `next-sanity`'s `defineLive` helper. <!-- VERIFY: defineLive is next-sanity v9 API -->
 - **Free tier rate limits.** Free projects cap at 10 req/s per dataset + 100k API CDN requests/month. Symptom: intermittent 429s under test load. Fix: always use `useCdn: true` for public reads; reserve non-CDN client for drafts + writes.
 - **Studio route collides with App Router catch-alls.** Symptom: `/studio/desk/...` returns 404 or the app's custom 404 page. Fix: ensure the dynamic segment is `[[...index]]` (double-bracket = optional catchall) and the file lives at `app/studio/[[...index]]/page.tsx`; do NOT place a `not-found.tsx` inside `app/studio/`.
+
+## v5 Breaking Changes (CRITICAL — your code MUST follow these)
+
+Sanity v5 (current; what the install-pin in this skill targets) removed several v3-era APIs. The most common drift agents make:
+
+### `__experimental_actions` was REMOVED
+
+In v3, you could lock a singleton document by adding `__experimental_actions: ["update", "publish"]` to the schema definition. **In v5 this throws a TypeError**. Singleton enforcement now lives in Studio's `actions` config in `sanity.config.ts`:
+
+```ts
+// sanity.config.ts — v5 singleton pattern
+import { defineConfig } from "sanity";
+import { structureTool } from "sanity/structure";
+import { visionTool } from "@sanity/vision";
+import { schemaTypes } from "./sanity-schemas";
+
+export default defineConfig({
+  name: "default",
+  title: "Studio",
+  projectId: process.env.NEXT_PUBLIC_SANITY_PROJECT_ID!,
+  dataset: process.env.NEXT_PUBLIC_SANITY_DATASET!,
+  basePath: "/studio",
+  plugins: [structureTool(), visionTool()],
+  schema: { types: schemaTypes },
+  document: {
+    actions: (input, { schemaType }) => {
+      // Lock singletons — list per-project (the example below uses
+      // about + latestWorkGrid; substitute for whatever schemas your
+      // project marks as singletons).
+      const singletons = ["about", "latestWorkGrid"];
+      if (singletons.includes(schemaType)) {
+        return input.filter(
+          ({ action }) =>
+            !["delete", "duplicate", "create"].includes(action ?? ""),
+        );
+      }
+      return input;
+    },
+  },
+});
+```
+
+The schema file itself stays normal — no `__experimental_actions` field. Singleton enforcement is pulled out into the Studio config.
+
+### `Rule` validation parameter is untyped without explicit import
+
+In v3, `validation: (Rule) => Rule.required()` worked with implicit `any`. v5 strict-mode TypeScript (which Next.js 15 strict configs enable) flags this as `Parameter 'Rule' implicitly has an 'any' type`. Fix: import `Rule` from `sanity` + annotate the parameter explicitly:
+
+```ts
+import { defineField, defineType, type Rule } from "sanity";
+
+export const example = defineType({
+  name: "example",
+  type: "document",
+  fields: [
+    defineField({
+      name: "title",
+      type: "string",
+      validation: (rule: Rule) => rule.required().min(2).max(120),
+    }),
+  ],
+});
+```
+
+Every `defineField({ ..., validation: (...) => ... })` callback in v5 needs the explicit `(rule: Rule)` annotation. Untyped parameters fail typecheck under strict mode.
+
+### Other v5 deltas to be aware of
+
+- `groqQuery()` deprecated; use `client.fetch(query, params)` directly.
+- `client.observable.fetch()` still exists, but the import path moved — pull observables from `@sanity/client/observable` in v5 instead of the root `@sanity/client` export.
+- Studio styles: v5 dropped the inline `theme` prop on the `<Studio>` component. Theme overrides go inside `defineConfig({ theme: ... })` instead.
+- `defineConfig`'s `tools` array was renamed to `plugins` in v5 (some v3 examples still show `tools: [...]`); use `plugins: [structureTool(), visionTool()]`.
+
+If the architect's `architecture.yaml` pins Sanity to a specific minor (`5.22.x`), match that pin in your install command — don't drift to `5.x` shorthand because subsequent v5 minors have shipped further breaking-change waves.
 
 ## 7. Testing
 

@@ -168,6 +168,71 @@ SANITY_PREVIEW_SECRET            <string>     # server-only; query-param secret 
 - **`generateStaticParams` returning thousands of slugs** hangs builds. A 10k-page site with GROQ-enumerated slugs spends 20+ minutes on build-time prerender. Mitigations: switch to partial prerendering (Next 15 PPR — `experimental.ppr = true`), return the top-100 recent slugs + let the rest fall through to on-demand ISR, or split by `dataset` so each gets its own deploy.
 - **`revalidateTag` must match the tag string exactly.** Typos like `"galler"` vs `"gallery"` silently don't revalidate; the webhook returns 200 + nothing updates. Centralise tag constants in `src/lib/queries/tags.ts` and import everywhere — grep-able + typo-proof.
 
+## next-sanity v9 Breaking Changes (CRITICAL — v8 patterns will fail)
+
+`next-sanity` v9 (current; what the install-pin in this skill targets) reworked several v8-era APIs. The most common drift agents make when porting v8 examples or reading stale tutorials:
+
+### `client` instance must be imported from `@sanity/client` (not `next-sanity`)
+
+In v8 you could do `import { createClient } from "next-sanity"`. **In v9 this re-export was dropped**. The canonical import:
+
+```ts
+import { createClient } from "@sanity/client";
+
+const client = createClient({
+  projectId: process.env.NEXT_PUBLIC_SANITY_PROJECT_ID!,
+  dataset: process.env.NEXT_PUBLIC_SANITY_DATASET!,
+  apiVersion: "2026-04-01",
+  useCdn: true,
+});
+```
+
+`next-sanity` v9 still exports `NextStudio` + `defineLive` + `loadQuery` — but the raw `createClient` lives in `@sanity/client`. Match the peer-dep pin: `@sanity/client@^7` is required by `next-sanity@^9` (see §6 Gotchas).
+
+### `loadQuery()` requires explicit `params` object even when empty
+
+In v8, `loadQuery(query)` with no `params` argument was valid. **In v9 the signature is `loadQuery(query, params)` — both required**. Even a parameterless query needs `{}`:
+
+```ts
+import { loadQuery } from "next-sanity";
+import { groq } from "next-sanity";
+
+// v8 (broken in v9):
+//   const { data } = await loadQuery(groq`*[_type=="gallery"]`);
+
+// v9 — explicit empty params:
+const { data } = await loadQuery(groq`*[_type=="gallery"]`, {});
+```
+
+A missing second argument throws `TypeError: Cannot read properties of undefined (reading 'slug')` deep inside the loader; the symptom is a confusing render-time crash, not a clean install-time error.
+
+### v9 + draftMode: `defineLive` import is separate
+
+In v8, live previews piggy-backed on `loadQuery`'s draft branching. **In v9 the live-preview surface lives behind a separate `defineLive` import**, and you wire it in once at the client module:
+
+```ts
+// src/lib/sanity.fetch.ts
+import { defineLive } from "next-sanity";
+import { client } from "./sanity.client";
+
+export const { sanityFetch, SanityLive } = defineLive({
+  client,
+  // serverToken used for draft fetches; never bundle to client
+  serverToken: process.env.SANITY_API_READ_TOKEN!,
+  // browserToken optional — only set when using @sanity/visual-editing
+});
+```
+
+Pages then call `sanityFetch({ query, params })` instead of `loadQuery()`. Render `<SanityLive />` once in the root layout to subscribe to live updates. Skipping `<SanityLive />` is the most common "preview works in dev, breaks in prod" symptom.
+
+### Other v8 → v9 deltas
+
+- `useLiveQuery` (from `@sanity/react-loader`) was the v8 client-side live-preview hook. v9 still supports it, but `defineLive`'s `<SanityLive />` covers most use cases without an explicit `"use client"` boundary.
+- v9 removed v8's implicit `perspective: "raw"` default on `previewClient` — explicit `perspective: "previewDrafts"` is required (matches `@sanity/client@^7`'s default-change documented in `sanity-studio` §6 Gotchas).
+- `next-sanity/studio`'s `<NextStudio>` component still ships a `metadata` + `viewport` re-export; in v9 these are `const` exports, not functions — re-export them with `export { metadata, viewport } from "next-sanity/studio"` (no parens).
+
+If `architecture.yaml` pins next-sanity to a specific minor (e.g. `^9.8.0`), match it exactly in the install command — v9.4 → v9.8 shifted `defineLive`'s return shape (added `SanityLive` alongside `sanityFetch`).
+
 ## 7. Testing
 
 Binds to `.claude/rules/testing-policy.md` (feat-004 hybrid TDD).

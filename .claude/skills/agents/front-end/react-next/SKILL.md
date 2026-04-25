@@ -188,6 +188,28 @@ Workspace packages:
 - **Never redeclare a Zod schema in a component.** Import from `@repo/types` — single source of truth.
 - **Never call `router.push()` in a server component.** Use `redirect()` from `next/navigation`.
 
+## Self-verify (RUN BEFORE REPORTING TASK COMPLETE)
+
+After authoring code + tests for a task, run these commands IN ORDER from the worktree root. Each must succeed before you report `taskStatus: "completed"` for that task. ANY failure → set `taskStatus: "failed"` for the task and surface the stderr in the `errors` field of your return JSON.
+
+```bash
+# 1. Install: catches "I added a package.json line but the lockfile doesn't have it"
+pnpm install
+
+# 2. Typecheck: catches missing types, v3-vs-v5 SDK pattern drift, kit contract violations
+pnpm --filter @repo/web typecheck
+
+# 3. Tests: runs the .test.tsx + .test.ts files you authored
+pnpm --filter @repo/web test
+
+# 4. Kit consumer contract: catches @repo/ui-kit deep-imports, hex colors, arbitrary Tailwind values
+pnpm ui-kit:validate-consumer
+```
+
+If you skip ANY of these commands, your task will fail downstream when feat-018's commit-discipline gate evaluates. The orchestrator will mark the feature failed via `feature-no-commits`. Save yourself the round-trip: run the four commands.
+
+If `pnpm install` fails because of a registry network issue, retry once with `--prefer-offline`. If still failing, report the failure verbatim — don't try to work around it.
+
 ## 8. References
 
 - [Next.js 15 docs](https://nextjs.org/docs) — App Router, Server Components, Server Actions

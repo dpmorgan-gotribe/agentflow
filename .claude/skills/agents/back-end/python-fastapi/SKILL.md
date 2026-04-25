@@ -232,6 +232,25 @@ Python version pinned in `.python-version`: `3.13` (current stable at factory-au
 - **Never commit `.env` or `alembic/versions/*.pyc`.** `.gitignore` covers it, but verify after `uv run alembic revision` — autogen should only touch `.py` files.
 - **Never mutate a Pydantic model's fields in-place after validation.** Use `model_copy(update={...})` for immutable updates; mutations skip validators.
 
+## Self-verify (RUN BEFORE REPORTING TASK COMPLETE)
+
+After authoring code + tests for a task, run these commands IN ORDER from the worktree root. Each must succeed before you report `taskStatus: "completed"` for that task. ANY failure → set `taskStatus: "failed"` for the task and surface the stderr in the `errors` field of your return JSON.
+
+```bash
+# 1. Install: catches "I added a pyproject.toml line but uv.lock doesn't have it"
+uv sync
+
+# 2. Typecheck: catches missing types, Pydantic v1-vs-v2 drift, SQLAlchemy mapping errors
+uv run mypy api
+
+# 3. Tests + coverage: runs the test_*.py files you authored
+uv run pytest --cov=api --cov-report=term-missing
+```
+
+If you skip ANY of these commands, your task will fail downstream when feat-018's commit-discipline gate evaluates. The orchestrator will mark the feature failed via `feature-no-commits`. Save yourself the round-trip: run the three commands.
+
+If `uv sync` fails because of a registry network issue, retry once with `--offline` after a successful previous resolve. If still failing, report the failure verbatim — don't try to work around it.
+
 ## 8. References
 
 - [FastAPI docs](https://fastapi.tiangolo.com/)

@@ -14,6 +14,8 @@ import {
   commitWorktreeChanges,
   createInvokeAgent,
   type ExecGitFn,
+  installIfPackageJsonChanged,
+  type ShellExecFn,
 } from "../src/invoke-agent.js";
 import type { QueryFn } from "../src/stage-runner.js";
 
@@ -998,5 +1000,151 @@ describe("invokeAgent — close-feature feature-no-commits guard", () => {
     // Status was NOT called (branch differs from main) — defensive
     // guard short-circuits to the existing merge path.
     expect(calls.some((c) => /git status --porcelain/.test(c))).toBe(false);
+  });
+});
+
+// ─── feat-019 Phase B: installIfPackageJsonChanged ────────────────────
+
+/**
+ * Scripted `shellExec` stub. Same shape as `makeExecGit` but for the
+ * non-git shell path (`pnpm install` etc.).
+ */
+function makeShellExec(
+  map: Array<{
+    match: RegExp;
+    stdout?: string;
+    stderr?: string;
+    code?: number;
+    throwInstead?: Error;
+  }>,
+): ShellExecFn & { calls: string[] } {
+  const calls: string[] = [];
+  const fn: ShellExecFn = async (cmd) => {
+    calls.push(cmd);
+    const entry = map.find((e) => e.match.test(cmd));
+    if (!entry) {
+      throw new Error(`shellExec stub: no match for '${cmd}'`);
+    }
+    if (entry.throwInstead) throw entry.throwInstead;
+    return {
+      stdout: entry.stdout ?? "",
+      stderr: entry.stderr ?? "",
+      code: entry.code ?? 0,
+    };
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (fn as any).calls = calls;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return fn as any;
+}
+
+describe("installIfPackageJsonChanged (feat-019 Phase B)", () => {
+  it("no package.json in commit diff → { installed: false }, no warning, pnpm install NOT called", async () => {
+    const execGit = makeExecGit([
+      {
+        match: /git diff-tree/,
+        stdout: "src/foo.ts\nsrc/bar.test.ts\n",
+      },
+    ]);
+    const shellExec = makeShellExec([]); // must not be called
+    const result = await installIfPackageJsonChanged(
+      "/tmp/worktree",
+      execGit,
+      shellExec,
+    );
+    expect(result).toEqual({ installed: false });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const shellCalls = (shellExec as any).calls as string[];
+    expect(shellCalls).toEqual([]);
+  });
+
+  it("package.json at root → install fires → { installed: true }", async () => {
+    const execGit = makeExecGit([
+      {
+        match: /git diff-tree/,
+        stdout: "package.json\nsrc/foo.ts\n",
+      },
+    ]);
+    const shellExec = makeShellExec([
+      { match: /pnpm install/, stdout: "Lockfile is up to date\n" },
+    ]);
+    const result = await installIfPackageJsonChanged(
+      "/tmp/worktree",
+      execGit,
+      shellExec,
+    );
+    expect(result).toEqual({ installed: true });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const shellCalls = (shellExec as any).calls as string[];
+    expect(shellCalls).toEqual(["pnpm install"]);
+  });
+
+  it("apps/web/package.json (subpath) → install fires → { installed: true }", async () => {
+    const execGit = makeExecGit([
+      {
+        match: /git diff-tree/,
+        stdout: "apps/web/package.json\napps/web/src/page.tsx\n",
+      },
+    ]);
+    const shellExec = makeShellExec([{ match: /pnpm install/, stdout: "" }]);
+    const result = await installIfPackageJsonChanged(
+      "/tmp/worktree",
+      execGit,
+      shellExec,
+    );
+    expect(result).toEqual({ installed: true });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const shellCalls = (shellExec as any).calls as string[];
+    expect(shellCalls).toEqual(["pnpm install"]);
+  });
+
+  it("git diff-tree fails → { installed: false, warning: '...' }, install NOT called", async () => {
+    const execGit = makeExecGit([
+      {
+        match: /git diff-tree/,
+        throwInstead: Object.assign(new Error("not a git repo"), {
+          stderr: "fatal: not a git repository",
+          code: 128,
+        }),
+      },
+    ]);
+    const shellExec = makeShellExec([]); // must not be called
+    const result = await installIfPackageJsonChanged(
+      "/tmp/not-a-repo",
+      execGit,
+      shellExec,
+    );
+    expect(result.installed).toBe(false);
+    expect(result.warning).toContain("git diff-tree failed");
+    expect(result.warning).toContain("not a git repository");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const shellCalls = (shellExec as any).calls as string[];
+    expect(shellCalls).toEqual([]);
+  });
+
+  it("install fails → { installed: false, warning: '...' }", async () => {
+    const execGit = makeExecGit([
+      {
+        match: /git diff-tree/,
+        stdout: "package.json\n",
+      },
+    ]);
+    const shellExec = makeShellExec([
+      {
+        match: /pnpm install/,
+        throwInstead: Object.assign(new Error("ERR_PNPM_REGISTRY_500"), {
+          stderr: "ERR_PNPM_REGISTRY_500: Server returned HTTP 500",
+          code: 1,
+        }),
+      },
+    ]);
+    const result = await installIfPackageJsonChanged(
+      "/tmp/worktree",
+      execGit,
+      shellExec,
+    );
+    expect(result.installed).toBe(false);
+    expect(result.warning).toContain("pnpm install failed");
+    expect(result.warning).toContain("ERR_PNPM_REGISTRY_500");
   });
 });

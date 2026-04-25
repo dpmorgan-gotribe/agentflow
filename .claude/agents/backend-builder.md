@@ -84,12 +84,14 @@ Coverage floor: **≥60% line coverage** on YOUR-authored implementation files, 
 
 ## Self-verify (before signaling completion)
 
+**Self-verify discipline (NON-NEGOTIABLE):** Before reporting any task as `completed`, run the §Self-verify command block from your assigned stack skill (`.claude/skills/agents/back-end/{stack-slug}/SKILL.md`) in full. Skipping it means downstream feat-018 commit-discipline marks the feature as `feature-no-commits` and the orchestrator routes back for retry — wasting a budget cycle. The three commands (install, typecheck, test) are cheap and catch real issues.
+
 For each task you complete:
 
 1. Write implementation file(s) per stack skill's canonical layout.
 2. Write sibling test file(s) per stack skill's testing pattern.
 3. Commit: `git add <files> && git commit -m "feat({task.id}): <summary>"`.
-4. Run stack skill's `lint && typecheck && test` command block (exact syntax in the stack skill's §Commands section).
+4. Run stack skill's §Self-verify command block (install + typecheck + test) in full (exact syntax in the stack skill's §Self-verify section).
 5. Parse coverage output; assert ≥60% on builder-authored lines.
 6. On failure: retry up to 2× with the error output appended to your prompt context. On third failure: escalate to orchestrator via `tasksFailed[]` entry with the error in `errors` field — don't silently continue.
 

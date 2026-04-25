@@ -12,6 +12,8 @@ import { waitForGateDecision } from "./gate-server-lifecycle.js";
 import {
   type CommitResult,
   commitWorktreeChanges as defaultCommitWorktreeChanges,
+  type InstallResult,
+  installIfPackageJsonChanged as defaultInstallIfPackageJsonChanged,
 } from "./invoke-agent.js";
 import type { RetryCounters } from "./retry-counters.js";
 import { saveState } from "./state-persistence.js";
@@ -36,6 +38,18 @@ export type CommitWorktreeChangesFn = (
   cwd: string,
   message: string,
 ) => Promise<CommitResult>;
+
+/**
+ * Defense-in-depth helper used by `runFeature` after each successful
+ * commit (feat-019 Phase B). If the just-committed change set touched
+ * any `package.json`, runs `pnpm install` so the next agent in
+ * `agent_sequence[]` sees an up-to-date lockfile + node_modules tree.
+ * Injectable for tests; default delegates to the real helper bound to
+ * the real git CLI + shell.
+ */
+export type InstallIfPackageJsonChangedFn = (
+  cwd: string,
+) => Promise<InstallResult>;
 
 /**
  * Surface of a build-agent for `feature.skip[]` logic. Tester / reviewer /
@@ -138,6 +152,13 @@ export interface FeatureGraphContext {
    * Tests inject a stub to avoid touching a real worktree.
    */
   commitWorktreeChanges?: CommitWorktreeChangesFn;
+  /**
+   * Override the install-after-commit helper (feat-019 Phase B).
+   * Default delegates to `invoke-agent.ts::installIfPackageJsonChanged`
+   * with the real git CLI + shell. Tests inject a stub to avoid running
+   * `pnpm install` against a tmp dir.
+   */
+  installIfPackageJsonChanged?: InstallIfPackageJsonChangedFn;
 }
 
 export type FeatureStatus = "completed" | "failed" | "aborted";
@@ -198,6 +219,12 @@ export async function runFeature(
   const commitChanges: CommitWorktreeChangesFn =
     ctx.commitWorktreeChanges ??
     ((cwd, message) => defaultCommitWorktreeChanges(cwd, message));
+  // feat-019 Phase B: install-after-commit hook. Defense-in-depth for
+  // builders that bumped a package.json line but skipped `pnpm install`.
+  // Default to the real helper; tests inject a stub.
+  const installAfterCommit: InstallIfPackageJsonChangedFn =
+    ctx.installIfPackageJsonChanged ??
+    ((cwd) => defaultInstallIfPackageJsonChanged(cwd));
 
   // 0. Fast-skip — if every task in this feature is already status: completed,
   //    the feature was finished in a prior run (or by a prior smoke test) and
@@ -345,8 +372,12 @@ export async function runFeature(
       const message =
         `${agentName}: ${completedIds.join(", ")}\n\n` +
         `[via orchestrator Mode B; feature: ${feature.id}]`;
+      let commitLanded = false;
       try {
         const commit = await commitChanges(worktreeCwd, message);
+        if (commit.committed === true) {
+          commitLanded = true;
+        }
         if (commit.warning) {
           commitWarnings.push(`${agentName}: ${commit.warning}`);
           // eslint-disable-next-line no-console
@@ -364,6 +395,29 @@ export async function runFeature(
         console.warn(
           `[runFeature] auto-commit threw for ${feature.id}/${agentName}: ${msg}`,
         );
+      }
+
+      // feat-019 Phase B: if the commit landed, refresh the dep tree
+      // when the change set touched any package.json. Failures here
+      // are warnings — the next agent may still succeed.
+      if (commitLanded) {
+        try {
+          const install = await installAfterCommit(worktreeCwd);
+          if (install.warning) {
+            commitWarnings.push(`${agentName}: ${install.warning}`);
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[runFeature] install warning for ${feature.id}/${agentName}: ${install.warning}`,
+            );
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          commitWarnings.push(`${agentName}: install threw: ${msg}`);
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[runFeature] install threw for ${feature.id}/${agentName}: ${msg}`,
+          );
+        }
       }
     }
   }

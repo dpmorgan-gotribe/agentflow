@@ -209,6 +209,27 @@ Workspace packages:
 - **Never call `push()` on an already-pushed route in Expo Router.** Use `replace()` to avoid duplicate stack entries.
 - **Never ignore the `react-native-reanimated/plugin` babel warning.** It means animations are falling back to JS thread — performance hit is immediate.
 
+## Self-verify (RUN BEFORE REPORTING TASK COMPLETE)
+
+After authoring code + tests for a task, run these commands IN ORDER from the worktree root. Each must succeed before you report `taskStatus: "completed"` for that task. ANY failure → set `taskStatus: "failed"` for the task and surface the stderr in the `errors` field of your return JSON.
+
+```bash
+# 1. Install: catches "I added a package.json line but the lockfile doesn't have it"
+pnpm install
+
+# 2. Typecheck: catches missing types, Expo SDK drift, kit primitive mismatch
+pnpm --filter @repo/mobile typecheck
+
+# 3. Tests: runs the .test.tsx + .test.ts files you authored (jest-expo)
+pnpm --filter @repo/mobile test
+```
+
+There is no kit-consumer-contract validator on the mobile tier (NativeWind / RN doesn't expose the same hex-in-className surface as web Tailwind); the typecheck step + the kit's platform-aware imports cover the equivalent ground.
+
+If you skip ANY of these commands, your task will fail downstream when feat-018's commit-discipline gate evaluates. The orchestrator will mark the feature failed via `feature-no-commits`. Save yourself the round-trip: run the three commands.
+
+If `pnpm install` fails because of a registry network issue, retry once with `--prefer-offline`. If still failing, report the failure verbatim — don't try to work around it.
+
 ## 8. References
 
 - [Expo SDK 52 release notes](https://expo.dev/changelog/2024/11-12-sdk-52)

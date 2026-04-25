@@ -1,7 +1,9 @@
 ---
 id: feat-019-builder-install-discipline
 type: feature
-status: draft
+status: in-progress
+approved-at: 2026-04-25
+approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-04-25
 updated: 2026-04-25

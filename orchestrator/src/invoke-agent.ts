@@ -32,6 +32,18 @@ export type ExecGitFn = (
   cwd: string,
 ) => Promise<{ stdout: string; stderr: string; code: number }>;
 
+/**
+ * Promise-returning shell-command runner (NOT prefixed with `git` — runs
+ * the literal command as-is). Injectable for tests; default delegates to
+ * Node's `child_process.exec` via `execAsync`.
+ *
+ * Same result shape as `ExecGitFn` so callers can branch on `code` only.
+ */
+export type ShellExecFn = (
+  cmd: string,
+  cwd: string,
+) => Promise<{ stdout: string; stderr: string; code: number }>;
+
 export interface CreateInvokeAgentConfig {
   projectRoot: string;
   budget: BudgetTracker;
@@ -706,6 +718,93 @@ export async function commitWorktreeChanges(
   return { committed: true, sha: rev.stdout.trim() };
 }
 
+// ─── install-discipline helper (feat-019 Phase B) ────────────────────
+
+/**
+ * Result of an `installIfPackageJsonChanged` call.
+ *   - `installed: true`  → `pnpm install` ran + succeeded.
+ *   - `installed: false` + no `warning` → no package.json in the diff,
+ *     no-op (this is the common case after a non-dep-changing commit).
+ *   - `installed: false` + `warning` → either git diff-tree failed OR
+ *     `pnpm install` returned non-zero. Caller surfaces the warning;
+ *     never aborts (next agent in agent_sequence may still succeed).
+ */
+export interface InstallResult {
+  installed: boolean;
+  warning?: string;
+}
+
+/**
+ * If the most-recent commit in the worktree includes any package.json
+ * changes, run `pnpm install` to refresh the dep tree. Defense-in-depth
+ * for builders that forgot to install (feat-019 Phase B).
+ *
+ * Detection: `git diff-tree --no-commit-id --name-only -r HEAD` and
+ * filter for `^package\.json$|/package\.json$`.
+ *
+ * Returns warnings (not errors) — the next agent in agent_sequence
+ * may still succeed even if install fails (e.g. tester running with
+ * stale node_modules; reviewer is read-only).
+ */
+export async function installIfPackageJsonChanged(
+  cwd: string,
+  exec: ExecGitFn = defaultExecGit,
+  shellExec: ShellExecFn = defaultShellExec,
+): Promise<InstallResult> {
+  const diff = await safeExec(
+    exec,
+    "git diff-tree --no-commit-id --name-only -r HEAD",
+    cwd,
+  );
+  if (diff.code !== 0) {
+    return {
+      installed: false,
+      warning: `git diff-tree failed: ${diff.stderr}`,
+    };
+  }
+  const changed = diff.stdout.split(/\r?\n/).filter(Boolean);
+  if (
+    !changed.some((f) => f === "package.json" || f.endsWith("/package.json"))
+  ) {
+    return { installed: false };
+  }
+  const install = await safeShellExec(shellExec, "pnpm install", cwd);
+  if (install.code !== 0) {
+    return {
+      installed: false,
+      warning: `pnpm install failed (commit had package.json changes): ${install.stderr.slice(0, 300)}`,
+    };
+  }
+  return { installed: true };
+}
+
+/**
+ * Wrapper around a `ShellExecFn` that normalizes thrown errors into a
+ * `{ code, stdout, stderr }` result so callers can branch on `code` only.
+ * Mirrors `safeExec`'s contract for the non-git shell path.
+ */
+async function safeShellExec(
+  exec: ShellExecFn,
+  cmd: string,
+  cwd: string,
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  try {
+    return await exec(cmd, cwd);
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string; code?: number };
+    return {
+      stdout: typeof e.stdout === "string" ? e.stdout : "",
+      stderr:
+        typeof e.stderr === "string"
+          ? e.stderr
+          : err instanceof Error
+            ? err.message
+            : String(err),
+      code: typeof e.code === "number" && e.code !== 0 ? e.code : 1,
+    };
+  }
+}
+
 /**
  * Wrapper around an `ExecGitFn` that normalizes thrown errors into a
  * `{ code, stdout, stderr }` result so callers can branch on `code` only.
@@ -753,6 +852,36 @@ async function defaultExecGit(
     // Re-throw so the caller's try/catch fires — matches prior expectations.
     const wrapped = new Error(
       `git command failed: ${cmd}\n${stderr}`,
+    ) as Error & { stdout?: string; stderr?: string; code?: number };
+    wrapped.stdout = stdout;
+    wrapped.stderr = stderr;
+    wrapped.code = code;
+    throw wrapped;
+  }
+}
+
+/**
+ * Default shell-command runner (non-git). Mirrors `defaultExecGit`'s
+ * thrown-error shape so `safeShellExec` can normalize it.
+ */
+async function defaultShellExec(
+  cmd: string,
+  cwd: string,
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  try {
+    const { stdout, stderr } = await execAsync(cmd, { cwd });
+    return { stdout, stderr, code: 0 };
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException & {
+      stdout?: string;
+      stderr?: string;
+      code?: number | string;
+    };
+    const code = typeof e.code === "number" ? e.code : 1;
+    const stdout = e.stdout ?? "";
+    const stderr = e.stderr ?? e.message ?? "";
+    const wrapped = new Error(
+      `shell command failed: ${cmd}\n${stderr}`,
     ) as Error & { stdout?: string; stderr?: string; code?: number };
     wrapped.stdout = stdout;
     wrapped.stderr = stderr;
