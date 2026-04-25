@@ -171,7 +171,9 @@ The chosen layout's PascalCase name is emitted as `data-kit-layout="AppShell"` o
 <script>
   // The inline tailwind.config block is read verbatim from
   // packages/ui-kit/src/styles/preview-bootstrap.html — do NOT hand-author.
-  tailwind.config = { /* kit-derived theme.extend referencing var(--color-*) */ };
+  tailwind.config = {
+    /* kit-derived theme.extend referencing var(--color-*) */
+  };
 </script>
 ```
 
@@ -180,6 +182,24 @@ The script + config block come from `packages/ui-kit/src/styles/preview-bootstra
 No inline `<style>` blocks anywhere else. No external CSS beyond the kit's `globals.css` link + the Tailwind CDN script. Anti-slop checks (step 7) verify both the link AND the bootstrap presence.
 
 **Production-time builders are unaffected.** `/build-web` and `/build-mobile` translate HTML→JSX and run a real Tailwind build at app-build time. The Play CDN is preview-only — it makes design-pipeline HTML render correctly in a browser without a build step. Production apps don't ship the CDN.
+
+**4e.1. Theme opt-out attribute on `<html>` (refactor-007.1 — second silent-styling guard).** Every screen's root `<html>` element MUST set `data-theme` to the picked style's mode — `"light"` for light-default styles, `"dark"` for dark-default. Read the picked style's `characteristics` block in `docs/analysis/shared/styles.md` (or the resolved `surface.base` color in `docs/selected-style.json` — surface.base = `#FFFFFF` or near-white → `light`; surface.base = near-black → `dark`).
+
+```html
+<html lang="en" data-theme="light">
+  <!-- light-default style (Editorial Vercel, Quiet Telemetry, etc.) -->
+</html>
+```
+
+```html
+<html lang="en" data-theme="dark">
+  <!-- dark-default style (Dense Console, Midnight Press, etc.) -->
+</html>
+```
+
+Without this attribute, the kit's `tokens.css` `prefers-color-scheme: dark` media query auto-flips a light-default style to dark colors when the reviewer's OS is in dark mode — turning a chosen white-canvas into black silently. The attribute opts OUT of system-preference auto-switching and pins the screen to the picked style's authored mode.
+
+The `design-system-preview.html` already follows this convention (`<html lang="en" data-theme="light">`). Match it on every screen so the reviewer sees the same chrome on both surfaces.
 
 **Path-depth reminder:** screens live at `docs/screens/{platform}/{screen-id}.html` — 3 directory hops from project root. Relative paths from that depth are:
 
@@ -310,6 +330,12 @@ Before writing each `*.html`, grep the generated HTML against the same banned-pa
 - `grep -c 'globals.css' <file>` MUST return ≥1 — kit tokens are linked
 
 If any of these three return 0, the screen will render unstyled in a browser even though every other check passes (Tailwind classes don't resolve without the CDN compiler). This is a SILENT failure mode — anti-slop's mechanical regex set passes because the class names are valid Tailwind syntax, just unresolved. The bootstrap-presence check is the only programmatic catch before a human opens the file and sees a blank page.
+
+**Plus the theme-opt-out presence check (refactor-007.1 — silent-dark-mode-flip guard):**
+
+- `grep -E '<html[^>]*\sdata-theme="(light|dark)"' <file>` MUST match — root `<html>` element pins to a theme matching the picked style's authored mode (light-default → `data-theme="light"`; dark-default → `data-theme="dark"`).
+
+Without this, the kit's `tokens.css` `prefers-color-scheme: dark` media query auto-flips a light-default style to dark colors when the reviewer's OS is in dark mode (and vice-versa). The user picked one mode at gate 2; auto-flipping that choice based on system preference is silent visual drift — it makes the screen look fundamentally different from the design-system-preview.html (which DOES set the attribute) and from what the user approved at gate 3. This check is the only programmatic catch before a human opens the file and sees a black-on-light or white-on-dark surprise.
 
 One in-skill regeneration retry per violation. Emit with warnings on second failure — Layer 6 (032b `/verify-html`) + Layer 7 (025b `/visual-review`) are the safety nets.
 
