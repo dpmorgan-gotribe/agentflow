@@ -450,3 +450,11 @@ In refresh mode with `--reset-brief`, `overwritten` includes `brief.md`.
   return `{ success: false }` with the git error. Do NOT leave partial
   `.claude/` copies behind if this is the only failure — but also don't
   recursively delete without confirmation. Let the user clean up and retry.
+
+## See also
+
+- `/delete-project <name>` — the inverse op. Removes
+  `projects/<name>/`, prunes registered git worktrees, and sweeps
+  `proposals/<name>-proposal.md` + `projects/<name>*.git/` siblings.
+  Preview-by-default; pass `--yes` to commit, `--dry-run` to print
+  only.

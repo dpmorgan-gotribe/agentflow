@@ -187,7 +187,15 @@ export interface FeatureGraphResult {
   featureResults: Record<string, FeatureResult>;
 }
 
-const TASK_RETRY_CAP = 3;
+// Per-task retry cap. Set to 1 (fast-fail) during the autonomous-Mode-B
+// stabilization phase (bug-002, 2026-04-25): the kanban-webapp run burned
+// $6.52 retrying a hard write-permission denial 3× before the orchestrator
+// gave up. Until Mode B has a clean end-to-end success on a real project,
+// we'd rather pay $2 to discover a structural failure than $6. Restore to 3
+// once the next /start-build run completes ≥1 feature autonomously and we've
+// confirmed the retry path is exercising recoverable failures (transient API
+// errors, etc.) rather than masking config gaps.
+const TASK_RETRY_CAP = 1;
 const MERGE_CONFLICT_CAP = 3;
 
 /**

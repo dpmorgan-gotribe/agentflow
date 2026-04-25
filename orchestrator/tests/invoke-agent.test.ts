@@ -1,5 +1,6 @@
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -121,6 +122,18 @@ beforeEach(() => {
     globalYaml,
     `defaults:\n  build: claude-sonnet-4-6\nagents:\n  backend-builder: { tier: build, effort: medium, budgetUsd: 2 }\n  tester: { tier: build, effort: medium, budgetUsd: 2 }\n  reviewer: { tier: build, effort: medium, budgetUsd: 2 }\n`,
   );
+  // bug-002: seedWorktree reads <projectRoot>/.claude/hooks/. Stub the 4 required
+  // hook scripts so the checkout-feature test fixtures match real-project shape.
+  const hooksDir = join(projectRoot, ".claude", "hooks");
+  mkdirSync(hooksDir, { recursive: true });
+  for (const h of [
+    "block-dangerous.sh",
+    "detect-loop.mjs",
+    "enforce-boundaries.sh",
+    "validate-brief.mjs",
+  ]) {
+    writeFileSync(join(hooksDir, h), "# stub\n", "utf8");
+  }
 });
 
 afterEach(() => {
@@ -435,6 +448,270 @@ describe("invokeAgent — git-agent failure paths", () => {
       success: false,
       reason: "branch-conflict",
     });
+  });
+});
+
+// ─── bug-002 — seedWorktree behavior ─────────────────────────────────
+//
+// After git worktree add succeeds, runCheckoutFeature MUST:
+//  1. Copy <projectRoot>/.claude/hooks/ → <worktree>/.claude/hooks/ (so
+//     PreToolUse hooks resolve to real scripts inside the worktree)
+//  2. Amend <worktree>/.claude/settings.json with permissions.allow entries
+//     for Write(*)/Edit(*)/MultiEdit(*) etc. (so autonomous Mode B agents
+//     can write files without an interactive approval prompt)
+//  3. Self-verify both before returning success
+describe("invokeAgent — checkout-feature seeds worktree (bug-002)", () => {
+  it("copies all 4 hook scripts into the worktree", async () => {
+    const budget = mkBudget();
+    const execGit = makeExecGit([
+      { match: /git worktree add/, stdout: "Preparing worktree\n" },
+    ]);
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "checkout-feature",
+        worktree: "feat-auth",
+        branch: "feat/auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "checkout-feature",
+      success: true,
+    });
+    const worktreeHooks = join(
+      projectRoot,
+      ".claude",
+      "worktrees",
+      "feat-auth",
+      ".claude",
+      "hooks",
+    );
+    for (const h of [
+      "block-dangerous.sh",
+      "detect-loop.mjs",
+      "enforce-boundaries.sh",
+      "validate-brief.mjs",
+    ]) {
+      expect(existsSync(join(worktreeHooks, h))).toBe(true);
+    }
+  });
+
+  it("amends worktree settings.json with autonomous-mode permissions.allow", async () => {
+    const budget = mkBudget();
+    const execGit = makeExecGit([
+      { match: /git worktree add/, stdout: "Preparing worktree\n" },
+    ]);
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      execGit,
+    });
+    await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "checkout-feature",
+        worktree: "feat-auth",
+        branch: "feat/auth",
+        featureId: "feat-auth",
+      },
+    });
+    const settingsPath = join(
+      projectRoot,
+      ".claude",
+      "worktrees",
+      "feat-auth",
+      ".claude",
+      "settings.json",
+    );
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+    expect(settings.permissions?.allow).toEqual(
+      expect.arrayContaining([
+        "Write(*)",
+        "Edit(*)",
+        "MultiEdit(*)",
+        "Bash(*)",
+        "Read(*)",
+        "Glob(*)",
+        "Grep(*)",
+      ]),
+    );
+  });
+
+  it("preserves pre-existing permissions.allow entries (idempotent merge)", async () => {
+    const budget = mkBudget();
+    const worktreeSettings = join(
+      projectRoot,
+      ".claude",
+      "worktrees",
+      "feat-auth",
+      ".claude",
+      "settings.json",
+    );
+    // Custom execGit: when `git worktree add` fires, materialize the worktree
+    // dir + a project-style restrictive settings.json (like real git would
+    // copy from the project root). This keeps the pre-flight existsSync check
+    // true (no stale-worktree) but seeds the worktree state seedWorktree
+    // amends.
+    const execGit: ExecGitFn = async (cmd) => {
+      if (/git worktree add/.test(cmd)) {
+        mkdirSync(
+          join(projectRoot, ".claude", "worktrees", "feat-auth", ".claude"),
+          { recursive: true },
+        );
+        writeFileSync(
+          worktreeSettings,
+          JSON.stringify(
+            {
+              hooks: { PreToolUse: [] },
+              permissions: {
+                allow: ["Read(*)", "Bash(git status)", "Bash(pnpm test *)"],
+                deny: ["Bash(rm *)"],
+              },
+            },
+            null,
+            2,
+          ),
+        );
+        return { stdout: "Preparing worktree\n", stderr: "", code: 0 };
+      }
+      throw new Error(`unexpected execGit call: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      execGit,
+    });
+    await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "checkout-feature",
+        worktree: "feat-auth",
+        branch: "feat/auth",
+        featureId: "feat-auth",
+      },
+    });
+    const result = JSON.parse(readFileSync(worktreeSettings, "utf8"));
+    // Pre-existing entries preserved
+    expect(result.permissions.allow).toContain("Read(*)");
+    expect(result.permissions.allow).toContain("Bash(git status)");
+    expect(result.permissions.allow).toContain("Bash(pnpm test *)");
+    // Pre-existing deny preserved
+    expect(result.permissions.deny).toContain("Bash(rm *)");
+    // New autonomous-mode entries added
+    expect(result.permissions.allow).toContain("Write(*)");
+    expect(result.permissions.allow).toContain("Edit(*)");
+    expect(result.permissions.allow).toContain("MultiEdit(*)");
+    // No duplicates: Read(*) appears exactly once
+    const reads = result.permissions.allow.filter(
+      (p: string) => p === "Read(*)",
+    );
+    expect(reads).toHaveLength(1);
+  });
+
+  it("returns missing-project-hooks when projectRoot lacks .claude/hooks/", async () => {
+    // Override the beforeEach seeding by removing the hooks dir
+    rmSync(join(projectRoot, ".claude", "hooks"), {
+      recursive: true,
+      force: true,
+    });
+    const budget = mkBudget();
+    const execGit = makeExecGit([
+      { match: /git worktree add/, stdout: "Preparing worktree\n" },
+    ]);
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "checkout-feature",
+        worktree: "feat-auth",
+        branch: "feat/auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "checkout-feature",
+      success: false,
+      reason: "missing-project-hooks",
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((result.gitAgentOutput as any).detail).toMatch(/hooks/);
+  });
+
+  it("returns worktree-seed-failed when pre-seeded settings.json is malformed", async () => {
+    const budget = mkBudget();
+    const worktreeSettings = join(
+      projectRoot,
+      ".claude",
+      "worktrees",
+      "feat-auth",
+      ".claude",
+      "settings.json",
+    );
+    // Custom execGit: simulate `git worktree add` materializing a worktree
+    // whose settings.json is malformed JSON. seedWorktree should fail loudly
+    // rather than silently writing over it.
+    const execGit: ExecGitFn = async (cmd) => {
+      if (/git worktree add/.test(cmd)) {
+        mkdirSync(
+          join(projectRoot, ".claude", "worktrees", "feat-auth", ".claude"),
+          { recursive: true },
+        );
+        writeFileSync(worktreeSettings, "{ this is not valid json", "utf8");
+        return { stdout: "Preparing worktree\n", stderr: "", code: 0 };
+      }
+      throw new Error(`unexpected execGit call: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "checkout-feature",
+        worktree: "feat-auth",
+        branch: "feat/auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "checkout-feature",
+      success: false,
+      reason: "worktree-seed-failed",
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((result.gitAgentOutput as any).detail).toMatch(/JSON/i);
   });
 });
 

@@ -31,7 +31,10 @@ export type RetryTier = (typeof RETRY_TIERS)[number];
 export const RETRY_CAPS: Record<RetryTier, number> = {
   layer5: 3,
   "visual-review": 3,
-  "task-retry": 3,
+  // bug-002: task-retry lowered from 3 → 1 (fast-fail debug mode). See the
+  // matching note above TASK_RETRY_CAP in feature-graph.ts. Restore to 3 once
+  // Mode B has a clean autonomous run on a real project.
+  "task-retry": 1,
   "merge-conflict": 3,
   "kit-change-request": 2,
 };

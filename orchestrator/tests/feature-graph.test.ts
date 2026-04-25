@@ -287,7 +287,10 @@ describe("runFeature — happy path", () => {
 });
 
 describe("runFeature — per-task retry", () => {
-  it("retries failed tasks up to 3 times then fails the feature", async () => {
+  // bug-002: TASK_RETRY_CAP was lowered from 3 → 1 for fast-fail debug mode.
+  // When the cap is restored to 3 (post Mode-B-stable), update the assertion
+  // below from .toBe(1) → .toBe(3).
+  it("retries failed tasks up to TASK_RETRY_CAP times then fails the feature", async () => {
     const feature = buildFeature({
       agent_sequence: ["backend-builder"],
       tasks: [
@@ -324,8 +327,8 @@ describe("runFeature — per-task retry", () => {
     const result = await runFeature(feature, ctx);
     expect(result.status).toBe("failed");
     expect(result.abortReason).toContain("task flaky-api failed");
-    // initial + 3 retries = 4 calls; retry-counter caps at 3 increments
-    expect(ctx.retryCounters.get("task-retry", "feat-auth/flaky-api")).toBe(3);
+    // bug-002: TASK_RETRY_CAP=1 — initial + 1 retry = 2 calls; counter caps at 1
+    expect(ctx.retryCounters.get("task-retry", "feat-auth/flaky-api")).toBe(1);
   });
 
   it("succeeds if a task passes on retry", async () => {

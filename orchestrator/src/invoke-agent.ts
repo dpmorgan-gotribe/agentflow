@@ -1,5 +1,12 @@
 import { exec } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -185,6 +192,20 @@ async function runCheckoutFeature(
     };
   }
 
+  // bug-002: seed worktree with .claude/hooks/ + permissions allow-list so
+  // autonomous Mode B agents can actually Write/Edit/MultiEdit. Without this,
+  // every agent invocation hits the harness permission layer (no human to
+  // approve the prompt) and burns retries until the feature is marked failed.
+  const seedResult = seedWorktree(projectRoot, worktreePath);
+  if (!seedResult.ok) {
+    return {
+      op: "checkout-feature",
+      success: false,
+      reason: seedResult.reason,
+      detail: seedResult.detail,
+    };
+  }
+
   // Write lockfile
   mkdirSync(dirname(lockfilePath), { recursive: true });
   const lock = {
@@ -203,6 +224,174 @@ async function runCheckoutFeature(
     branch: gitOp.branch,
     featureId: gitOp.featureId,
   };
+}
+
+/**
+ * bug-002: seed a freshly-created worktree with the runtime artefacts that
+ * autonomous Mode B agents need to actually write code. Two structural gaps
+ * are closed here:
+ *
+ *  1. `.claude/hooks/` is gitignored at project level (per agenticVisibility:
+ *     private), so `git worktree add` does NOT bring it along. The agent SDK
+ *     reads PreToolUse hooks from `<worktree>/.claude/settings.json` which
+ *     references `$CLAUDE_PROJECT_DIR/.claude/hooks/<script>` — those scripts
+ *     don't exist in the worktree → every PreToolUse hook fails → tool call
+ *     blocked. Fix: copy the hooks dir into the worktree.
+ *
+ *  2. The project root's `.claude/settings.json` is intentionally restrictive
+ *     (Read/Grep/Glob + specific Bash patterns; no Write/Edit/MultiEdit) — it
+ *     was designed for human-driven Claude Code sessions where each Write
+ *     triggers an interactive approval prompt. In autonomous Mode B there's no
+ *     human to approve → hard deny. Fix: amend the WORKTREE's settings.json
+ *     (NOT the project root) with an additional permissions.allow block
+ *     granting Write(*)/Edit(*)/MultiEdit(*). The project root stays restrictive
+ *     for human use; only the worktree (autonomous-only context) gets the
+ *     permissive block. Idempotent: existing entries are preserved.
+ *
+ * Returns `{ ok: true }` on success or a `CheckoutFeatureFailure`-shaped
+ * `reason` + `detail` for the orchestrator to bubble up.
+ */
+type SeedResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: "missing-project-hooks" | "worktree-seed-failed";
+      detail: string;
+    };
+
+const REQUIRED_HOOKS = [
+  "block-dangerous.sh",
+  "detect-loop.mjs",
+  "enforce-boundaries.sh",
+  "validate-brief.mjs",
+] as const;
+
+const REQUIRED_AUTONOMOUS_PERMISSIONS = [
+  "Write(*)",
+  "Edit(*)",
+  "MultiEdit(*)",
+  "Bash(*)",
+  "Read(*)",
+  "Glob(*)",
+  "Grep(*)",
+] as const;
+
+function seedWorktree(projectRoot: string, worktreePath: string): SeedResult {
+  // Step 1: confirm the project actually has the hooks dir to copy.
+  const projectHooks = join(projectRoot, ".claude", "hooks");
+  if (!existsSync(projectHooks)) {
+    return {
+      ok: false,
+      reason: "missing-project-hooks",
+      detail: `expected hooks at ${projectHooks} — run /new-project to re-seed the project`,
+    };
+  }
+
+  // Step 2: copy hooks into the worktree.
+  const worktreeHooks = join(worktreePath, ".claude", "hooks");
+  try {
+    mkdirSync(dirname(worktreeHooks), { recursive: true });
+    cpSync(projectHooks, worktreeHooks, { recursive: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      reason: "worktree-seed-failed",
+      detail: `cpSync hooks failed: ${msg}`,
+    };
+  }
+
+  // Step 3: amend the worktree's settings.json with an autonomous-mode
+  // permissions.allow block. Read-modify-write is idempotent — existing
+  // entries are preserved; missing required entries are appended.
+  const worktreeSettingsPath = join(worktreePath, ".claude", "settings.json");
+  try {
+    type SettingsShape = {
+      permissions?: { allow?: string[]; deny?: string[] };
+      [k: string]: unknown;
+    };
+    let settings: SettingsShape;
+    if (existsSync(worktreeSettingsPath)) {
+      const raw = readFileSync(worktreeSettingsPath, "utf8");
+      try {
+        settings = JSON.parse(raw) as SettingsShape;
+      } catch (parseErr) {
+        const msg =
+          parseErr instanceof Error ? parseErr.message : String(parseErr);
+        return {
+          ok: false,
+          reason: "worktree-seed-failed",
+          detail: `worktree settings.json is malformed JSON: ${msg}`,
+        };
+      }
+    } else {
+      // Worktree settings.json absent (defensive — should not happen in real
+      // git, but possible under stubbed tests). Seed a minimal one.
+      mkdirSync(dirname(worktreeSettingsPath), { recursive: true });
+      settings = {};
+    }
+
+    settings.permissions ??= {};
+    const existing = Array.isArray(settings.permissions.allow)
+      ? settings.permissions.allow
+      : [];
+    const merged = [...existing];
+    for (const p of REQUIRED_AUTONOMOUS_PERMISSIONS) {
+      if (!merged.includes(p)) merged.push(p);
+    }
+    settings.permissions.allow = merged;
+
+    writeFileSync(
+      worktreeSettingsPath,
+      `${JSON.stringify(settings, null, 2)}\n`,
+      "utf8",
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      reason: "worktree-seed-failed",
+      detail: `settings.json amendment failed: ${msg}`,
+    };
+  }
+
+  // Step 4: self-verify. If any of these trip, the worktree is in a state
+  // that would silently fail under autonomous dispatch — fail loudly here
+  // instead.
+  for (const hook of REQUIRED_HOOKS) {
+    if (!existsSync(join(worktreeHooks, hook))) {
+      return {
+        ok: false,
+        reason: "worktree-seed-failed",
+        detail: `self-verify: hook ${hook} missing from worktree after copy`,
+      };
+    }
+  }
+  try {
+    const verifyRaw = readFileSync(worktreeSettingsPath, "utf8");
+    const verifyParsed = JSON.parse(verifyRaw) as {
+      permissions?: { allow?: string[] };
+    };
+    const allow = verifyParsed.permissions?.allow ?? [];
+    for (const p of REQUIRED_AUTONOMOUS_PERMISSIONS) {
+      if (!allow.includes(p)) {
+        return {
+          ok: false,
+          reason: "worktree-seed-failed",
+          detail: `self-verify: permissions.allow missing required entry ${p}`,
+        };
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      reason: "worktree-seed-failed",
+      detail: `self-verify: settings.json read-back failed: ${msg}`,
+    };
+  }
+
+  return { ok: true };
 }
 
 async function runCloseFeature(

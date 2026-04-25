@@ -44,8 +44,14 @@ const CheckoutFeatureSuccess = z.object({
 const CheckoutFeatureFailure = z.object({
   op: z.literal("checkout-feature"),
   success: z.literal(false),
-  reason: z.enum(["branch-conflict", "stale-worktree"]),
+  reason: z.enum([
+    "branch-conflict",
+    "stale-worktree",
+    "missing-project-hooks",
+    "worktree-seed-failed",
+  ]),
   existingWorktree: z.string().optional(),
+  detail: z.string().optional(),
 });
 
 // close-feature — success (no conflict)
