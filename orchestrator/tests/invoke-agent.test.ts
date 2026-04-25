@@ -831,6 +831,239 @@ describe("invokeAgent — builder SDK error", () => {
   });
 });
 
+// ─── bug-003 — BuilderOutput canonical-shape parsing ────────────────
+//
+// All 3 builder agents (backend, web-frontend, mobile-frontend) emit
+// `BuilderOutput` per packages/orchestrator-contracts/src/builder.ts:
+//   { tier, success, tasksCompleted: [...], tasksFailed: [...], tasksSkipped: [...],
+//     totalFilesWritten, headSha, lintPassed, typecheckPassed, testsPassed, ... }
+//
+// The legacy `taskOutcomes: { id: status }` shape is preserved as a
+// back-compat fallback for tester / reviewer outputs and existing test
+// fixtures.
+describe("invokeAgent — BuilderOutput canonical-shape parsing (bug-003)", () => {
+  function builderOutputFixture(overrides: {
+    tier?: "backend" | "web" | "mobile";
+    tasksCompleted?: Array<{
+      taskId: string;
+      status?: "completed";
+      filesWritten?: string[];
+      testsWritten?: string[];
+      coverageBuilderScope?: number;
+      commitSha?: string | null;
+    }>;
+    tasksFailed?: Array<{
+      taskId: string;
+      status?: "failed";
+      filesWritten?: string[];
+      testsWritten?: string[];
+      coverageBuilderScope?: number;
+      commitSha?: string | null;
+      errors?: string;
+    }>;
+    tasksSkipped?: Array<{
+      taskId: string;
+      status?: "skipped";
+      filesWritten?: string[];
+      testsWritten?: string[];
+      coverageBuilderScope?: number;
+      commitSha?: string | null;
+    }>;
+  }) {
+    const norm = (
+      arr: Array<{ taskId: string; [k: string]: unknown }> | undefined,
+      defaultStatus: "completed" | "failed" | "skipped",
+    ) =>
+      (arr ?? []).map((r) => ({
+        taskId: r.taskId,
+        status: r.status ?? defaultStatus,
+        filesWritten: r.filesWritten ?? [],
+        testsWritten: r.testsWritten ?? [],
+        coverageBuilderScope: r.coverageBuilderScope ?? 80,
+        commitSha: r.commitSha ?? null,
+        ...(r.errors !== undefined ? { errors: r.errors } : {}),
+      }));
+    return {
+      tier: overrides.tier ?? "web",
+      success: true,
+      stackSlug: "react-next",
+      featureId: "feat-auth",
+      tasksCompleted: norm(overrides.tasksCompleted, "completed"),
+      tasksFailed: norm(overrides.tasksFailed, "failed"),
+      tasksSkipped: norm(overrides.tasksSkipped, "skipped"),
+      totalFilesWritten: 5,
+      totalTestsWritten: 3,
+      avgCoverageBuilderScope: 82,
+      lintPassed: true,
+      typecheckPassed: true,
+      testsPassed: true,
+      headSha: "abc1234",
+      warnings: [],
+    };
+  }
+
+  it("happy path: all tasks reported in tasksCompleted → all completed", async () => {
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      structured_output: builderOutputFixture({
+        tier: "web",
+        tasksCompleted: [
+          { taskId: "t1", filesWritten: ["apps/web/app/page.tsx"] },
+          { taskId: "t2", filesWritten: ["apps/web/lib/store.ts"] },
+        ],
+      }),
+      total_cost_usd: 0.25,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1, task2],
+    });
+    expect(result.taskStatus).toEqual({ t1: "completed", t2: "completed" });
+    expect(result.errors).toEqual({});
+  });
+
+  it("mixed: some completed, some failed → propagates per-task errors string", async () => {
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      structured_output: builderOutputFixture({
+        tier: "backend",
+        tasksCompleted: [{ taskId: "t1" }],
+        tasksFailed: [
+          { taskId: "t2", errors: "typecheck: missing import 'foo'" },
+        ],
+      }),
+      total_cost_usd: 0.25,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1, task2],
+    });
+    expect(result.taskStatus).toEqual({ t1: "completed", t2: "failed" });
+    expect(result.errors.t2).toBe("typecheck: missing import 'foo'");
+  });
+
+  it("skipped tasks are not failures — orchestrator advances", async () => {
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      structured_output: builderOutputFixture({
+        tier: "mobile",
+        tasksCompleted: [{ taskId: "t1" }],
+        tasksSkipped: [{ taskId: "t2" }],
+      }),
+      total_cost_usd: 0.25,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1, task2],
+    });
+    // Skipped tasks count as completed in taskStatus (the orchestrator's
+    // per-task retry loop only branches on "failed" — see
+    // feature-graph.ts:316-355).
+    expect(result.taskStatus).toEqual({ t1: "completed", t2: "completed" });
+    expect(result.errors).toEqual({});
+  });
+
+  it("dispatched task absent from all 3 arrays → marked failed with precise error", async () => {
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      structured_output: builderOutputFixture({
+        tier: "web",
+        tasksCompleted: [{ taskId: "t1" }],
+        // t2 dispatched but agent forgot to report on it
+      }),
+      total_cost_usd: 0.25,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1, task2],
+    });
+    expect(result.taskStatus).toEqual({ t1: "completed", t2: "failed" });
+    expect(result.errors.t2).toBe("agent did not report outcome");
+  });
+
+  it("totally unparseable JSON → both shapes fail; surfaces zod hint in error string", async () => {
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      structured_output: { foo: "bar", baz: 42 }, // matches neither shape
+      total_cost_usd: 0.25,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    expect(result.taskStatus.t1).toBe("failed");
+    // The error string carries a zod-hint (per bug-003 attempt-1 lesson —
+    // silent "no parseable outcome JSON" cost $6.52 to diagnose; including
+    // a zod hint shaves the next debug cycle).
+    expect(result.errors.t1).toContain("BuilderOutput zod");
+  });
+});
+
 describe("invokeAgent — budget exceeded pre-call", () => {
   it("throws BudgetExceededError before invoking queryFn when tracker is at cap", async () => {
     const budget = mkBudget(1); // cap at $1

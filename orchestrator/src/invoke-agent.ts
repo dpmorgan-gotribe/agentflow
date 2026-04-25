@@ -20,7 +20,10 @@ import type {
   GitAgentOutput,
   Task,
 } from "@repo/orchestrator-contracts";
-import { GitAgentOutput as GitAgentOutputSchema } from "@repo/orchestrator-contracts";
+import {
+  BuilderOutput,
+  GitAgentOutput as GitAgentOutputSchema,
+} from "@repo/orchestrator-contracts";
 import { resolveAuthOptions } from "./auth-provider.js";
 import type { BudgetTracker } from "./budget-tracker.js";
 import type {
@@ -779,9 +782,32 @@ function extractStructuredOutput(result: SDKResultMessage): unknown {
 
 /**
  * Translate a parsed agent-output blob into the orchestrator's per-task
- * outcome map. Expected shape:
- *   { taskOutcomes: { "<task-id>": "completed" | "failed" }, errors?: {...} }
- * Missing task IDs are marked failed.
+ * outcome map.
+ *
+ * bug-003: two accepted shapes.
+ *
+ *   PRIMARY (canonical) — `BuilderOutput` per
+ *   `@repo/orchestrator-contracts/builder.ts`. Emitted by all 3 builder
+ *   agents (backend, web-frontend, mobile-frontend). Discriminated on `tier`.
+ *
+ *     {
+ *       tier: "web" | "backend" | "mobile",
+ *       success: true,
+ *       tasksCompleted: BuilderTaskResult[],
+ *       tasksFailed:    BuilderTaskResult[],
+ *       tasksSkipped:   BuilderTaskResult[],
+ *       ...other diagnostic fields
+ *     }
+ *
+ *   LEGACY (back-compat) — flat task-id → status map. Used by older agents
+ *   (tester, reviewer pre-bug-003) and by the orchestrator's own test
+ *   fixtures. Kept as a fallback so the parser stays permissive.
+ *
+ *     { taskOutcomes: { "<task-id>": "completed" | "failed" }, errors?: {...} }
+ *
+ * Tasks not reported in either shape default to `failed` with a precise error
+ * message. Skipped tasks (canonical only) are translated to `completed` —
+ * the orchestrator's per-task retry loop only branches on "failed".
  */
 function translateOutcomes(
   parsed: unknown,
@@ -801,6 +827,35 @@ function translateOutcomes(
     return { taskStatus, errors };
   }
 
+  // Primary: BuilderOutput canonical shape (zod-validated).
+  const builderParsed = BuilderOutput.safeParse(parsed);
+  if (builderParsed.success) {
+    const reported = new Set<string>();
+    for (const r of builderParsed.data.tasksCompleted) {
+      taskStatus[r.taskId] = "completed";
+      reported.add(r.taskId);
+    }
+    for (const r of builderParsed.data.tasksSkipped) {
+      // Skipped tasks aren't failures — orchestrator advances past them.
+      taskStatus[r.taskId] = "completed";
+      reported.add(r.taskId);
+    }
+    for (const r of builderParsed.data.tasksFailed) {
+      taskStatus[r.taskId] = "failed";
+      errors[r.taskId] = r.errors ?? "agent reported failed";
+      reported.add(r.taskId);
+    }
+    // Tasks dispatched to the agent but absent from all 3 arrays.
+    for (const t of tasks) {
+      if (!reported.has(t.id)) {
+        taskStatus[t.id] = "failed";
+        errors[t.id] = "agent did not report outcome";
+      }
+    }
+    return { taskStatus, errors };
+  }
+
+  // Legacy fallback: flat taskOutcomes map.
   const obj = parsed as {
     taskOutcomes?: unknown;
     errors?: unknown;
@@ -815,9 +870,17 @@ function translateOutcomes(
       : null;
 
   if (!rawOutcomes) {
+    // Neither shape matched. Surface the BuilderOutput zod error so future
+    // debugging is one step easier (per bug-003 attempt-1 lesson — silent
+    // "no parseable outcome JSON" cost $6.52 to diagnose).
+    const zodHint = builderParsed.error.issues
+      .slice(0, 3)
+      .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+      .join("; ");
     for (const t of tasks) {
       taskStatus[t.id] = "failed";
-      errors[t.id] = "agent produced no parseable outcome JSON";
+      errors[t.id] =
+        `agent produced no parseable outcome JSON (BuilderOutput zod: ${zodHint})`;
     }
     return { taskStatus, errors };
   }
