@@ -160,13 +160,26 @@ The chosen layout's PascalCase name is emitted as `data-kit-layout="AppShell"` o
 
 **4d. Use the `navigation` block** (from screens.json per-screen) to render header / footer / sidebar states. Match `header.variant`, `footer.variant`, `sidemenu.visible` + items + active-section exactly.
 
-**4e. CSS linkage.** Each HTML file's `<head>` contains exactly ONE stylesheet link:
+**4e. CSS linkage.** Each HTML file's `<head>` contains TWO things — a `<link>` to the kit's `globals.css` AND the kit's preview-bootstrap fragment (Tailwind Play CDN + inline `tailwind.config`). Both are required. Without the bootstrap, every Tailwind utility class (`bg-accent-500`, `font-display`, `rounded-md`, etc.) resolves to nothing and the screen renders unstyled — the kit's `globals.css` only provides token CSS variables + a base reset, NOT compiled Tailwind utilities.
 
 ```html
+<!-- 1. Kit tokens + reset + Google Fonts (CSS variable definitions) -->
 <link rel="stylesheet" href="../../../packages/ui-kit/src/styles/globals.css" />
+
+<!-- 2. Tailwind Play CDN — compiles utility classes against the kit's theme -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  // The inline tailwind.config block is read verbatim from
+  // packages/ui-kit/src/styles/preview-bootstrap.html — do NOT hand-author.
+  tailwind.config = { /* kit-derived theme.extend referencing var(--color-*) */ };
+</script>
 ```
 
-(`globals.css` imports `tokens.css` + `fonts.css`.) No inline `<style>`. No external CSS beyond this single link. Anti-slop grep will fail the write otherwise.
+The script + config block come from `packages/ui-kit/src/styles/preview-bootstrap.html` — `/stylesheet` step 7 emits it. Read that file at `/screens` time and inline its contents verbatim after the `<link>`. **Do NOT hand-roll the script tag or the config object** — the file IS the contract; out-of-sync configs cause subtle palette drift across screens. If the file doesn't exist, abort with: `preview-bootstrap.html missing — re-run /stylesheet to regenerate.`
+
+No inline `<style>` blocks anywhere else. No external CSS beyond the kit's `globals.css` link + the Tailwind CDN script. Anti-slop checks (step 7) verify both the link AND the bootstrap presence.
+
+**Production-time builders are unaffected.** `/build-web` and `/build-mobile` translate HTML→JSX and run a real Tailwind build at app-build time. The Play CDN is preview-only — it makes design-pipeline HTML render correctly in a browser without a build step. Production apps don't ship the CDN.
 
 **Path-depth reminder:** screens live at `docs/screens/{platform}/{screen-id}.html` — 3 directory hops from project root. Relative paths from that depth are:
 
@@ -289,6 +302,14 @@ Before writing each `*.html`, grep the generated HTML against the same banned-pa
 - Arbitrary Tailwind values (`p-[13px]`, `text-[#FF0000]`) — forbidden per 022b's CONTRACT.md
 - Inline `style="..."` attributes containing hex values
 - Unstyled `<button>` / `<input>` with no `class` and no `data-kit-component`
+
+**Plus the preview-bootstrap presence check (refactor-007 — silent-styling-failure guard):**
+
+- `grep -c 'cdn.tailwindcss.com' <file>` MUST return ≥1 — Tailwind Play CDN script is in `<head>`
+- `grep -c 'tailwind.config' <file>` MUST return ≥1 — inline config block is in `<head>`
+- `grep -c 'globals.css' <file>` MUST return ≥1 — kit tokens are linked
+
+If any of these three return 0, the screen will render unstyled in a browser even though every other check passes (Tailwind classes don't resolve without the CDN compiler). This is a SILENT failure mode — anti-slop's mechanical regex set passes because the class names are valid Tailwind syntax, just unresolved. The bootstrap-presence check is the only programmatic catch before a human opens the file and sees a blank page.
 
 One in-skill regeneration retry per violation. Emit with warnings on second failure — Layer 6 (032b `/verify-html`) + Layer 7 (025b `/visual-review`) are the safety nets.
 

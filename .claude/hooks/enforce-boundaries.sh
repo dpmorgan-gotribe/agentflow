@@ -77,7 +77,29 @@ _normalize() {
 RESOLVED_CMP=$(_normalize "$RESOLVED")
 PROJECT_CMP=$(_normalize "$PROJECT_RESOLVED")
 
-if [[ "$RESOLVED_CMP" != "$PROJECT_CMP" && "$RESOLVED_CMP" != "$PROJECT_CMP"/* ]]; then
+# Allowlist: harness-owned per-project state lives outside the project tree.
+# Specifically, the auto-memory system writes to
+# `$HOME/.claude/projects/{slug}/memory/**` and the project-state directory
+# `$HOME/.claude/projects/{slug}/**`. These are managed by the Claude Code
+# harness, not project content — but they ARE project-scoped (harness derives
+# the slug from $CLAUDE_PROJECT_DIR). Allow writes underneath them so
+# /memory edits, ScheduleWakeup state, etc. work without bypassing the hook
+# globally. The sensitive-file basename check (below) still applies to these
+# paths — so a write to `~/.claude/projects/X/memory/.env` is still blocked.
+HOME_NORM=""
+if [[ -n "${HOME:-}" ]]; then
+  HOME_NORM=$(_normalize "$HOME")
+fi
+ALLOWED_HARNESS_PREFIX=""
+if [[ -n "$HOME_NORM" ]]; then
+  ALLOWED_HARNESS_PREFIX="${HOME_NORM}/.claude/projects"
+fi
+
+if [[ -n "$ALLOWED_HARNESS_PREFIX" \
+      && ( "$RESOLVED_CMP" == "$ALLOWED_HARNESS_PREFIX" \
+        || "$RESOLVED_CMP" == "$ALLOWED_HARNESS_PREFIX"/* ) ]]; then
+  : # allowed — fall through to sensitive-file basename check
+elif [[ "$RESOLVED_CMP" != "$PROJECT_CMP" && "$RESOLVED_CMP" != "$PROJECT_CMP"/* ]]; then
   echo "BLOCKED: write outside project directory" >&2
   echo "  project: $PROJECT_RESOLVED" >&2
   echo "  target:  $RESOLVED" >&2

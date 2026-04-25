@@ -144,6 +144,10 @@ Invoke the `ui-designer` agent for each `(app, archetype)` pair under style K. T
 - The matching wireframe image from `assets/wireframes/` if `asset-inventory.json.wireframes[]` lists one for this screen (agent consumes via vision)
 - Mood context from `inspirations.md` (1-2 relevant reference cites)
 - Asset-inventory fields for user assets that must be used verbatim
+- **Tailwind preview-bootstrap requirement (refactor-007 — load-bearing).** Every emitted mockup HTML MUST include the Tailwind Play CDN `<script>` + an inline `<script>tailwind.config = {...}</script>` block in `<head>`. Without these, any Tailwind utility class the mockup uses (`bg-accent-500`, `font-display`, `rounded-md`, etc.) resolves to nothing and the mockup renders unstyled — a silent failure that anti-slop greps cannot catch. Two acceptable patterns:
+  1. **Self-contained mockup** (legacy / pre-`/stylesheet`): the `ui-designer` inlines the script tags + a hand-authored `tailwind.config` mirroring the style's palette directly in `<head>`. Acceptable for `/mockups` runs that fire BEFORE `/stylesheet` has produced the kit.
+  2. **Bootstrap-fragment inlined**: when `packages/ui-kit/src/styles/preview-bootstrap.html` exists (post-`/stylesheet`), inline its contents verbatim. Future `/screens` runs use this same fragment — keeping mockups + screens visually identical at preview time.
+  In either pattern, the mockup MUST be openable in a browser via `file://` and render with the style's palette + typography + spacing applied. Verify in Pass 2 by spot-checking one rendered file (or via the chrome-devtools MCP if scoped).
 - Instruction to emit ASSET MARKERS where external imagery / fonts / icons belong:
   - `{{FONT:Geist}}` — font family placeholder (resolved to Google Fonts `<link>` in pass 2)
   - `{{ICON:chevron-right}}` — icon placeholder (resolved to inline SVG via Icons8 MCP or user asset)
@@ -214,6 +218,7 @@ Before writing any `*.html` file, grep the generated HTML against these banned p
 - **Placeholder leakage**: `TODO`, `[insert X]`, `REPLACE_ME`, `Lorem ipsum`
 - **3-col card grid as default**: skipped unless `components` list explicitly requires it
 - **Unstyled defaults**: `<button>` / `<input>` elements with no `class` attribute
+- **Tailwind preview-bootstrap presence** (refactor-007 — silent-styling-failure guard): `grep -c 'cdn.tailwindcss.com' <file>` MUST return ≥1 AND `grep -c 'tailwind.config' <file>` MUST return ≥1. Without both, every Tailwind class in the mockup resolves to nothing in a browser and the page renders unstyled. The other anti-slop checks pass regardless because they're regex-mechanical — only the bootstrap-presence check catches this category. Use a sibling mockup or `packages/ui-kit/src/styles/preview-bootstrap.html` (when it exists) as the source of truth for the script tags.
 
 On any match:
 
