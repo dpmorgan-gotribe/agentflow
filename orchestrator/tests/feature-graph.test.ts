@@ -327,8 +327,10 @@ describe("runFeature — per-task retry", () => {
     const result = await runFeature(feature, ctx);
     expect(result.status).toBe("failed");
     expect(result.abortReason).toContain("task flaky-api failed");
-    // bug-002: TASK_RETRY_CAP=1 — initial + 1 retry = 2 calls; counter caps at 1
-    expect(ctx.retryCounters.get("task-retry", "feat-auth/flaky-api")).toBe(1);
+    // bug-008: TASK_RETRY_CAP restored 1 → 2 post-stabilization (was 1 during
+    // bug-002…007 fast-fail debug phase; now that the chain is stable we give
+    // transient SDK hiccups one extra retry).
+    expect(ctx.retryCounters.get("task-retry", "feat-auth/flaky-api")).toBe(2);
   });
 
   it("succeeds if a task passes on retry", async () => {

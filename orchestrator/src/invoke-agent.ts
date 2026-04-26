@@ -454,6 +454,68 @@ async function runCloseFeature(
   // instead of hardcoding "main".
   const defaultBranch = await detectDefaultBranch(projectRoot, execGit);
 
+  // bug-008 Phase 1: protect close-feature against dirty/untracked project
+  // root that would cause `git merge` to abort BEFORE touching HEAD with
+  // "your local changes would be overwritten by merge". This is the failure
+  // mode that killed every kanban-webapp validation run before bug-008 —
+  // pre-build snapshots ship with Mode A artifacts uncommitted; the
+  // orchestrator tries to merge feat/X (which has those same paths as
+  // tracked commits) into a default branch whose working tree has them as
+  // untracked files.
+  //
+  // Auto-commit any dirty/untracked state to the CURRENT branch (which is
+  // the default branch since we haven't checked out feat/X yet — the
+  // worktree is on feat/X, not the project root). Surfaces as a real
+  // commit on the default branch with a clear "factory: pre-merge snapshot"
+  // message so the operator can see/revert/squash it later.
+  try {
+    const preflightStatus = await execGit(
+      "git status --porcelain",
+      projectRoot,
+    );
+    if (preflightStatus.stdout.trim() !== "") {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[runCloseFeature] feature ${gitOp.featureId}: project root has dirty/untracked state — auto-committing pre-merge snapshot to ${defaultBranch}.`,
+      );
+      await execGit("git add -A", projectRoot);
+      // bug-005a tempfile pattern — cross-platform safe (no shell quoting).
+      const snapTmp = mkdtempSync(join(tmpdir(), "agentflow-snapshot-"));
+      const snapMsg = join(snapTmp, "MSG");
+      try {
+        writeFileSync(
+          snapMsg,
+          `factory: pre-merge snapshot before close-feature for ${gitOp.featureId}\n\nAuto-committed by orchestrator because project root had dirty/untracked state when close-feature ran. Files included here would otherwise have caused 'git merge' to abort with "your local changes would be overwritten by merge".`,
+          "utf8",
+        );
+        await execGit(`git commit -F ${shellQuote(snapMsg)}`, projectRoot);
+      } finally {
+        rmSync(snapTmp, { recursive: true, force: true });
+      }
+    }
+  } catch (err) {
+    // bug-008: if the snapshot commit itself fails (e.g., nothing to commit
+    // after add but status was non-empty due to gitignore weirdness, OR git
+    // refuses for another reason), surface as a clean close-feature failure
+    // instead of letting the downstream merge fail confusingly.
+    const msg = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[runCloseFeature] feature ${gitOp.featureId}: pre-merge snapshot failed: ${msg}`,
+    );
+    return {
+      op: "close-feature",
+      success: false,
+      conflict: true,
+      conflictingFiles: [
+        `<pre-merge-snapshot-failed>: ${msg}`,
+        `Hint: project root may have files that resist 'git add -A && git commit'. Inspect 'git status --porcelain' and resolve manually.`,
+      ],
+      lastWritingAgent: "unknown",
+      worktreePath,
+    };
+  }
+
   // Optional: fetch origin (ignore failure for local-only repos).
   try {
     await execGit(`git fetch origin ${shellQuote(defaultBranch)}`, projectRoot);
@@ -519,16 +581,66 @@ async function runCloseFeature(
     );
   }
 
+  // bug-008 diag: snapshot pre-merge state for the catch blocks below so
+  // we can see WHY a merge fails (uncommitted changes? branch state?
+  // actual conflict? something else?). Cheap to capture; invaluable when
+  // the merge fails for non-obvious reasons.
+  const snapshotState = async (label: string): Promise<string[]> => {
+    const lines: string[] = [`<${label}>`];
+    try {
+      const status = await execGit("git status --porcelain", projectRoot);
+      lines.push(`projectRoot status:\n${status.stdout || "(clean)"}`);
+    } catch (e) {
+      lines.push(
+        `projectRoot status FAILED: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    try {
+      const wtStatus = await execGit("git status --porcelain", worktreePath);
+      lines.push(`worktree status:\n${wtStatus.stdout || "(clean)"}`);
+    } catch (e) {
+      lines.push(
+        `worktree status FAILED: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    try {
+      const head = await execGit("git rev-parse --short HEAD", projectRoot);
+      lines.push(`projectRoot HEAD: ${head.stdout.trim()}`);
+    } catch {
+      /* skip */
+    }
+    try {
+      const wtHead = await execGit("git rev-parse --short HEAD", worktreePath);
+      lines.push(`worktree HEAD: ${wtHead.stdout.trim()}`);
+    } catch {
+      /* skip */
+    }
+    return lines;
+  };
+
   // Checkout default branch + merge feature branch.
   try {
     await execGit(`git checkout ${shellQuote(defaultBranch)}`, projectRoot);
   } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const stderr = (err as { stderr?: string })?.stderr ?? "";
+    const snapshot = await snapshotState("checkout-failed-state");
+    // bug-008 Phase 2: also surface to stdout so the orchestrator's exit
+    // message shows the cause (not just the resolve-conflict-handoff agent's
+    // prompt context). Future filesystem-archaeology debug sessions cost
+    // hours; a console.warn costs nothing.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[runCloseFeature] feature ${gitOp.featureId}: checkout-${defaultBranch} failed.\n${errMsg}\nstderr: ${stderr}\n${snapshot.join("\n")}`,
+    );
     return {
       op: "close-feature",
       success: false,
       conflict: true,
       conflictingFiles: [
-        `<checkout-${defaultBranch}-failed>: ${err instanceof Error ? err.message : String(err)}`,
+        `<checkout-${defaultBranch}-failed>: ${errMsg}`,
+        `stderr: ${stderr}`,
+        ...snapshot,
       ],
       lastWritingAgent: "unknown",
       worktreePath,
@@ -540,8 +652,15 @@ async function runCloseFeature(
       `git merge --no-ff ${shellQuote(branch)} -m "merge feat/${gitOp.featureId}"`,
       projectRoot,
     );
-  } catch {
-    // Conflict path — collect conflicting files, abort merge.
+  } catch (err) {
+    // bug-008 diag: capture FULL context (the err itself + pre-existing
+    // state + post-merge git status) so we can tell whether this was
+    // (a) a real file conflict, (b) "your local changes would be overwritten"
+    // because of dirty working tree, (c) some other git failure that the
+    // historical "<unknown-conflict-file>" sentinel hid completely.
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const stderr = (err as { stderr?: string })?.stderr ?? "";
+    const stdout = (err as { stdout?: string })?.stdout ?? "";
     let conflictingFiles: string[] = [];
     try {
       const res = await execGit(
@@ -553,21 +672,41 @@ async function runCloseFeature(
         .map((s) => s.trim())
         .filter(Boolean);
     } catch {
-      conflictingFiles = ["<unknown-conflict-file>"];
+      /* fall through — empty list signals no real-conflict files found */
     }
+    const postMergeSnapshot = await snapshotState("post-merge-failure-state");
     try {
       await execGit("git merge --abort", projectRoot);
     } catch {
       // best-effort
     }
+    const diagnostic: string[] = [];
+    if (conflictingFiles.length > 0) {
+      diagnostic.push(`conflictingFiles: ${conflictingFiles.join(", ")}`);
+    } else {
+      diagnostic.push(
+        "<no-files-in-diff-filter-U>: merge failed for a NON-conflict reason",
+      );
+    }
+    diagnostic.push(`merge stderr: ${stderr || "(empty)"}`);
+    diagnostic.push(`merge stdout: ${stdout || "(empty)"}`);
+    diagnostic.push(`merge err.message: ${errMsg}`);
+    diagnostic.push(...postMergeSnapshot);
+    // bug-008 Phase 2: surface the diagnostic to stdout — the
+    // resolve-conflict-handoff agent gets the same data via
+    // conflictingFiles[] but the orchestrator's exit message never showed it
+    // historically; that's why bug-008 took a manual reflog inspection to
+    // diagnose. Cheap to log; turns future merge-failure debug sessions from
+    // 30+ minutes of filesystem archaeology into a 30-second message read.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[runCloseFeature] feature ${gitOp.featureId}: merge failed.\n${diagnostic.join("\n")}`,
+    );
     return {
       op: "close-feature",
       success: false,
       conflict: true,
-      conflictingFiles:
-        conflictingFiles.length > 0
-          ? conflictingFiles
-          : ["<unknown-conflict-file>"],
+      conflictingFiles: diagnostic,
       lastWritingAgent: "unknown",
       worktreePath,
     };

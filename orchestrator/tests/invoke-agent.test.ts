@@ -222,7 +222,12 @@ describe("invokeAgent — git-agent happy paths", () => {
   it("close-feature (clean merge) returns mergeSha on success", async () => {
     const budget = mkBudget();
     const execGit = makeExecGit([
+      // bug-005b: detectDefaultBranch probes main first
+      { match: /git rev-parse main/, stdout: "abc1234\n" },
+      // bug-008: pre-flight check sees clean project root, skips auto-commit
+      { match: /git status --porcelain/, stdout: "" },
       { match: /git fetch origin main/, stdout: "" },
+      { match: /git rev-parse "?feat\/auth"?/, stdout: "deadbeef\n" },
       { match: /git checkout main/, stdout: "" },
       { match: /git merge --no-ff/, stdout: "Fast-forward\n" },
       {
@@ -261,17 +266,23 @@ describe("invokeAgent — git-agent happy paths", () => {
     const budget = mkBudget();
     const execGit = makeExecGit([
       { match: /git fetch origin main/, stdout: "" },
+      { match: /git rev-parse main/, stdout: "abc1234\n" },
+      { match: /git rev-parse "?feat\/auth"?/, stdout: "deadbeef\n" },
       { match: /git checkout main/, stdout: "" },
       {
         match: /git merge --no-ff/,
-        throwInstead: new Error(
-          "CONFLICT (content): Merge conflict in src/x.ts",
+        throwInstead: Object.assign(
+          new Error("CONFLICT (content): Merge conflict in src/x.ts"),
+          { stderr: "Auto-merging src/x.ts\nCONFLICT", stdout: "" },
         ),
       },
       {
         match: /git diff --name-only --diff-filter=U/,
         stdout: "src/x.ts\nsrc/y.ts\n",
       },
+      // bug-008 diag: snapshotState calls these for context.
+      { match: /git status --porcelain/, stdout: "" },
+      { match: /git rev-parse --short HEAD/, stdout: "abc1234\n" },
       { match: /git merge --abort/, stdout: "" },
     ]);
     const invoke = createInvokeAgent({
@@ -291,12 +302,19 @@ describe("invokeAgent — git-agent happy paths", () => {
         featureId: "feat-auth",
       },
     });
+    // bug-008 diag: conflictingFiles is now a richer array — first entry is
+    // the file list; subsequent entries are stderr/stdout/snapshot context.
     expect(result.gitAgentOutput).toMatchObject({
       op: "close-feature",
       success: false,
       conflict: true,
-      conflictingFiles: ["src/x.ts", "src/y.ts"],
     });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cf = (result.gitAgentOutput as any).conflictingFiles as string[];
+    expect(cf[0]).toContain("src/x.ts");
+    expect(cf[0]).toContain("src/y.ts");
+    expect(cf.some((s) => s.includes("merge stderr"))).toBe(true);
+    expect(cf.some((s) => s.includes("post-merge-failure-state"))).toBe(true);
   });
 
   it("emergency-abort cleans up worktree + lockfile + branch", async () => {
@@ -2091,6 +2109,10 @@ describe("runCloseFeature (bug-005b detectDefaultBranch)", () => {
       if (cmd === "git rev-parse master") {
         return { stdout: "abc1234\n", stderr: "", code: 0 };
       }
+      // bug-008 pre-flight: clean project root → no auto-commit
+      if (/git status --porcelain/.test(cmd)) {
+        return { stdout: "", stderr: "", code: 0 };
+      }
       // fetch / checkout master / merge — any pattern accepted.
       if (/git fetch origin master/.test(cmd)) {
         return { stdout: "", stderr: "", code: 0 };
@@ -2156,6 +2178,10 @@ describe("runCloseFeature (bug-005b detectDefaultBranch)", () => {
       if (cmd === "git symbolic-ref --short HEAD") {
         throw Object.assign(new Error("no HEAD ref"), { code: 128 });
       }
+      // bug-008 pre-flight: clean project root → no auto-commit
+      if (/git status --porcelain/.test(cmd)) {
+        return { stdout: "", stderr: "", code: 0 };
+      }
       // After fallback to "main", subsequent ops fire against main and fail.
       if (/git fetch origin main/.test(cmd)) {
         return { stdout: "", stderr: "", code: 0 };
@@ -2201,20 +2227,208 @@ describe("runCloseFeature (bug-005b detectDefaultBranch)", () => {
   });
 });
 
+// ─── bug-008 — close-feature pre-flight auto-commit ─────────────────
+//
+// runCloseFeature now does a pre-flight `git status --porcelain` on the
+// project root. If dirty/untracked, it auto-commits a "factory: pre-merge
+// snapshot" commit on the current branch BEFORE checking out the default
+// branch and merging. This protects against the failure mode where pre-build
+// project snapshots ship with uncommitted Mode A artifacts that would cause
+// `git merge` to abort with "your local changes would be overwritten".
+describe("runCloseFeature (bug-008 pre-flight auto-commit)", () => {
+  it("dirty project root → auto-commit snapshot fires before merge", async () => {
+    const calls: string[] = [];
+    const execGit: ExecGitFn = async (cmd) => {
+      calls.push(cmd);
+      if (/git rev-parse main/.test(cmd))
+        return { stdout: "abc1234\n", stderr: "", code: 0 };
+      if (/git status --porcelain/.test(cmd))
+        // Dirty: 1 modified file + 1 untracked file (mimics the kanban-webapp
+        // Mode A artifact pattern).
+        return {
+          stdout: " M brief.md\n?? .env.example\n",
+          stderr: "",
+          code: 0,
+        };
+      if (/git add -A/.test(cmd)) return { stdout: "", stderr: "", code: 0 };
+      if (/git commit -F/.test(cmd))
+        return {
+          stdout: "[master abc1234] factory: pre-merge snapshot\n",
+          stderr: "",
+          code: 0,
+        };
+      if (/git fetch origin main/.test(cmd))
+        return { stdout: "", stderr: "", code: 0 };
+      if (/git rev-parse "?feat\/auth"?/.test(cmd))
+        return { stdout: "deadbeef\n", stderr: "", code: 0 };
+      if (/git checkout main/.test(cmd))
+        return { stdout: "", stderr: "", code: 0 };
+      if (/git merge --no-ff/.test(cmd))
+        return {
+          stdout: "Merge made by the 'ort' strategy.\n",
+          stderr: "",
+          code: 0,
+        };
+      if (/git rev-parse HEAD/.test(cmd))
+        return {
+          stdout: "abc1234def5678901234567890abcdef12345678\n",
+          stderr: "",
+          code: 0,
+        };
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: true,
+    });
+    // Verify auto-commit fired (add + commit -F BEFORE the merge)
+    const addIdx = calls.findIndex((c) => /git add -A/.test(c));
+    const commitIdx = calls.findIndex((c) => /git commit -F/.test(c));
+    const mergeIdx = calls.findIndex((c) => /git merge --no-ff/.test(c));
+    expect(addIdx).toBeGreaterThan(-1);
+    expect(commitIdx).toBeGreaterThan(addIdx);
+    expect(mergeIdx).toBeGreaterThan(commitIdx);
+  });
+
+  it("clean project root → no auto-commit, merge proceeds normally", async () => {
+    const calls: string[] = [];
+    const execGit: ExecGitFn = async (cmd) => {
+      calls.push(cmd);
+      if (/git rev-parse main/.test(cmd))
+        return { stdout: "abc1234\n", stderr: "", code: 0 };
+      if (/git status --porcelain/.test(cmd))
+        return { stdout: "", stderr: "", code: 0 }; // clean
+      if (/git fetch origin main/.test(cmd))
+        return { stdout: "", stderr: "", code: 0 };
+      if (/git rev-parse "?feat\/auth"?/.test(cmd))
+        return { stdout: "deadbeef\n", stderr: "", code: 0 };
+      if (/git checkout main/.test(cmd))
+        return { stdout: "", stderr: "", code: 0 };
+      if (/git merge --no-ff/.test(cmd))
+        return { stdout: "Fast-forward\n", stderr: "", code: 0 };
+      if (/git rev-parse HEAD/.test(cmd))
+        return {
+          stdout: "abc1234def5678901234567890abcdef12345678\n",
+          stderr: "",
+          code: 0,
+        };
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: true,
+    });
+    // No auto-commit on clean state
+    expect(calls.some((c) => /git add -A/.test(c))).toBe(false);
+    expect(calls.some((c) => /git commit -F/.test(c))).toBe(false);
+  });
+
+  it("snapshot commit fails → returns clean failure with diagnostic", async () => {
+    const execGit: ExecGitFn = async (cmd) => {
+      if (/git rev-parse main/.test(cmd))
+        return { stdout: "abc1234\n", stderr: "", code: 0 };
+      if (/git status --porcelain/.test(cmd))
+        return {
+          stdout: " M brief.md\n",
+          stderr: "",
+          code: 0,
+        };
+      if (/git add -A/.test(cmd)) return { stdout: "", stderr: "", code: 0 };
+      if (/git commit -F/.test(cmd))
+        throw Object.assign(new Error("nothing to commit"), {
+          stderr: "nothing to commit, working tree clean",
+          code: 1,
+        });
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: false,
+      conflict: true,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cf = (result.gitAgentOutput as any).conflictingFiles as string[];
+    expect(cf[0]).toContain("pre-merge-snapshot-failed");
+    expect(cf.some((s) => s.includes("Hint:"))).toBe(true);
+  });
+});
+
 // ─── feat-018 Phase B: close-feature defensive checks ─────────────────
 
 describe("invokeAgent — close-feature feature-no-commits guard", () => {
   it("branch === main + dirty tree → returns feature-no-commits failure", async () => {
     const budget = mkBudget();
-    const execGit = makeExecGit([
-      { match: /git fetch origin main/, stdout: "" },
-      { match: /git rev-parse main/, stdout: "abc1234\n" },
-      { match: /git rev-parse feat\/auth/, stdout: "abc1234\n" },
-      {
-        match: /git status --porcelain/,
-        stdout: " M src/foo.ts\n?? src/bar.ts\n",
-      },
-    ]);
+    // bug-008: cwd-aware execGit — pre-flight calls git status from projectRoot
+    // (clean) and the feat-018 guard later calls it from the worktree (dirty).
+    const execGit: ExecGitFn = async (cmd, cwd) => {
+      if (/git rev-parse main/.test(cmd))
+        return { stdout: "abc1234\n", stderr: "", code: 0 };
+      if (/git rev-parse feat\/auth/.test(cmd))
+        return { stdout: "abc1234\n", stderr: "", code: 0 };
+      if (/git fetch origin main/.test(cmd))
+        return { stdout: "", stderr: "", code: 0 };
+      if (/git status --porcelain/.test(cmd)) {
+        // Project root clean (bug-008 pre-flight skips); worktree dirty (feat-018 guard fires)
+        if (cwd === projectRoot) return { stdout: "", stderr: "", code: 0 };
+        return {
+          stdout: " M src/foo.ts\n?? src/bar.ts\n",
+          stderr: "",
+          code: 0,
+        };
+      }
+      throw new Error(`unexpected execGit: ${cmd}`);
+    };
     const invoke = createInvokeAgent({
       projectRoot,
       budget,
@@ -2284,8 +2498,10 @@ describe("invokeAgent — close-feature feature-no-commits guard", () => {
   it("branch !== main → existing code path unchanged", async () => {
     const budget = mkBudget();
     const execGit = makeExecGit([
-      { match: /git fetch origin main/, stdout: "" },
       { match: /git rev-parse main/, stdout: "abc1234\n" },
+      // bug-008 pre-flight: clean project root → no auto-commit
+      { match: /git status --porcelain/, stdout: "" },
+      { match: /git fetch origin main/, stdout: "" },
       { match: /git rev-parse feat\/auth/, stdout: "def5678\n" },
       { match: /git checkout main/, stdout: "" },
       { match: /git merge --no-ff/, stdout: "Fast-forward\n" },
@@ -2318,9 +2534,12 @@ describe("invokeAgent — close-feature feature-no-commits guard", () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const calls = (execGit as any).calls as string[];
-    // Status was NOT called (branch differs from main) — defensive
-    // guard short-circuits to the existing merge path.
-    expect(calls.some((c) => /git status --porcelain/.test(c))).toBe(false);
+    // bug-008 pre-flight ALWAYS calls git status --porcelain on projectRoot
+    // before merge (regardless of branch state) — but the feat-018 worktree
+    // dirty-tree check is short-circuited because branch !== main. So we
+    // expect EXACTLY ONE call (the pre-flight, not the feat-018 guard).
+    const statusCalls = calls.filter((c) => /git status --porcelain/.test(c));
+    expect(statusCalls.length).toBe(1);
   });
 });
 
