@@ -1250,7 +1250,10 @@ describe("invokeAgent — outputFormat + extractStructuredOutput (bug-004)", () 
     });
     expect(result.taskStatus.t1).toBe("failed");
     // Precise reason replaces the historical silent "no parseable outcome JSON"
-    expect(result.errors.t1).toContain("text didn't end with parseable JSON");
+    // bug-006: wording updated when greedy regex was replaced with backward-scan
+    expect(result.errors.t1).toContain(
+      "text didn't contain a parseable trailing JSON",
+    );
     // The tail of the agent's actual output is included for debugging
     expect(result.errors.t1).toContain("Done!");
   });
@@ -1280,6 +1283,226 @@ describe("invokeAgent — outputFormat + extractStructuredOutput (bug-004)", () 
     });
     expect(result.taskStatus.t1).toBe("failed");
     expect(result.errors.t1).toContain("result.result was empty");
+  });
+});
+
+// ─── bug-006 — backward-scan trailing-JSON extractor ────────────────
+//
+// `findTrailingJsonObject` (replaces the greedy `/\{[\s\S]*\}\s*$/` regex)
+// must handle the common LLM emission pattern where prose contains `{` chars
+// (destructuring examples, type defs, JSON snippets) followed by a clean
+// trailing status JSON block. The new algorithm walks `{` positions backward
+// from the end of the text and returns the first one whose slice parses as
+// JSON.
+describe("invokeAgent — backward-scan trailing-JSON extractor (bug-006)", () => {
+  it("finds trailing JSON when prose contains { destructuring } examples", async () => {
+    const budget = mkBudget();
+    // The exact scenario from kanban-webapp run 2026-04-26: agent emits
+    // prose with `{ boards, columns, cards, ... }` destructuring in the
+    // explanation, then a clean status JSON at the end.
+    const proseWithDestructuring = [
+      "Implemented the Zustand store with the following shape:",
+      "",
+      "{ boards, columns, cards, boardOrder, activeBoardId, theme, filter } — normalized with `Record<id, entity>` for O(1) lookups",
+      "- **`filter` is ephemeral**: excluded via `partialize`, never written to localStorage",
+      "- 26 happy-path + 24 edge-case tests, 94.19% line coverage",
+      "",
+      JSON.stringify({ taskOutcomes: { t1: "completed" }, errors: {} }),
+    ].join("\n");
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      result: proseWithDestructuring,
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "tester",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    // The destructuring `{...}` would have made the old greedy regex fail;
+    // the backward scan finds the trailing JSON and parses it cleanly.
+    expect(result.taskStatus).toEqual({ t1: "completed" });
+    expect(result.errors).toEqual({});
+  });
+
+  it("returns the LAST `{` block when multiple { ... } sections appear", async () => {
+    const budget = mkBudget();
+    // Prose contains 3 separate `{...}` regions: a destructuring example,
+    // a malformed JSON-ish snippet, AND the real status block at the end.
+    // Backward scan must find the trailing one specifically.
+    const text = [
+      "First { example: with, unquoted, keys }",
+      "Then another { config: 'block' } in single quotes",
+      "And finally the real status:",
+      JSON.stringify({ taskOutcomes: { t1: "completed" } }),
+    ].join("\n");
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      result: text,
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "tester",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    expect(result.taskStatus).toEqual({ t1: "completed" });
+  });
+
+  it("handles nested JSON correctly (returns the outer object)", async () => {
+    const budget = mkBudget();
+    // The agent's status is a single JSON object with nested structure.
+    // Backward scan starts at the OUTERMOST `{`, parses the full nested
+    // object, and returns it.
+    const nested = JSON.stringify({
+      taskOutcomes: { t1: "completed" },
+      errors: {},
+      meta: { coverage: 94.19, tests: { passed: 50, failed: 0 } },
+    });
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      result: `Done.\n\n${nested}`,
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "tester",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    expect(result.taskStatus).toEqual({ t1: "completed" });
+  });
+
+  it("returns precise reason when text has no trailing `}` at all", async () => {
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      result:
+        "Some prose with { partial destructuring but no closing brace and trailing prose",
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "tester",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    expect(result.taskStatus.t1).toBe("failed");
+    expect(result.errors.t1).toContain(
+      "text didn't contain a parseable trailing JSON",
+    );
+  });
+
+  it("returns precise reason when ALL `{` positions yield invalid JSON", async () => {
+    const budget = mkBudget();
+    // Multiple `{...}` blocks but NONE of them are valid JSON: just JS
+    // destructuring + type expressions all the way down.
+    const text =
+      "{ user, posts } and { Record<id, T> } and finally { another, broken, example }";
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      result: text,
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "tester",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    expect(result.taskStatus.t1).toBe("failed");
+    expect(result.errors.t1).toContain(
+      "text didn't contain a parseable trailing JSON",
+    );
+    // Tail breadcrumb included for debug
+    expect(result.errors.t1).toContain("another, broken, example");
+  });
+
+  it("markdown fence stripping still works (preserves bug-004 behavior)", async () => {
+    const budget = mkBudget();
+    // Prose + markdown-fenced JSON. bug-004 strips the fence; bug-006
+    // backward scan finds the JSON inside.
+    const text = [
+      "Here are the results in JSON form:",
+      "",
+      "```json",
+      JSON.stringify({ taskOutcomes: { t1: "completed" } }),
+      "```",
+    ].join("\n");
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      result: text,
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "tester",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    expect(result.taskStatus).toEqual({ t1: "completed" });
   });
 });
 

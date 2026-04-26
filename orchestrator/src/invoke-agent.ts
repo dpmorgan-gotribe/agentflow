@@ -896,31 +896,63 @@ function extractStructuredOutput(result: SDKResultMessage): ExtractResult {
   );
   if (fenceStripped !== text) text = fenceStripped.trim();
 
-  const jsonMatch = text.match(/\{[\s\S]*\}\s*$/);
-  if (!jsonMatch) {
+  // bug-006: replace the greedy `/\{[\s\S]*\}\s*$/` regex (which matched
+  // first `{` to last `}` and broke on prose containing destructuring /
+  // type / JSON examples) with a backward-scanning algorithm that finds
+  // the last well-formed JSON object ending the text.
+  const parsed = findTrailingJsonObject(text);
+  if (parsed === null) {
     const tail = text.length > 200 ? `...${text.slice(-200)}` : text;
     return {
       ok: false,
-      reason: `text didn't end with parseable JSON object; tail was: ${JSON.stringify(tail)}`,
+      reason: `text didn't contain a parseable trailing JSON object; tail was: ${JSON.stringify(tail)}`,
     };
   }
-  try {
-    return { ok: true, parsed: JSON.parse(jsonMatch[0]) };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // Include the text the regex matched (truncated) so the next debug
-    // cycle can see exactly what the agent emitted — common cause is a
-    // JS object literal (unquoted keys) that JSON.parse rejects at pos 1.
-    const matchedText = jsonMatch[0];
-    const matchedSample =
-      matchedText.length > 400
-        ? `${matchedText.slice(0, 200)}...(${matchedText.length - 400} chars elided)...${matchedText.slice(-200)}`
-        : matchedText;
-    return {
-      ok: false,
-      reason: `JSON.parse threw on trailing-JSON match: ${msg}; matched text was: ${JSON.stringify(matchedSample)}`,
-    };
+  return { ok: true, parsed };
+}
+
+/**
+ * bug-006: find the last well-formed JSON object that ends the text. Handles
+ * the common LLM emission pattern: prose (often containing `{` chars from
+ * destructuring / type / JSON examples) followed by a clean trailing status
+ * JSON block.
+ *
+ * Algorithm:
+ *  1. Trim trailing whitespace; bail if not ending in `}`.
+ *  2. Collect every `{` index in the text.
+ *  3. Walk those indices from LAST to FIRST. For each, try
+ *     `JSON.parse(text.slice(idx))`. First successful parse that yields an
+ *     object (not array / scalar / null) wins.
+ *
+ * O(n) scan + O(k) parse attempts where k = count of `{` chars (typically
+ * 1-5; very fast in practice). Returns `null` when no trailing JSON object
+ * is parseable.
+ */
+function findTrailingJsonObject(text: string): unknown | null {
+  const trimmed = text.replace(/\s+$/, "");
+  if (!trimmed.endsWith("}")) return null;
+  const positions: number[] = [];
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] === "{") positions.push(i);
   }
+  for (let i = positions.length - 1; i >= 0; i--) {
+    const start = positions[i];
+    if (start === undefined) continue;
+    const candidate = trimmed.slice(start);
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed;
+      }
+      // Else: parsed but not an object (e.g. `{}` is valid but for our
+      // purposes a status report should have keys; keep scanning anyway —
+      // agents may legitimately emit `{}` for "no outcomes to report").
+      return parsed;
+    } catch {
+      /* try next position */
+    }
+  }
+  return null;
 }
 
 /**
