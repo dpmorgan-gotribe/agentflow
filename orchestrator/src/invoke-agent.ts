@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type {
   Options,
@@ -66,6 +66,8 @@ export interface CreateInvokeAgentConfig {
   queryFn?: QueryFn;
   /** Test hook — overrides git CLI exec. */
   execGit?: ExecGitFn;
+  /** Test hook — overrides non-git shell exec (e.g. `pnpm install`). */
+  execShell?: ShellExecFn;
   /** Test hook — overrides readModelConfig paths. */
   modelConfigOverride?: { globalPath?: string; projectPath?: string };
 }
@@ -92,6 +94,7 @@ function isBuildAgent(agent: AgentSequenceMember): boolean {
  */
 export function createInvokeAgent(cfg: CreateInvokeAgentConfig): InvokeAgentFn {
   const execGit: ExecGitFn = cfg.execGit ?? defaultExecGit;
+  const execShell: ShellExecFn = cfg.execShell ?? defaultShellExec;
   const queryFn: QueryFn = cfg.queryFn ?? (realQuery as unknown as QueryFn);
 
   return async (args) => {
@@ -101,7 +104,12 @@ export function createInvokeAgent(cfg: CreateInvokeAgentConfig): InvokeAgentFn {
           "invokeAgent: git-agent invoked without args.gitOp payload",
         );
       }
-      const output = await runGitOp(args.gitOp, cfg.projectRoot, execGit);
+      const output = await runGitOp(
+        args.gitOp,
+        cfg.projectRoot,
+        execGit,
+        execShell,
+      );
       const validated = GitAgentOutputSchema.parse(output);
       return {
         taskStatus: {},
@@ -121,12 +129,13 @@ async function runGitOp(
   gitOp: GitOpInput,
   projectRoot: string,
   execGit: ExecGitFn,
+  execShell: ShellExecFn,
 ): Promise<GitAgentOutput> {
   switch (gitOp.op) {
     case "checkout-feature":
       return runCheckoutFeature(gitOp, projectRoot, execGit);
     case "close-feature":
-      return runCloseFeature(gitOp, projectRoot, execGit);
+      return runCloseFeature(gitOp, projectRoot, execGit, execShell);
     case "resolve-conflict-handoff":
       return runResolveConflictHandoff(gitOp);
     case "emergency-abort":
@@ -483,6 +492,7 @@ async function runCloseFeature(
   gitOp: Extract<GitOpInput, { op: "close-feature" }>,
   projectRoot: string,
   execGit: ExecGitFn,
+  execShell: ShellExecFn,
 ): Promise<GitAgentOutput> {
   const worktreePath = join(
     projectRoot,
@@ -715,6 +725,45 @@ async function runCloseFeature(
     } catch {
       /* fall through — empty list signals no real-conflict files found */
     }
+
+    // bug-012: lockfile auto-resolve. pnpm-lock.yaml / package-lock.json /
+    // yarn.lock are content-addressed + structurally non-mergeable; the
+    // canonical recipe is "checkout --theirs + reinstall + commit". Run it
+    // deterministically here so we don't waste agent retries text-merging.
+    // Strict gate: lockfile-only conflicts (no mixed package.json + lockfile);
+    // mixed conflicts fall through to the agent (whose prompt knows the recipe).
+    if (conflictingFiles.length > 0) {
+      const lockResult = await tryAutoResolveLockfileConflicts(
+        conflictingFiles,
+        projectRoot,
+        gitOp.featureId,
+        execGit,
+        execShell,
+      );
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[runCloseFeature] feature ${gitOp.featureId}: lockfile auto-resolve attempt.\n${lockResult.diagnostic.join("\n")}`,
+      );
+      if (lockResult.resolved.length > 0 && lockResult.remaining.length === 0) {
+        // Auto-resolved cleanly — return success.
+        let mergeShaR = "0000000";
+        try {
+          const res = await execGit("git rev-parse HEAD", projectRoot);
+          mergeShaR = res.stdout.trim();
+        } catch {
+          // placeholder — schema requires 7+ hex; unlikely to fire because
+          // auto-resolve just made a commit
+        }
+        return {
+          op: "close-feature",
+          success: true,
+          conflict: false,
+          mergeSha: mergeShaR,
+          featureId: gitOp.featureId,
+        };
+      }
+    }
+
     const postMergeSnapshot = await snapshotState("post-merge-failure-state");
     try {
       await execGit("git merge --abort", projectRoot);
@@ -1581,6 +1630,178 @@ async function safeExec(
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────
+
+/**
+ * bug-012: deterministic lockfile-conflict resolver. pnpm-lock.yaml,
+ * package-lock.json, and yarn.lock are content-addressed and structurally
+ * non-mergeable; the canonical recipe is "checkout --theirs + regen + commit".
+ *
+ * Strict gate: only attempts when ALL conflicting files are lockfiles. If any
+ * non-lockfile (e.g. package.json) is also conflicting, we bail and let the
+ * agent handle it — package.json must be resolved first or the regenerated
+ * lockfile won't match the merged manifest.
+ *
+ * On success: stages all regenerated lockfiles + finalizes the in-flight
+ * merge commit. On any failure (regen, commit): aborts the merge so the
+ * caller's normal failure path runs cleanly.
+ */
+const LOCKFILE_BASENAMES = new Set([
+  "pnpm-lock.yaml",
+  "package-lock.json",
+  "yarn.lock",
+]);
+
+export interface LockfileAutoResolveResult {
+  /** Lockfiles that were checked-out + regenerated + staged + committed. */
+  resolved: string[];
+  /** Conflict files still requiring agent handoff. */
+  remaining: string[];
+  /** Per-step log lines (success or failure). Always populated. */
+  diagnostic: string[];
+}
+
+export async function tryAutoResolveLockfileConflicts(
+  conflictingFiles: readonly string[],
+  projectRoot: string,
+  featureId: string,
+  execGit: ExecGitFn,
+  execShell: ShellExecFn,
+): Promise<LockfileAutoResolveResult> {
+  const lockfileConflicts = conflictingFiles.filter((f) =>
+    LOCKFILE_BASENAMES.has(basename(f)),
+  );
+  const nonLockfile = conflictingFiles.filter(
+    (f) => !LOCKFILE_BASENAMES.has(basename(f)),
+  );
+
+  // Strict gate — see header comment.
+  if (lockfileConflicts.length === 0) {
+    return {
+      resolved: [],
+      remaining: [...conflictingFiles],
+      diagnostic: [
+        "[lockfile-auto-resolve] no lockfile conflicts detected — skipping",
+      ],
+    };
+  }
+  if (nonLockfile.length > 0) {
+    return {
+      resolved: [],
+      remaining: [...conflictingFiles],
+      diagnostic: [
+        `[lockfile-auto-resolve] mixed conflict (${nonLockfile.length} non-lockfile + ${lockfileConflicts.length} lockfile) — deferring to agent`,
+      ],
+    };
+  }
+
+  const diagnostic: string[] = [
+    `[lockfile-auto-resolve] detected ${lockfileConflicts.length} lockfile-only conflict(s): ${lockfileConflicts.join(", ")}`,
+  ];
+  const resolved: string[] = [];
+
+  for (const lockfile of lockfileConflicts) {
+    let pm: "pnpm" | "npm" | "yarn";
+    try {
+      pm = detectPackageManager(lockfile);
+    } catch (e) {
+      diagnostic.push(
+        `  ✗ unknown lockfile basename: ${lockfile} — bailing out`,
+      );
+      await tryMergeAbort(projectRoot, execGit, diagnostic);
+      return { resolved: [], remaining: [...conflictingFiles], diagnostic };
+    }
+
+    try {
+      // --theirs in merge context = the branch being merged IN (the feature
+      // branch). Lockfile content gets overwritten by regen below; we just
+      // need a non-conflicted file on disk for the package manager to read.
+      await execGit(
+        `git checkout --theirs ${shellQuote(lockfile)}`,
+        projectRoot,
+      );
+      diagnostic.push(`  ✓ git checkout --theirs ${lockfile}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      diagnostic.push(`  ✗ checkout --theirs ${lockfile} failed: ${msg}`);
+      await tryMergeAbort(projectRoot, execGit, diagnostic);
+      return { resolved: [], remaining: [...conflictingFiles], diagnostic };
+    }
+
+    const regenCwd = join(projectRoot, dirname(lockfile));
+    const regenCmd = lockfileRegenCommand(pm);
+    const regen = await safeShellExec(execShell, regenCmd, regenCwd);
+    if (regen.code !== 0) {
+      diagnostic.push(
+        `  ✗ ${pm} regen failed (cwd=${regenCwd}): ${regen.stderr.slice(0, 300) || "(no stderr)"}`,
+      );
+      await tryMergeAbort(projectRoot, execGit, diagnostic);
+      return { resolved: [], remaining: [...conflictingFiles], diagnostic };
+    }
+    diagnostic.push(`  ✓ ${pm} regen ok (cwd=${regenCwd}): ${regenCmd}`);
+
+    try {
+      await execGit(`git add ${shellQuote(lockfile)}`, projectRoot);
+      diagnostic.push(`  ✓ git add ${lockfile}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      diagnostic.push(`  ✗ git add ${lockfile} failed: ${msg}`);
+      await tryMergeAbort(projectRoot, execGit, diagnostic);
+      return { resolved: [], remaining: [...conflictingFiles], diagnostic };
+    }
+    resolved.push(lockfile);
+  }
+
+  // Finalize the in-flight merge. core.editor=true is the cross-platform
+  // no-op editor (true succeeds with no output) so git won't try to open
+  // an interactive editor for the merge message.
+  try {
+    await execGit(
+      `git -c core.editor=true commit --no-edit -m "merge feat/${featureId}"`,
+      projectRoot,
+    );
+    diagnostic.push(`  ✓ merge commit finalized for feat/${featureId}`);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    diagnostic.push(`  ✗ merge commit failed: ${msg}`);
+    await tryMergeAbort(projectRoot, execGit, diagnostic);
+    return { resolved: [], remaining: [...conflictingFiles], diagnostic };
+  }
+
+  return { resolved, remaining: [], diagnostic };
+}
+
+async function tryMergeAbort(
+  projectRoot: string,
+  execGit: ExecGitFn,
+  diagnostic: string[],
+): Promise<void> {
+  try {
+    await execGit("git merge --abort", projectRoot);
+    diagnostic.push("  · git merge --abort (cleanup)");
+  } catch {
+    // best-effort — merge may already be in clean state
+  }
+}
+
+function detectPackageManager(lockfile: string): "pnpm" | "npm" | "yarn" {
+  const base = basename(lockfile);
+  if (base === "pnpm-lock.yaml") return "pnpm";
+  if (base === "package-lock.json") return "npm";
+  if (base === "yarn.lock") return "yarn";
+  throw new Error(`unknown lockfile: ${lockfile}`);
+}
+
+function lockfileRegenCommand(pm: "pnpm" | "npm" | "yarn"): string {
+  // Lockfile-only flags avoid node_modules churn — fast on every project + CI.
+  switch (pm) {
+    case "pnpm":
+      return "pnpm install --lockfile-only";
+    case "npm":
+      return "npm install --package-lock-only";
+    case "yarn":
+      return "yarn install --mode update-lockfile";
+  }
+}
 
 async function defaultExecGit(
   cmd: string,

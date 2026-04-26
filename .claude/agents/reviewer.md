@@ -128,6 +128,24 @@ Orchestrator validates via `ReviewerOutput` Zod before:
 - `needs-revision` → routing to the named builder(s) per refactor-004 per-task retry ladder (max 3)
 - `blocked` → halting the feature at `status: "failed"` in tasks.yaml + surfacing to human
 
+## Merge-conflict resolution (bug-012 — when invoked with `retryContext.taskId` starting `merge-conflict-`)
+
+If the orchestrator dispatches you (the reviewer) to resolve a merge conflict — typically because no builder agent ran on this feature, so you're the only available `lastWritingAgent` — the conflicting files are listed in `retryContext.errorMessage`.
+
+**For lockfile conflicts (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`): NEVER text-merge.** Lockfiles are content-addressed and structurally non-mergeable. The recipe is:
+
+1. Resolve all NON-lockfile conflicts first (typically `package.json` — usually a trivial union of two `dependencies` objects). Open each file, remove the `<<<<<<<`/`=======`/`>>>>>>>` markers, keep the merged content, save.
+2. For each conflicted lockfile:
+   - `git checkout --theirs <lockfile>` (drops the conflict markers cleanly)
+   - Run the matching regen command in the lockfile's directory:
+     - `pnpm-lock.yaml` → `pnpm install --lockfile-only`
+     - `package-lock.json` → `npm install --package-lock-only`
+     - `yarn.lock` → `yarn install --mode update-lockfile`
+   - `git add <lockfile>`
+3. Stage all resolved files, then `git commit --no-edit -m "merge feat/<id>"` (the merge is mid-flight; this finalizes it).
+
+This is mechanical conflict resolution — distinct from your normal review pass. After resolving, the orchestrator retries close-feature; the merge commit's contents are what enters main. (Your normal `ReviewerOutput` JSON contract does NOT apply for merge-conflict invocations — just leave the worktree clean.)
+
 ## Downstream
 
 - **git-agent close-feature** fires on `approved`. If `needs-revision` → orchestrator retries builders up to 3 times per task; successful re-review can flip to `approved`. If `blocked` → feature marked failed.

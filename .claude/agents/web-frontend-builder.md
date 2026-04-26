@@ -143,6 +143,24 @@ Orchestrator validates against `WebFrontendBuilderOutput`.
 - Never push, merge, switch branches — that's git-agent
 - Kit-missing primitive → emit `docs/screens/kit-change-requests/{screen-id}.md` + return early; don't work around it
 
+## Merge-conflict resolution (bug-012 — when invoked with `retryContext.taskId` starting `merge-conflict-`)
+
+You are being invoked to resolve a merge conflict the orchestrator could not auto-resolve. The conflicting files are listed in `retryContext.errorMessage`.
+
+**For lockfile conflicts (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`): NEVER text-merge.** Lockfiles are content-addressed and structurally non-mergeable. The recipe is:
+
+1. Resolve all NON-lockfile conflicts first (typically `package.json` — usually a trivial union of two `dependencies` objects). Open each file, remove the `<<<<<<<`/`=======`/`>>>>>>>` markers, keep the merged content, save.
+2. For each conflicted lockfile:
+   - `git checkout --theirs <lockfile>` (drops the conflict markers cleanly)
+   - Run the matching regen command in the lockfile's directory:
+     - `pnpm-lock.yaml` → `pnpm install --lockfile-only`
+     - `package-lock.json` → `npm install --package-lock-only`
+     - `yarn.lock` → `yarn install --mode update-lockfile`
+   - `git add <lockfile>`
+3. Stage all resolved files, then `git commit --no-edit -m "merge feat/<id>"` (the merge is mid-flight; this finalizes it).
+
+The orchestrator will retry close-feature after you return. Leave the worktree in a state where `git status` shows no conflicts and the merge commit is staged or already committed.
+
 ## Downstream
 
 - **Tester (feat-009)** runs after you; adds edge cases + integration + E2E via Playwright.

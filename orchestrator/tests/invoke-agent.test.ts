@@ -17,6 +17,7 @@ import {
   type ExecGitFn,
   installIfPackageJsonChanged,
   type ShellExecFn,
+  tryAutoResolveLockfileConflicts,
 } from "../src/invoke-agent.js";
 import type { QueryFn } from "../src/stage-runner.js";
 
@@ -2961,5 +2962,401 @@ describe("installIfPackageJsonChanged (feat-019 Phase B)", () => {
     expect(result.installed).toBe(false);
     expect(result.warning).toContain("pnpm install failed");
     expect(result.warning).toContain("ERR_PNPM_REGISTRY_500");
+  });
+});
+
+// ─── bug-012 — lockfile-aware merge-conflict resolution ───────────────
+
+describe("tryAutoResolveLockfileConflicts (bug-012)", () => {
+  const PROJECT = "/tmp/proj";
+
+  it("empty conflict list → no-op (no shell or git calls)", async () => {
+    const execGit = makeExecGit([]);
+    const shellExec = makeShellExec([]);
+    const result = await tryAutoResolveLockfileConflicts(
+      [],
+      PROJECT,
+      "feat-x",
+      execGit,
+      shellExec,
+    );
+    expect(result.resolved).toEqual([]);
+    expect(result.remaining).toEqual([]);
+    expect(result.diagnostic[0]).toContain("no lockfile conflicts detected");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(((execGit as any).calls as string[]).length).toBe(0);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(((shellExec as any).calls as string[]).length).toBe(0);
+  });
+
+  it("non-lockfile conflicts only → returns remaining=all, no shell or git calls", async () => {
+    const execGit = makeExecGit([]);
+    const shellExec = makeShellExec([]);
+    const result = await tryAutoResolveLockfileConflicts(
+      ["src/foo.ts", "apps/web/src/page.tsx"],
+      PROJECT,
+      "feat-x",
+      execGit,
+      shellExec,
+    );
+    expect(result.resolved).toEqual([]);
+    expect(result.remaining).toEqual(["src/foo.ts", "apps/web/src/page.tsx"]);
+    expect(result.diagnostic[0]).toContain("no lockfile conflicts detected");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(((execGit as any).calls as string[]).length).toBe(0);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(((shellExec as any).calls as string[]).length).toBe(0);
+  });
+
+  it("mixed (lockfile + non-lockfile) → strict gate bails to agent", async () => {
+    const execGit = makeExecGit([]);
+    const shellExec = makeShellExec([]);
+    const result = await tryAutoResolveLockfileConflicts(
+      ["apps/web/package.json", "apps/web/pnpm-lock.yaml"],
+      PROJECT,
+      "feat-x",
+      execGit,
+      shellExec,
+    );
+    expect(result.resolved).toEqual([]);
+    expect(result.remaining).toEqual([
+      "apps/web/package.json",
+      "apps/web/pnpm-lock.yaml",
+    ]);
+    expect(result.diagnostic[0]).toContain("mixed conflict");
+    expect(result.diagnostic[0]).toContain("deferring to agent");
+    // No git or shell calls in the strict-gate bail-out
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(((execGit as any).calls as string[]).length).toBe(0);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(((shellExec as any).calls as string[]).length).toBe(0);
+  });
+
+  it("pnpm-lock.yaml only → checkout --theirs + pnpm regen + add + commit", async () => {
+    const execGit = makeExecGit([
+      { match: /git checkout --theirs apps\/web\/pnpm-lock\.yaml/, stdout: "" },
+      { match: /git add apps\/web\/pnpm-lock\.yaml/, stdout: "" },
+      {
+        match: /git -c core\.editor=true commit --no-edit -m "merge feat\/x"/,
+        stdout: "",
+      },
+    ]);
+    const shellExec = makeShellExec([
+      { match: /pnpm install --lockfile-only/, stdout: "" },
+    ]);
+    const result = await tryAutoResolveLockfileConflicts(
+      ["apps/web/pnpm-lock.yaml"],
+      PROJECT,
+      "x",
+      execGit,
+      shellExec,
+    );
+    expect(result.resolved).toEqual(["apps/web/pnpm-lock.yaml"]);
+    expect(result.remaining).toEqual([]);
+    expect(
+      result.diagnostic.some((d) => d.includes("merge commit finalized")),
+    ).toBe(true);
+  });
+
+  it("package-lock.json only → npm install --package-lock-only", async () => {
+    const execGit = makeExecGit([
+      { match: /git checkout --theirs package-lock\.json/, stdout: "" },
+      { match: /git add package-lock\.json/, stdout: "" },
+      {
+        match: /git -c core\.editor=true commit --no-edit -m "merge feat\/y"/,
+        stdout: "",
+      },
+    ]);
+    const shellExec = makeShellExec([
+      { match: /npm install --package-lock-only/, stdout: "" },
+    ]);
+    const result = await tryAutoResolveLockfileConflicts(
+      ["package-lock.json"],
+      PROJECT,
+      "y",
+      execGit,
+      shellExec,
+    );
+    expect(result.resolved).toEqual(["package-lock.json"]);
+    expect(result.remaining).toEqual([]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const shCalls = (shellExec as any).calls as string[];
+    expect(
+      shCalls.some((c) => c.includes("npm install --package-lock-only")),
+    ).toBe(true);
+  });
+
+  it("yarn.lock only → yarn install --mode update-lockfile", async () => {
+    const execGit = makeExecGit([
+      { match: /git checkout --theirs yarn\.lock/, stdout: "" },
+      { match: /git add yarn\.lock/, stdout: "" },
+      {
+        match: /git -c core\.editor=true commit --no-edit -m "merge feat\/z"/,
+        stdout: "",
+      },
+    ]);
+    const shellExec = makeShellExec([
+      { match: /yarn install --mode update-lockfile/, stdout: "" },
+    ]);
+    const result = await tryAutoResolveLockfileConflicts(
+      ["yarn.lock"],
+      PROJECT,
+      "z",
+      execGit,
+      shellExec,
+    );
+    expect(result.resolved).toEqual(["yarn.lock"]);
+    expect(result.remaining).toEqual([]);
+  });
+
+  it("multiple lockfiles in different workspaces → all resolved", async () => {
+    const execGit = makeExecGit([
+      { match: /git checkout --theirs apps\/web\/pnpm-lock\.yaml/, stdout: "" },
+      { match: /git add apps\/web\/pnpm-lock\.yaml/, stdout: "" },
+      { match: /git checkout --theirs apps\/api\/pnpm-lock\.yaml/, stdout: "" },
+      { match: /git add apps\/api\/pnpm-lock\.yaml/, stdout: "" },
+      {
+        match:
+          /git -c core\.editor=true commit --no-edit -m "merge feat\/multi"/,
+        stdout: "",
+      },
+    ]);
+    const shellExec = makeShellExec([
+      { match: /pnpm install --lockfile-only/, stdout: "" },
+    ]);
+    const result = await tryAutoResolveLockfileConflicts(
+      ["apps/web/pnpm-lock.yaml", "apps/api/pnpm-lock.yaml"],
+      PROJECT,
+      "multi",
+      execGit,
+      shellExec,
+    );
+    expect(result.resolved).toEqual([
+      "apps/web/pnpm-lock.yaml",
+      "apps/api/pnpm-lock.yaml",
+    ]);
+    expect(result.remaining).toEqual([]);
+    // pnpm install was called twice (once per lockfile, in correct cwd)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const shCalls = (shellExec as any).calls as string[];
+    expect(shCalls.length).toBe(2);
+    expect(
+      shCalls.every((c) => c.includes("pnpm install --lockfile-only")),
+    ).toBe(true);
+  });
+
+  it("regen failure → merge --abort + remaining=all + diagnostic captures error", async () => {
+    const execGit = makeExecGit([
+      { match: /git checkout --theirs pnpm-lock\.yaml/, stdout: "" },
+      { match: /git merge --abort/, stdout: "" },
+    ]);
+    const shellExec = makeShellExec([
+      {
+        match: /pnpm install --lockfile-only/,
+        throwInstead: Object.assign(new Error("ERR_PNPM_PEER_DEP_ISSUES"), {
+          stderr: "ERR_PNPM_PEER_DEP_ISSUES: peer dep mismatch",
+          code: 1,
+        }),
+      },
+    ]);
+    const result = await tryAutoResolveLockfileConflicts(
+      ["pnpm-lock.yaml"],
+      PROJECT,
+      "fail",
+      execGit,
+      shellExec,
+    );
+    expect(result.resolved).toEqual([]);
+    expect(result.remaining).toEqual(["pnpm-lock.yaml"]);
+    expect(result.diagnostic.some((d) => d.includes("regen failed"))).toBe(
+      true,
+    );
+    expect(
+      result.diagnostic.some((d) => d.includes("ERR_PNPM_PEER_DEP_ISSUES")),
+    ).toBe(true);
+    expect(result.diagnostic.some((d) => d.includes("git merge --abort"))).toBe(
+      true,
+    );
+  });
+
+  it("commit failure → merge --abort + remaining=all", async () => {
+    const execGit = makeExecGit([
+      { match: /git checkout --theirs pnpm-lock\.yaml/, stdout: "" },
+      { match: /git add pnpm-lock\.yaml/, stdout: "" },
+      {
+        match: /git -c core\.editor=true commit --no-edit/,
+        throwInstead: Object.assign(new Error("nothing to commit"), {
+          stderr: "nothing to commit, working tree clean",
+          code: 1,
+        }),
+      },
+      { match: /git merge --abort/, stdout: "" },
+    ]);
+    const shellExec = makeShellExec([
+      { match: /pnpm install --lockfile-only/, stdout: "" },
+    ]);
+    const result = await tryAutoResolveLockfileConflicts(
+      ["pnpm-lock.yaml"],
+      PROJECT,
+      "commitfail",
+      execGit,
+      shellExec,
+    );
+    expect(result.resolved).toEqual([]);
+    expect(result.remaining).toEqual(["pnpm-lock.yaml"]);
+    expect(
+      result.diagnostic.some((d) => d.includes("merge commit failed")),
+    ).toBe(true);
+  });
+
+  it("checkout --theirs failure → merge --abort + remaining=all + no regen attempted", async () => {
+    const execGit = makeExecGit([
+      {
+        match: /git checkout --theirs pnpm-lock\.yaml/,
+        throwInstead: Object.assign(new Error("path not in conflict"), {
+          stderr: "error: path 'pnpm-lock.yaml' is unmerged",
+          code: 1,
+        }),
+      },
+      { match: /git merge --abort/, stdout: "" },
+    ]);
+    const shellExec = makeShellExec([]); // pnpm must NOT be called
+    const result = await tryAutoResolveLockfileConflicts(
+      ["pnpm-lock.yaml"],
+      PROJECT,
+      "checkoutfail",
+      execGit,
+      shellExec,
+    );
+    expect(result.resolved).toEqual([]);
+    expect(result.remaining).toEqual(["pnpm-lock.yaml"]);
+    expect(result.diagnostic.some((d) => d.includes("checkout --theirs"))).toBe(
+      true,
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(((shellExec as any).calls as string[]).length).toBe(0);
+  });
+});
+
+describe("runCloseFeature lockfile auto-resolve integration (bug-012)", () => {
+  it("pure pnpm-lock.yaml conflict → success (no handoff)", async () => {
+    const budget = mkBudget();
+    const execGit = makeExecGit([
+      // bug-008 pre-flight: clean project root
+      { match: /git status --porcelain/, stdout: "" },
+      // bug-005b detectDefaultBranch: main exists
+      { match: /git rev-parse --verify main/, stdout: "abc1234\n" },
+      { match: /git fetch origin main/, stdout: "" },
+      { match: /git rev-parse main/, stdout: "abc1234\n" },
+      { match: /git rev-parse "?feat\/auth"?/, stdout: "deadbeef\n" },
+      { match: /git checkout main/, stdout: "" },
+      {
+        match: /git merge --no-ff/,
+        throwInstead: Object.assign(new Error("CONFLICT"), {
+          stderr: "Auto-merging apps/web/pnpm-lock.yaml\nCONFLICT (content)",
+          stdout: "",
+        }),
+      },
+      {
+        match: /git diff --name-only --diff-filter=U/,
+        stdout: "apps/web/pnpm-lock.yaml\n",
+      },
+      // bug-012 auto-resolve sequence
+      { match: /git checkout --theirs apps\/web\/pnpm-lock\.yaml/, stdout: "" },
+      { match: /git add apps\/web\/pnpm-lock\.yaml/, stdout: "" },
+      {
+        match:
+          /git -c core\.editor=true commit --no-edit -m "merge feat\/feat-auth"/,
+        stdout: "",
+      },
+      // post-resolve mergeSha read
+      { match: /git rev-parse HEAD/, stdout: "5ad1d00\n" },
+    ]);
+    const shellExec = makeShellExec([
+      { match: /pnpm install --lockfile-only/, stdout: "" },
+    ]);
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      execGit,
+      execShell: shellExec,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: true,
+      conflict: false,
+      mergeSha: "5ad1d00",
+      featureId: "feat-auth",
+    });
+  });
+
+  it("mixed package.json + pnpm-lock.yaml conflict → falls through to handoff (no auto-resolve)", async () => {
+    const budget = mkBudget();
+    const execGit = makeExecGit([
+      { match: /git status --porcelain/, stdout: "" },
+      { match: /git rev-parse --verify main/, stdout: "abc1234\n" },
+      { match: /git fetch origin main/, stdout: "" },
+      { match: /git rev-parse main/, stdout: "abc1234\n" },
+      { match: /git rev-parse "?feat\/auth"?/, stdout: "deadbeef\n" },
+      { match: /git checkout main/, stdout: "" },
+      {
+        match: /git merge --no-ff/,
+        throwInstead: Object.assign(new Error("CONFLICT"), {
+          stderr:
+            "Auto-merging apps/web/package.json\nAuto-merging apps/web/pnpm-lock.yaml",
+          stdout: "",
+        }),
+      },
+      {
+        match: /git diff --name-only --diff-filter=U/,
+        stdout: "apps/web/package.json\napps/web/pnpm-lock.yaml\n",
+      },
+      // snapshotState calls
+      { match: /git rev-parse --short HEAD/, stdout: "abc1234\n" },
+      { match: /git merge --abort/, stdout: "" },
+    ]);
+    const shellExec = makeShellExec([]); // pnpm must NOT be called (mixed gate bails)
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      execGit,
+      execShell: shellExec,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: false,
+      conflict: true,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cf = (result.gitAgentOutput as any).conflictingFiles as string[];
+    expect(cf[0]).toContain("apps/web/package.json");
+    expect(cf[0]).toContain("apps/web/pnpm-lock.yaml");
+    // pnpm was never invoked (strict gate bailed)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(((shellExec as any).calls as string[]).length).toBe(0);
   });
 });
