@@ -125,6 +125,13 @@ export interface InvokeAgentResult {
   gitAgentOutput?: GitAgentOutput;
   /** Cost recorded for this invocation — summed into Mode B totals. */
   costUsd: number;
+  /**
+   * bug-010: when set, this invocation was a graceful skip (agent was in
+   * agent_sequence but not shipped/configured). Tasks return as completed
+   * (so orchestrator advances) but the role didn't actually run. Surfaced
+   * to the operator + recorded in feature outcomes for post-hoc review.
+   */
+  skippedReason?: string;
 }
 
 export interface FeatureGraphContext {

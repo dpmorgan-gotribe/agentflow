@@ -846,11 +846,37 @@ async function runLlmAgent(
   cfg: CreateInvokeAgentConfig,
   queryFn: QueryFn,
 ): Promise<InvokeAgentResult> {
-  const modelConfig = readModelConfig(
-    agent,
-    cfg.projectRoot,
-    cfg.modelConfigOverride,
-  );
+  // bug-010: PM's schema enum (AgentSequenceMember) deliberately includes
+  // agents the factory hasn't shipped yet (e.g., security, devops) — design B
+  // intent per scaffolding/26-039-agent-expert.md. When the orchestrator
+  // hits an unshipped agent, throw vs skip is the difference between
+  // crashing the entire Mode B run vs degrading one feature gracefully.
+  // Mark the dispatched task(s) as completed (NOT failed — failed would
+  // trigger task-retry → exhaust → cascade abort) and surface a warning.
+  let modelConfig: ModelConfig;
+  try {
+    modelConfig = readModelConfig(
+      agent,
+      cfg.projectRoot,
+      cfg.modelConfigOverride,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const reason = `agent '${agent}' not configured: ${msg.split("\n")[0]}`;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[runLlmAgent] ${reason}. Skipping ${args.tasks.length} task(s) and continuing agent_sequence.`,
+    );
+    const skipped: Record<string, "completed" | "failed"> = {};
+    for (const t of args.tasks) skipped[t.id] = "completed";
+    return {
+      taskStatus: skipped,
+      errors: {},
+      costUsd: 0,
+      skippedReason: reason,
+      ...(isBuildAgent(agent) ? { lastWritingAgent: agent } : {}),
+    };
+  }
 
   // Budget check FIRST — before building the prompt, so the stub's call
   // count stays at zero when the tracker is already at cap.

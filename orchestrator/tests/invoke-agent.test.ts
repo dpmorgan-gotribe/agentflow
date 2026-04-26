@@ -982,6 +982,110 @@ describe("invokeAgent — builder missing-task handling", () => {
   });
 });
 
+// ─── bug-010 — graceful skip on unshipped agent ─────────────────────
+//
+// PM's schema enum (AgentSequenceMember) deliberately includes agents
+// the factory hasn't shipped yet (e.g., security, devops) — Design B
+// per scaffolding/26-039-agent-expert.md. When orchestrator hits an
+// unshipped agent, throw vs skip is the difference between crashing the
+// entire Mode B run vs degrading one feature gracefully.
+describe("invokeAgent — graceful skip on unshipped agent (bug-010)", () => {
+  it("dispatching unshipped agent → returns completed + skippedReason, no throw", async () => {
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      total_cost_usd: 0,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        // globalYaml does NOT have a "security" entry → readModelConfig throws
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await invoke({
+      // Cast — runtime allows any string (PM's schema enumerates security);
+      // the type narrowing is for TS-only callers.
+      agent: "security" as any,
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1, task2],
+    });
+    expect(result.taskStatus).toEqual({
+      t1: "completed",
+      t2: "completed",
+    });
+    expect(result.errors).toEqual({});
+    expect(result.costUsd).toBe(0);
+    expect(result.skippedReason).toContain("agent 'security' not configured");
+    // QueryFn must NOT have been called (we skipped before SDK dispatch)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((queryFn as any).calls.length).toBe(0);
+  });
+
+  it("graceful skip does NOT consume budget", async () => {
+    const budget = mkBudget(10);
+    budget.record(5); // start at $5/$10
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      total_cost_usd: 999, // would exceed budget if called
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      agent: "devops" as any,
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    expect(result.skippedReason).toBeDefined();
+    expect(result.costUsd).toBe(0);
+    // Budget unchanged (still $5/$10)
+    expect(budget.getCumulative()).toBeCloseTo(5, 4);
+  });
+
+  it("KNOWN agent (backend-builder) still works normally — back-compat preserved", async () => {
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      structured_output: { taskOutcomes: { t1: "completed" } },
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    expect(result.skippedReason).toBeUndefined(); // not skipped
+    expect(result.taskStatus).toEqual({ t1: "completed" });
+  });
+});
+
 describe("invokeAgent — builder SDK error", () => {
   it("propagates SDK subtype as the per-task error message", async () => {
     const budget = mkBudget();
