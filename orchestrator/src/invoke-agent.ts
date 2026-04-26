@@ -22,6 +22,7 @@ import type {
 } from "@repo/orchestrator-contracts";
 import {
   BuilderOutput,
+  BuilderOutputJsonSchema,
   GitAgentOutput as GitAgentOutputSchema,
 } from "@repo/orchestrator-contracts";
 import { resolveAuthOptions } from "./auth-provider.js";
@@ -630,7 +631,7 @@ async function runLlmAgent(
   cfg.budget.assertUnderBudget(modelConfig.budgetUsd);
 
   const prompt = buildAgentPrompt(agent, args);
-  const options = buildAgentOptions(args, cfg, modelConfig);
+  const options = buildAgentOptions(agent, args, cfg, modelConfig);
 
   let result: SDKResultMessage | undefined;
   try {
@@ -690,8 +691,26 @@ async function runLlmAgent(
   }
 
   // success subtype — parse + translate
-  const parsed = extractStructuredOutput(result);
-  const translated = translateOutcomes(parsed, args.tasks);
+  const extracted = extractStructuredOutput(result);
+  if (!extracted.ok) {
+    // bug-004: surface a precise reason instead of the silent
+    // "no parseable outcome JSON" message that historically cost $6+ per
+    // debug session.
+    const failed: Record<string, "completed" | "failed"> = {};
+    const errors: Record<string, string> = {};
+    for (const t of args.tasks) {
+      failed[t.id] = "failed";
+      errors[t.id] =
+        `agent produced no parseable outcome JSON: ${extracted.reason}`;
+    }
+    return {
+      taskStatus: failed,
+      errors,
+      costUsd: result.total_cost_usd,
+      ...(isBuildAgent(agent) ? { lastWritingAgent: agent } : {}),
+    };
+  }
+  const translated = translateOutcomes(extracted.parsed, args.tasks);
 
   return {
     taskStatus: translated.taskStatus,
@@ -732,6 +751,7 @@ function buildAgentPrompt(
 }
 
 function buildAgentOptions(
+  agent: AgentSequenceMember,
   args: Parameters<InvokeAgentFn>[0],
   cfg: CreateInvokeAgentConfig,
   modelConfig: ModelConfig,
@@ -760,23 +780,92 @@ function buildAgentOptions(
     ...(auth.forceLoginMethod
       ? { forceLoginMethod: auth.forceLoginMethod }
       : {}),
+    // bug-004: builder agents (backend/web-frontend/mobile-frontend) emit
+    // `BuilderOutput`. Telling the SDK the schema makes it (a) coerce the
+    // model toward valid output, (b) retry on validation failure (max →
+    // subtype `error_max_structured_output_retries`), and (c) populate
+    // `result.structured_output` deterministically — eliminating the
+    // brittle trailing-JSON regex as the primary extraction path. Other
+    // agents (tester, reviewer, git-agent) keep the regex fallback until
+    // their schemas are formalized.
+    ...(isBuildAgent(agent)
+      ? {
+          outputFormat: {
+            type: "json_schema" as const,
+            schema: BuilderOutputJsonSchema as Record<string, unknown>,
+          },
+        }
+      : {}),
   };
 }
 
 /**
- * Mirror of stage-runner.ts::extractStructuredOutput. Prefer
- * `result.structured_output`; fall back to trailing JSON in `result.result`.
+ * bug-004: structured-output extractor with two paths and explicit failure
+ * reasons (formerly silent null-return).
+ *
+ *   PRIMARY — `result.structured_output` populated by the SDK when the caller
+ *   set `Options.outputFormat: { type: 'json_schema', schema }`. Builder
+ *   agents (backend/web-frontend/mobile-frontend) opt into this in
+ *   `buildAgentOptions`. Returns the parsed object verbatim; the SDK has
+ *   already validated it against the schema.
+ *
+ *   FALLBACK — trailing JSON in `result.result`. Used by non-builder agents
+ *   (tester, reviewer) until their schemas are formalized. Tolerates a
+ *   trailing markdown code fence (```json {...} ``` or ``` {...} ```) so
+ *   common LLM emission patterns don't trip the regex.
+ *
+ *   Returns `{ ok: true, parsed }` on success or `{ ok: false, reason }` so
+ *   `runLlmAgent` can surface a precise breadcrumb instead of the historical
+ *   silent "agent produced no parseable outcome JSON" (which cost $6+ per
+ *   debug session pre-bug-004).
  */
-function extractStructuredOutput(result: SDKResultMessage): unknown {
-  if (result.subtype !== "success") return null;
-  if (result.structured_output !== undefined) return result.structured_output;
-  const text = result.result.trim();
+type ExtractResult =
+  | { ok: true; parsed: unknown }
+  | { ok: false; reason: string };
+
+function extractStructuredOutput(result: SDKResultMessage): ExtractResult {
+  if (result.subtype !== "success") {
+    return {
+      ok: false,
+      reason: `SDK subtype was '${result.subtype}', not 'success'`,
+    };
+  }
+  if (result.structured_output !== undefined) {
+    return { ok: true, parsed: result.structured_output };
+  }
+
+  // Fallback: trailing JSON in text. Strip a trailing markdown code fence first.
+  let text = result.result.trim();
+  if (text.length === 0) {
+    return {
+      ok: false,
+      reason: "result.result was empty (no structured_output, no text)",
+    };
+  }
+  // Strip trailing ```...``` (with optional language tag) — common LLM pattern
+  // is to wrap JSON in ```json ... ```. The regex captures the inner content.
+  const fenceStripped = text.replace(
+    /```[a-zA-Z0-9]*\s*\n?([\s\S]*?)\n?```\s*$/,
+    "$1",
+  );
+  if (fenceStripped !== text) text = fenceStripped.trim();
+
   const jsonMatch = text.match(/\{[\s\S]*\}\s*$/);
-  if (!jsonMatch) return null;
+  if (!jsonMatch) {
+    const tail = text.length > 200 ? `...${text.slice(-200)}` : text;
+    return {
+      ok: false,
+      reason: `text didn't end with parseable JSON object; tail was: ${JSON.stringify(tail)}`,
+    };
+  }
   try {
-    return JSON.parse(jsonMatch[0]);
-  } catch {
-    return null;
+    return { ok: true, parsed: JSON.parse(jsonMatch[0]) };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      reason: `JSON.parse threw on trailing-JSON match: ${msg}`,
+    };
   }
 }
 

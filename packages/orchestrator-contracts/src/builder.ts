@@ -88,3 +88,13 @@ export const BuilderOutput = z.discriminatedUnion("tier", [
   MobileFrontendBuilderOutput,
 ]);
 export type BuilderOutput = z.infer<typeof BuilderOutput>;
+
+/**
+ * bug-004: JSON Schema derived from `BuilderOutput` for the Agent SDK's
+ * `Options.outputFormat: { type: 'json_schema', schema }` mechanism. When set,
+ * the SDK enforces the schema, retries on validation failure (max retries →
+ * subtype `error_max_structured_output_retries`), and populates
+ * `result.structured_output` deterministically. Replaces the brittle trailing-
+ * JSON regex fallback as the primary extraction path.
+ */
+export const BuilderOutputJsonSchema = z.toJSONSchema(BuilderOutput);

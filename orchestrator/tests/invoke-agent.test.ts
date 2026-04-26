@@ -1064,6 +1064,225 @@ describe("invokeAgent — BuilderOutput canonical-shape parsing (bug-003)", () =
   });
 });
 
+// ─── bug-004 — outputFormat declaration + extractStructuredOutput resilience ──
+//
+// `buildAgentOptions` must set `Options.outputFormat: { type: 'json_schema',
+// schema }` for the 3 builder agents so the SDK enforces structured output
+// via its native mechanism (and populates `result.structured_output`
+// deterministically). Other agents (tester, reviewer, git-agent) keep the
+// regex fallback.
+//
+// `extractStructuredOutput` must:
+//   - Use `result.structured_output` when present (primary path, post-bug-004)
+//   - Fall back to trailing JSON in `result.result`, tolerating markdown
+//     code fences (```json ... ``` is the most common LLM emission shape)
+//   - Return a precise `reason` string on failure (formerly silent null)
+describe("invokeAgent — outputFormat + extractStructuredOutput (bug-004)", () => {
+  const builderOutputFixture = {
+    tier: "backend" as const,
+    success: true,
+    stackSlug: "node-trpc-nest",
+    featureId: "feat-auth",
+    tasksCompleted: [
+      {
+        taskId: "t1",
+        status: "completed" as const,
+        filesWritten: [],
+        testsWritten: [],
+        coverageBuilderScope: 80,
+        commitSha: null,
+      },
+    ],
+    tasksFailed: [],
+    tasksSkipped: [],
+    totalFilesWritten: 1,
+    totalTestsWritten: 1,
+    avgCoverageBuilderScope: 80,
+    lintPassed: true,
+    typecheckPassed: true,
+    testsPassed: true,
+    headSha: "abc1234",
+    warnings: [],
+  };
+
+  it("buildAgentOptions sets outputFormat for backend-builder", async () => {
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      structured_output: builderOutputFixture,
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const call = (queryFn as any).calls[0];
+    expect(call.options.outputFormat).toBeDefined();
+    expect(call.options.outputFormat.type).toBe("json_schema");
+    // Schema is the BuilderOutput-derived JSON Schema; just confirm it's
+    // an object with discriminated-union shape (anyOf / oneOf with tier
+    // discriminator, depending on z.toJSONSchema's output).
+    expect(typeof call.options.outputFormat.schema).toBe("object");
+  });
+
+  it("buildAgentOptions does NOT set outputFormat for tester", async () => {
+    const budget = mkBudget();
+    // globalYaml registers "tester" so the model resolves; agent itself
+    // doesn't emit BuilderOutput so no outputFormat should be set.
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      structured_output: { taskOutcomes: { t1: "completed" } }, // legacy shape
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    await invoke({
+      agent: "tester",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const call = (queryFn as any).calls[0];
+    expect(call.options.outputFormat).toBeUndefined();
+  });
+
+  it("extractStructuredOutput uses SDK-provided structured_output verbatim (primary path)", async () => {
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      structured_output: builderOutputFixture,
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    expect(result.taskStatus).toEqual({ t1: "completed" });
+    expect(result.errors).toEqual({});
+  });
+
+  it("extractStructuredOutput strips trailing markdown fence and parses JSON", async () => {
+    const budget = mkBudget();
+    // No structured_output; result.result has JSON wrapped in ```json...```
+    const fenced = `Here are the results:\n\n\`\`\`json\n${JSON.stringify({ taskOutcomes: { t1: "completed" } })}\n\`\`\`\n`;
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      result: fenced,
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    // tester doesn't get outputFormat, so the fallback regex path is exercised
+    const result = await invoke({
+      agent: "tester",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    expect(result.taskStatus).toEqual({ t1: "completed" });
+    expect(result.errors).toEqual({});
+  });
+
+  it("extractStructuredOutput surfaces precise reason when text has no trailing JSON", async () => {
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      result: "Done! All tasks completed successfully.",
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "tester",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    expect(result.taskStatus.t1).toBe("failed");
+    // Precise reason replaces the historical silent "no parseable outcome JSON"
+    expect(result.errors.t1).toContain("text didn't end with parseable JSON");
+    // The tail of the agent's actual output is included for debugging
+    expect(result.errors.t1).toContain("Done!");
+  });
+
+  it("extractStructuredOutput surfaces precise reason when result.result is empty", async () => {
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      result: "",
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    const result = await invoke({
+      agent: "tester",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    expect(result.taskStatus.t1).toBe("failed");
+    expect(result.errors.t1).toContain("result.result was empty");
+  });
+});
+
 describe("invokeAgent — budget exceeded pre-call", () => {
   it("throws BudgetExceededError before invoking queryFn when tracker is at cap", async () => {
     const budget = mkBudget(1); // cap at $1
