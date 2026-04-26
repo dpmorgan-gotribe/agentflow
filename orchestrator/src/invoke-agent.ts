@@ -3,10 +3,12 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -398,6 +400,44 @@ function seedWorktree(projectRoot: string, worktreePath: string): SeedResult {
   return { ok: true };
 }
 
+/**
+ * bug-005b: detect the project's default branch instead of hardcoding `main`.
+ * Older git defaults (and many Windows environments) use `master`; the factory
+ * orchestrator was authored assuming `main` and broke on those projects.
+ *
+ * Probe order:
+ *   1. `main` (modern git default; most Linux/macOS envs since 2020)
+ *   2. `master` (older default; common on Windows + corporate environments)
+ *   3. Whatever HEAD is currently pointing at (best-effort fallback for
+ *      fresh-init projects with no merge target yet)
+ *   4. Last resort: literal "main" (caller will fail loudly downstream)
+ */
+async function detectDefaultBranch(
+  projectRoot: string,
+  execGit: ExecGitFn,
+): Promise<string> {
+  try {
+    await execGit("git rev-parse main", projectRoot);
+    return "main";
+  } catch {
+    /* main not present */
+  }
+  try {
+    await execGit("git rev-parse master", projectRoot);
+    return "master";
+  } catch {
+    /* master not present */
+  }
+  try {
+    const res = await execGit("git symbolic-ref --short HEAD", projectRoot);
+    const head = res.stdout.trim();
+    if (head) return head;
+  } catch {
+    /* fall through */
+  }
+  return "main";
+}
+
 async function runCloseFeature(
   gitOp: Extract<GitOpInput, { op: "close-feature" }>,
   projectRoot: string,
@@ -410,16 +450,19 @@ async function runCloseFeature(
     gitOp.worktree,
   );
   const branch = `feat/${gitOp.featureId.replace(/^feat-/, "")}`;
+  // bug-005b: detect the project's default branch (main / master / fallback)
+  // instead of hardcoding "main".
+  const defaultBranch = await detectDefaultBranch(projectRoot, execGit);
 
   // Optional: fetch origin (ignore failure for local-only repos).
   try {
-    await execGit("git fetch origin main", projectRoot);
+    await execGit(`git fetch origin ${shellQuote(defaultBranch)}`, projectRoot);
   } catch {
     // local-only — skip
   }
 
   // feat-018 Phase B: defensive guard against the silent no-op merge
-  // mode. If the feature branch's HEAD === main's HEAD, no commits
+  // mode. If the feature branch's HEAD === default-branch's HEAD, no commits
   // were made on the branch. There are two sub-cases:
   //   1. Worktree is dirty → builders authored code but skipped commit;
   //      Phase A should have caught this. Surface as a hard failure
@@ -431,7 +474,10 @@ async function runCloseFeature(
   let mainSha: string | null = null;
   let branchSha: string | null = null;
   try {
-    const mainRes = await execGit("git rev-parse main", projectRoot);
+    const mainRes = await execGit(
+      `git rev-parse ${shellQuote(defaultBranch)}`,
+      projectRoot,
+    );
     mainSha = mainRes.stdout.trim();
   } catch {
     mainSha = null;
@@ -469,20 +515,20 @@ async function runCloseFeature(
     }
     // eslint-disable-next-line no-console
     console.warn(
-      `[runCloseFeature] feature ${gitOp.featureId}: branch === main and worktree clean — likely a no-op feature. Proceeding with no-op merge.`,
+      `[runCloseFeature] feature ${gitOp.featureId}: branch === ${defaultBranch} and worktree clean — likely a no-op feature. Proceeding with no-op merge.`,
     );
   }
 
-  // Checkout main + merge feature branch.
+  // Checkout default branch + merge feature branch.
   try {
-    await execGit("git checkout main", projectRoot);
+    await execGit(`git checkout ${shellQuote(defaultBranch)}`, projectRoot);
   } catch (err) {
     return {
       op: "close-feature",
       success: false,
       conflict: true,
       conflictingFiles: [
-        `<checkout-main-failed>: ${err instanceof Error ? err.message : String(err)}`,
+        `<checkout-${defaultBranch}-failed>: ${err instanceof Error ? err.message : String(err)}`,
       ],
       lastWritingAgent: "unknown",
       worktreePath,
@@ -862,9 +908,17 @@ function extractStructuredOutput(result: SDKResultMessage): ExtractResult {
     return { ok: true, parsed: JSON.parse(jsonMatch[0]) };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    // Include the text the regex matched (truncated) so the next debug
+    // cycle can see exactly what the agent emitted — common cause is a
+    // JS object literal (unquoted keys) that JSON.parse rejects at pos 1.
+    const matchedText = jsonMatch[0];
+    const matchedSample =
+      matchedText.length > 400
+        ? `${matchedText.slice(0, 200)}...(${matchedText.length - 400} chars elided)...${matchedText.slice(-200)}`
+        : matchedText;
     return {
       ok: false,
-      reason: `JSON.parse threw on trailing-JSON match: ${msg}`,
+      reason: `JSON.parse threw on trailing-JSON match: ${msg}; matched text was: ${JSON.stringify(matchedSample)}`,
     };
   }
 }
@@ -1041,22 +1095,40 @@ export async function commitWorktreeChanges(
     return { committed: false, warning: `git add failed: ${add.stderr}` };
   }
 
-  // Replace single quotes with backticks so the shell-quoted -m argument
-  // can't be broken by a stray apostrophe in the message.
-  const safeMsg = message.replace(/'/g, "`");
-  const commit = await safeExec(exec, `git commit -m '${safeMsg}'`, cwd);
-  if (commit.code !== 0) {
-    return { committed: false, warning: `git commit failed: ${commit.stderr}` };
+  // bug-005a: write the message to a tempfile and use `git commit -F <path>`
+  // instead of `git commit -m '<msg>'`. The shell-quoted -m form breaks on
+  // Windows cmd.exe (single quotes are literal characters there, not string
+  // delimiters), causing messages like "feat(scaffold-next-app, state-shell-...)"
+  // to be parsed as separate args — git interprets the task IDs as pathspecs
+  // and every commit fails. The tempfile path has zero shell-meta-character
+  // escape concerns: git reads the file directly.
+  const tmpDir = mkdtempSync(join(tmpdir(), "agentflow-commit-"));
+  const msgPath = join(tmpDir, "COMMIT_MSG");
+  try {
+    writeFileSync(msgPath, message, "utf8");
+    const commit = await safeExec(
+      exec,
+      `git commit -F ${shellQuote(msgPath)}`,
+      cwd,
+    );
+    if (commit.code !== 0) {
+      return {
+        committed: false,
+        warning: `git commit failed: ${commit.stderr}`,
+      };
+    }
+    const rev = await safeExec(exec, "git rev-parse HEAD", cwd);
+    if (rev.code !== 0) {
+      return {
+        committed: false,
+        warning: `git rev-parse HEAD failed: ${rev.stderr}`,
+      };
+    }
+    return { committed: true, sha: rev.stdout.trim() };
+  } finally {
+    // Always clean up the tempfile, even on early return / throw.
+    rmSync(tmpDir, { recursive: true, force: true });
   }
-
-  const rev = await safeExec(exec, "git rev-parse HEAD", cwd);
-  if (rev.code !== 0) {
-    return {
-      committed: false,
-      warning: `git rev-parse HEAD failed: ${rev.stderr}`,
-    };
-  }
-  return { committed: true, sha: rev.stdout.trim() };
 }
 
 // ─── install-discipline helper (feat-019 Phase B) ────────────────────

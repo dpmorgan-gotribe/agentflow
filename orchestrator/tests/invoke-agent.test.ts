@@ -1495,7 +1495,9 @@ describe("commitWorktreeChanges (feat-018 Phase A)", () => {
         stdout: " M src/foo.ts\n?? src/bar.ts\n",
       },
       { match: /git add -A/, stdout: "" },
-      { match: /git commit -m/, stdout: "[feat/auth abc1234] msg\n" },
+      // bug-005a: production now uses `git commit -F <tempfile>` instead of
+      // `git commit -m '<msg>'` for cross-platform shell-quoting safety.
+      { match: /git commit -F/, stdout: "[feat/auth abc1234] msg\n" },
       { match: /git rev-parse HEAD/, stdout: "abc1234def5678\n" },
     ]);
     const result = await commitWorktreeChanges(
@@ -1510,7 +1512,8 @@ describe("commitWorktreeChanges (feat-018 Phase A)", () => {
     const calls = (execGit as any).calls as string[];
     expect(calls[0]).toBe("git status --porcelain");
     expect(calls[1]).toBe("git add -A");
-    expect(calls[2]).toMatch(/^git commit -m '.*backend-builder: t1, t2/);
+    // -F path is a tempfile under os.tmpdir() — just verify the shape.
+    expect(calls[2]).toMatch(/^git commit -F .*COMMIT_MSG/);
     expect(calls[3]).toBe("git rev-parse HEAD");
   });
 
@@ -1541,7 +1544,8 @@ describe("commitWorktreeChanges (feat-018 Phase A)", () => {
       { match: /git status --porcelain/, stdout: " M src/x.ts\n" },
       { match: /git add -A/, stdout: "" },
       {
-        match: /git commit -m/,
+        // bug-005a: production now uses `git commit -F <tempfile>`.
+        match: /git commit -F/,
         throwInstead: Object.assign(new Error("commit hook rejected"), {
           stderr: "pre-commit hook failed",
           code: 1,
@@ -1558,8 +1562,13 @@ describe("commitWorktreeChanges (feat-018 Phase A)", () => {
     expect(result.warning).toContain("pre-commit hook failed");
   });
 
-  it("message with single quotes → quotes replaced with backticks; commit succeeds", async () => {
-    let commitCmd = "";
+  it("bug-005a: message with shell-meta characters lands verbatim via tempfile", async () => {
+    // Production now writes the message to a tempfile and invokes
+    // `git commit -F <path>` — there's no shell-quoting to break, so
+    // apostrophes / parens / backticks / newlines all pass through
+    // verbatim. Verify by reading the tempfile back inside the stub.
+    let capturedMessage = "";
+    let capturedCmd = "";
     const execGit: ExecGitFn = async (cmd) => {
       if (/git status --porcelain/.test(cmd)) {
         return { stdout: " M src/x.ts\n", stderr: "", code: 0 };
@@ -1567,8 +1576,12 @@ describe("commitWorktreeChanges (feat-018 Phase A)", () => {
       if (/git add -A/.test(cmd)) {
         return { stdout: "", stderr: "", code: 0 };
       }
-      if (/git commit -m/.test(cmd)) {
-        commitCmd = cmd;
+      const fMatch = cmd.match(/^git commit -F (.+)$/);
+      if (fMatch?.[1]) {
+        capturedCmd = cmd;
+        // Path may be shell-quoted with double quotes by shellQuote(); strip them.
+        const path = fMatch[1].replace(/^"|"$/g, "");
+        capturedMessage = readFileSync(path, "utf8");
         return { stdout: "", stderr: "", code: 0 };
       }
       if (/git rev-parse HEAD/.test(cmd)) {
@@ -1576,17 +1589,22 @@ describe("commitWorktreeChanges (feat-018 Phase A)", () => {
       }
       throw new Error(`unexpected: ${cmd}`);
     };
+    // The exact message from the kanban-webapp run that broke bug-005a:
+    // contains parens, commas, AND apostrophes — all shell-meta chars.
+    const message =
+      "feat(scaffold-next-app, state-shell-localstorage): web-frontend-builder for feat-bootstrap (don't break the shell)";
     const result = await commitWorktreeChanges(
       "/tmp/worktree",
-      "agent: don't break the shell",
+      message,
       execGit,
     );
     expect(result.committed).toBe(true);
     expect(result.sha).toBe("abcdef0");
-    // The single quote in "don't" must have been swapped for a backtick
-    // so the outer single-quoted -m argument doesn't break.
-    expect(commitCmd).not.toContain("don't");
-    expect(commitCmd).toContain("don`t");
+    // Tempfile contents are byte-identical to the input message.
+    expect(capturedMessage).toBe(message);
+    // Command uses -F (tempfile), not -m (shell-quoted string).
+    expect(capturedCmd).toMatch(/^git commit -F /);
+    expect(capturedCmd).not.toMatch(/^git commit -m/);
   });
 
   it("git status fails → { committed: false, warning: 'git status failed: ...' }", async () => {
@@ -1606,6 +1624,194 @@ describe("commitWorktreeChanges (feat-018 Phase A)", () => {
     );
     expect(result.committed).toBe(false);
     expect(result.warning).toContain("git status failed");
+  });
+});
+
+// ─── bug-005 — Windows-quoting + default branch detection ────────────
+
+describe("commitWorktreeChanges (bug-005a tempfile cleanup)", () => {
+  it("removes the tempfile after a successful commit", async () => {
+    let capturedPath = "";
+    const execGit: ExecGitFn = async (cmd) => {
+      if (/git status --porcelain/.test(cmd)) {
+        return { stdout: " M src/x.ts\n", stderr: "", code: 0 };
+      }
+      if (/git add -A/.test(cmd)) {
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      const fMatch = cmd.match(/^git commit -F (.+)$/);
+      if (fMatch?.[1]) {
+        capturedPath = fMatch[1].replace(/^"|"$/g, "");
+        // Confirm the tempfile exists at this point (mid-commit).
+        expect(existsSync(capturedPath)).toBe(true);
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      if (/git rev-parse HEAD/.test(cmd)) {
+        return { stdout: "abcdef0\n", stderr: "", code: 0 };
+      }
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    await commitWorktreeChanges("/tmp/worktree", "test message", execGit);
+    // After commitWorktreeChanges returns, the tempfile + its parent dir
+    // should be gone (cleaned up in finally{}).
+    expect(existsSync(capturedPath)).toBe(false);
+  });
+
+  it("removes the tempfile even when the commit fails", async () => {
+    let capturedPath = "";
+    const execGit: ExecGitFn = async (cmd) => {
+      if (/git status --porcelain/.test(cmd)) {
+        return { stdout: " M src/x.ts\n", stderr: "", code: 0 };
+      }
+      if (/git add -A/.test(cmd)) {
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      const fMatch = cmd.match(/^git commit -F (.+)$/);
+      if (fMatch?.[1]) {
+        capturedPath = fMatch[1].replace(/^"|"$/g, "");
+        throw Object.assign(new Error("commit failed"), {
+          stderr: "fatal",
+          code: 1,
+        });
+      }
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const result = await commitWorktreeChanges(
+      "/tmp/worktree",
+      "test message",
+      execGit,
+    );
+    expect(result.committed).toBe(false);
+    // Tempfile cleaned up despite the commit error.
+    expect(existsSync(capturedPath)).toBe(false);
+  });
+});
+
+describe("runCloseFeature (bug-005b detectDefaultBranch)", () => {
+  // Simplified close-feature tests focusing on branch detection. Full
+  // close-feature happy/conflict paths are covered in earlier describes
+  // and continue to pass against this branch (because they use `main`).
+  it("uses 'master' when 'main' rev-parse fails but 'master' succeeds", async () => {
+    const calls: string[] = [];
+    const execGit: ExecGitFn = async (cmd) => {
+      calls.push(cmd);
+      // detectDefaultBranch probe: main fails, master succeeds.
+      if (cmd === "git rev-parse main") {
+        throw Object.assign(new Error("unknown ref"), {
+          stderr: "fatal: ambiguous argument 'main'",
+          code: 128,
+        });
+      }
+      if (cmd === "git rev-parse master") {
+        return { stdout: "abc1234\n", stderr: "", code: 0 };
+      }
+      // fetch / checkout master / merge — any pattern accepted.
+      if (/git fetch origin master/.test(cmd)) {
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      if (/git rev-parse "?feat\/auth"?/.test(cmd)) {
+        return { stdout: "deadbeef\n", stderr: "", code: 0 };
+      }
+      if (/git checkout "?master"?/.test(cmd)) {
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      if (/git merge --no-ff/.test(cmd)) {
+        return { stdout: "Fast-forward\n", stderr: "", code: 0 };
+      }
+      if (/git rev-parse HEAD/.test(cmd)) {
+        return {
+          stdout: "abc1234def5678901234567890abcdef12345678\n",
+          stderr: "",
+          code: 0,
+        };
+      }
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: true,
+    });
+    // Verify the orchestrator probed both branches AND used master in
+    // its subsequent ops (fetch/checkout/merge target).
+    expect(calls).toContain("git rev-parse main");
+    expect(calls).toContain("git rev-parse master");
+    expect(calls.some((c) => /git fetch origin master/.test(c))).toBe(true);
+    expect(calls.some((c) => /git checkout "?master"?/.test(c))).toBe(true);
+  });
+
+  it("falls back to 'main' when neither main nor master nor symbolic-ref work", async () => {
+    // All probes fail → default-branch is "main" (last-resort literal).
+    // Subsequent ops will then fail loudly, returning conflict — but
+    // the test confirms the fallback chain doesn't throw.
+    const execGit: ExecGitFn = async (cmd) => {
+      if (cmd === "git rev-parse main") {
+        throw Object.assign(new Error("no main"), { code: 128 });
+      }
+      if (cmd === "git rev-parse master") {
+        throw Object.assign(new Error("no master"), { code: 128 });
+      }
+      if (cmd === "git symbolic-ref --short HEAD") {
+        throw Object.assign(new Error("no HEAD ref"), { code: 128 });
+      }
+      // After fallback to "main", subsequent ops fire against main and fail.
+      if (/git fetch origin main/.test(cmd)) {
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      if (/git rev-parse "?feat\/auth"?/.test(cmd)) {
+        return { stdout: "deadbeef\n", stderr: "", code: 0 };
+      }
+      if (/git checkout "?main"?/.test(cmd)) {
+        throw Object.assign(new Error("no main branch to check out"), {
+          code: 128,
+        });
+      }
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    // Falls back to "main" → checkout fails → conflict path with
+    // "<checkout-main-failed>" sentinel.
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: false,
+      conflict: true,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const conflictingFiles = (result.gitAgentOutput as any)
+      .conflictingFiles as string[];
+    expect(conflictingFiles[0]).toContain("checkout-main-failed");
   });
 });
 
