@@ -93,7 +93,7 @@ Example: `feat-auth` maps to flow 1 in `docs/analysis/webapp/flows.md` whose scr
 screens: [webapp/welcome, webapp/signup, webapp/verify-email]
 ```
 
-Non-frontend tasks (backend-builder / tester / reviewer / devops) MUST leave `screens` unset (Zod superRefine rejects otherwise).
+Non-frontend tasks (backend-builder / tester / reviewer / security / devops) MUST leave `screens` unset (Zod superRefine rejects otherwise).
 
 **Overlap detection.** After all features + tasks have their `screens[]` populated, scan for any `{platform}/{screenId}` that appears on tasks in ≥2 different features. For each collision:
 

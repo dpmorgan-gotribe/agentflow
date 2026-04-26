@@ -985,10 +985,15 @@ describe("invokeAgent — builder missing-task handling", () => {
 // ─── bug-010 — graceful skip on unshipped agent ─────────────────────
 //
 // PM's schema enum (AgentSequenceMember) deliberately includes agents
-// the factory hasn't shipped yet (e.g., security, devops) — Design B
+// the factory hasn't shipped yet (e.g., devops, future roles) — Design B
 // per scaffolding/26-039-agent-expert.md. When orchestrator hits an
 // unshipped agent, throw vs skip is the difference between crashing the
 // entire Mode B run vs degrading one feature gracefully.
+//
+// NOTE: tests use clearly-fictional agent names (`xyz-fake-agent`) so they
+// stay valid as the factory ships more real agents over time. bug-011 ships
+// `security` — using `security` in this test would have stopped exercising
+// the skip path the moment bug-011 landed.
 describe("invokeAgent — graceful skip on unshipped agent (bug-010)", () => {
   it("dispatching unshipped agent → returns completed + skippedReason, no throw", async () => {
     const budget = mkBudget();
@@ -1002,16 +1007,15 @@ describe("invokeAgent — graceful skip on unshipped agent (bug-010)", () => {
       flags: [],
       queryFn,
       modelConfigOverride: {
-        // globalYaml does NOT have a "security" entry → readModelConfig throws
+        // globalYaml has no entry for the fictional agent → readModelConfig throws
         globalPath: globalYaml,
         projectPath: join(projectRoot, "no-project.yaml"),
       },
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await invoke({
-      // Cast — runtime allows any string (PM's schema enumerates security);
-      // the type narrowing is for TS-only callers.
-      agent: "security" as any,
+      // Cast — fictional agent name; runtime tolerates any string per bug-010
+      agent: "xyz-fake-agent" as any,
       cwd: projectRoot,
       featureContext,
       tasks: [task1, task2],
@@ -1022,7 +1026,9 @@ describe("invokeAgent — graceful skip on unshipped agent (bug-010)", () => {
     });
     expect(result.errors).toEqual({});
     expect(result.costUsd).toBe(0);
-    expect(result.skippedReason).toContain("agent 'security' not configured");
+    expect(result.skippedReason).toContain(
+      "agent 'xyz-fake-agent' not configured",
+    );
     // QueryFn must NOT have been called (we skipped before SDK dispatch)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((queryFn as any).calls.length).toBe(0);
@@ -1047,7 +1053,7 @@ describe("invokeAgent — graceful skip on unshipped agent (bug-010)", () => {
     });
     const result = await invoke({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      agent: "devops" as any,
+      agent: "another-fake-agent" as any,
       cwd: projectRoot,
       featureContext,
       tasks: [task1],

@@ -13,5 +13,6 @@ export * from "./pm.js";
 export * from "./builder.js";
 export * from "./tester.js";
 export * from "./reviewer.js";
+export * from "./security.js";
 export * from "./gates.js";
 export * from "./model-config.js";
