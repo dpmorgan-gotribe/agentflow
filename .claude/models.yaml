@@ -19,12 +19,7 @@ extends: ~/.claude/models.yaml
 #   agents:
 #     backend-builder: { tier: planning, effort: max }
 #     ui-designer:     { tier: mechanical, effort: medium }
-agents:
-  # bug-011: ship security agent. Uses quality tier (Opus-grade) because
-  # specialist security review is high-stakes — false negatives ship
-  # vulnerabilities, false positives erode trust. Aligned with reviewer +
-  # tester (also quality tier).
-  security: { tier: quality, effort: high }
+agents: {}
 
 # Budget overrides. Leave empty to inherit.
 # budget:
