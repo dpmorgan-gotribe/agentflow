@@ -181,6 +181,8 @@ describe("invokeAgent — git-agent happy paths", () => {
   it("checkout-feature writes a worktree + lockfile + returns success payload", async () => {
     const budget = mkBudget();
     const execGit = makeExecGit([
+      // bug-009 pre-flight: clean project root → no auto-commit, just worktree add
+      { match: /git status --porcelain/, stdout: "" },
       { match: /git worktree add/, stdout: "Preparing worktree\n" },
     ]);
     const invoke = createInvokeAgent({
@@ -436,6 +438,8 @@ describe("invokeAgent — git-agent failure paths", () => {
   it("checkout-feature: branch-conflict when git reports existing branch", async () => {
     const budget = mkBudget();
     const execGit = makeExecGit([
+      // bug-009 pre-flight: clean project root → no auto-commit
+      { match: /git status --porcelain/, stdout: "" },
       {
         match: /git worktree add/,
         throwInstead: new Error(
@@ -478,10 +482,159 @@ describe("invokeAgent — git-agent failure paths", () => {
 //     for Write(*)/Edit(*)/MultiEdit(*) etc. (so autonomous Mode B agents
 //     can write files without an interactive approval prompt)
 //  3. Self-verify both before returning success
+// ─── bug-009 — checkout-feature pre-flight snapshot ─────────────────
+//
+// runCheckoutFeature now does a pre-flight `git status --porcelain` on the
+// project root. If dirty/untracked, it auto-commits a "factory: project
+// bootstrap snapshot" to the current branch BEFORE creating the worktree.
+// This ensures the worktree branches from a state INCLUSIVE of pre-build's
+// Mode A artifacts (kit, docs, configs) so the agent doesn't recreate them
+// — eliminating the AA (add/add) merge conflicts that bug-008's
+// close-feature pre-flight created by snapshotting in the wrong phase.
+describe("runCheckoutFeature (bug-009 pre-worktree snapshot)", () => {
+  it("dirty project root → snapshot commit fires BEFORE git worktree add", async () => {
+    const calls: string[] = [];
+    const execGit: ExecGitFn = async (cmd) => {
+      calls.push(cmd);
+      // Dirty project root: 1 modified file + 1 untracked
+      if (/git status --porcelain/.test(cmd))
+        return {
+          stdout: " M brief.md\n?? .env.example\n",
+          stderr: "",
+          code: 0,
+        };
+      if (/git add -A/.test(cmd)) return { stdout: "", stderr: "", code: 0 };
+      if (/git commit -F/.test(cmd))
+        return {
+          stdout: "[master abc1234] factory: project bootstrap snapshot\n",
+          stderr: "",
+          code: 0,
+        };
+      if (/git worktree add/.test(cmd))
+        return { stdout: "Preparing worktree\n", stderr: "", code: 0 };
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "checkout-feature",
+        worktree: "feat-auth",
+        branch: "feat/auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "checkout-feature",
+      success: true,
+    });
+    // CRITICAL ORDERING: snapshot (status → add → commit -F) runs BEFORE
+    // worktree add — bug-009's whole point. Without this ordering the
+    // worktree would branch from a pre-snapshot state and the agent would
+    // recreate kit files, causing AA conflicts at close-feature time.
+    const statusIdx = calls.findIndex((c) => /git status --porcelain/.test(c));
+    const addIdx = calls.findIndex((c) => /git add -A/.test(c));
+    const commitIdx = calls.findIndex((c) => /git commit -F/.test(c));
+    const worktreeIdx = calls.findIndex((c) => /git worktree add/.test(c));
+    expect(statusIdx).toBeGreaterThan(-1);
+    expect(addIdx).toBeGreaterThan(statusIdx);
+    expect(commitIdx).toBeGreaterThan(addIdx);
+    expect(worktreeIdx).toBeGreaterThan(commitIdx);
+  });
+
+  it("clean project root → no snapshot, just worktree add", async () => {
+    const calls: string[] = [];
+    const execGit: ExecGitFn = async (cmd) => {
+      calls.push(cmd);
+      if (/git status --porcelain/.test(cmd))
+        return { stdout: "", stderr: "", code: 0 };
+      if (/git worktree add/.test(cmd))
+        return { stdout: "Preparing worktree\n", stderr: "", code: 0 };
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "checkout-feature",
+        worktree: "feat-auth",
+        branch: "feat/auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "checkout-feature",
+      success: true,
+    });
+    // No auto-commit on clean state
+    expect(calls.some((c) => /git add -A/.test(c))).toBe(false);
+    expect(calls.some((c) => /git commit -F/.test(c))).toBe(false);
+  });
+
+  it("snapshot commit failure → returns worktree-seed-failed", async () => {
+    const execGit: ExecGitFn = async (cmd) => {
+      if (/git status --porcelain/.test(cmd))
+        return { stdout: " M brief.md\n", stderr: "", code: 0 };
+      if (/git add -A/.test(cmd)) return { stdout: "", stderr: "", code: 0 };
+      if (/git commit -F/.test(cmd))
+        throw Object.assign(new Error("commit refused"), {
+          stderr: "fatal",
+          code: 1,
+        });
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "checkout-feature",
+        worktree: "feat-auth",
+        branch: "feat/auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "checkout-feature",
+      success: false,
+      reason: "worktree-seed-failed",
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((result.gitAgentOutput as any).detail).toContain(
+      "bug-009 pre-worktree snapshot failed",
+    );
+  });
+});
+
 describe("invokeAgent — checkout-feature seeds worktree (bug-002)", () => {
   it("copies all 4 hook scripts into the worktree", async () => {
     const budget = mkBudget();
     const execGit = makeExecGit([
+      // bug-009 pre-flight: clean project root → no auto-commit, just worktree add
+      { match: /git status --porcelain/, stdout: "" },
       { match: /git worktree add/, stdout: "Preparing worktree\n" },
     ]);
     const invoke = createInvokeAgent({
@@ -527,6 +680,8 @@ describe("invokeAgent — checkout-feature seeds worktree (bug-002)", () => {
   it("amends worktree settings.json with autonomous-mode permissions.allow", async () => {
     const budget = mkBudget();
     const execGit = makeExecGit([
+      // bug-009 pre-flight: clean project root → no auto-commit, just worktree add
+      { match: /git status --porcelain/, stdout: "" },
       { match: /git worktree add/, stdout: "Preparing worktree\n" },
     ]);
     const invoke = createInvokeAgent({
@@ -585,6 +740,10 @@ describe("invokeAgent — checkout-feature seeds worktree (bug-002)", () => {
     // true (no stale-worktree) but seeds the worktree state seedWorktree
     // amends.
     const execGit: ExecGitFn = async (cmd) => {
+      // bug-009 pre-flight: clean project root, no auto-commit
+      if (/git status --porcelain/.test(cmd)) {
+        return { stdout: "", stderr: "", code: 0 };
+      }
       if (/git worktree add/.test(cmd)) {
         mkdirSync(
           join(projectRoot, ".claude", "worktrees", "feat-auth", ".claude"),
@@ -652,6 +811,8 @@ describe("invokeAgent — checkout-feature seeds worktree (bug-002)", () => {
     });
     const budget = mkBudget();
     const execGit = makeExecGit([
+      // bug-009 pre-flight: clean project root → no auto-commit, just worktree add
+      { match: /git status --porcelain/, stdout: "" },
       { match: /git worktree add/, stdout: "Preparing worktree\n" },
     ]);
     const invoke = createInvokeAgent({
@@ -695,6 +856,10 @@ describe("invokeAgent — checkout-feature seeds worktree (bug-002)", () => {
     // whose settings.json is malformed JSON. seedWorktree should fail loudly
     // rather than silently writing over it.
     const execGit: ExecGitFn = async (cmd) => {
+      // bug-009 pre-flight: clean project root, no auto-commit
+      if (/git status --porcelain/.test(cmd)) {
+        return { stdout: "", stderr: "", code: 0 };
+      }
       if (/git worktree add/.test(cmd)) {
         mkdirSync(
           join(projectRoot, ".claude", "worktrees", "feat-auth", ".claude"),

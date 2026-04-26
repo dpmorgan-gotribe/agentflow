@@ -169,6 +169,47 @@ async function runCheckoutFeature(
     };
   }
 
+  // bug-009: snapshot dirty/untracked project root state to the current branch
+  // (typically master) BEFORE creating the worktree. This ensures the worktree
+  // branches from a state INCLUSIVE of pre-build's Mode A artifacts (kit, docs,
+  // configs) so the agent doesn't need to recreate them — eliminating the AA
+  // (add/add) merge conflicts that bug-008's close-feature pre-flight created
+  // by snapshotting AFTER the agent had already committed its own version.
+  //
+  // Idempotent: skipped if status is clean. First feature in a Mode B run
+  // typically does the heavy lifting; subsequent features find the project
+  // root already-clean and skip entirely.
+  try {
+    const status = await execGit("git status --porcelain", projectRoot);
+    if (status.stdout.trim() !== "") {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[runCheckoutFeature] feature ${gitOp.featureId}: project root has dirty/untracked state — auto-committing snapshot before worktree creation.`,
+      );
+      await execGit("git add -A", projectRoot);
+      const snapTmp = mkdtempSync(join(tmpdir(), "agentflow-snapshot-"));
+      const snapMsg = join(snapTmp, "MSG");
+      try {
+        writeFileSync(
+          snapMsg,
+          `factory: project bootstrap snapshot before checkout-feature for ${gitOp.featureId}\n\nAuto-committed by orchestrator so the worktree branches from a state inclusive of pre-build Mode A artifacts (kit, docs, configs). Without this, agents see a blank worktree, recreate kit files independently, and merges hit AA (add/add) conflicts at close-feature time.`,
+          "utf8",
+        );
+        await execGit(`git commit -F ${shellQuote(snapMsg)}`, projectRoot);
+      } finally {
+        rmSync(snapTmp, { recursive: true, force: true });
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      op: "checkout-feature",
+      success: false,
+      reason: "worktree-seed-failed",
+      detail: `bug-009 pre-worktree snapshot failed: ${msg}`,
+    };
+  }
+
   try {
     await execGit(
       `git worktree add ${shellQuote(worktreePath)} -b ${shellQuote(gitOp.branch)}`,
