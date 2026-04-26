@@ -1252,7 +1252,7 @@ describe("invokeAgent — outputFormat + extractStructuredOutput (bug-004)", () 
     // Precise reason replaces the historical silent "no parseable outcome JSON"
     // bug-006: wording updated when greedy regex was replaced with backward-scan
     expect(result.errors.t1).toContain(
-      "text didn't contain a parseable trailing JSON",
+      "no <<<TASK_OUTCOME>>> sentinel block found, no balanced JSON object found",
     );
     // The tail of the agent's actual output is included for debugging
     expect(result.errors.t1).toContain("Done!");
@@ -1431,7 +1431,7 @@ describe("invokeAgent — backward-scan trailing-JSON extractor (bug-006)", () =
     });
     expect(result.taskStatus.t1).toBe("failed");
     expect(result.errors.t1).toContain(
-      "text didn't contain a parseable trailing JSON",
+      "no <<<TASK_OUTCOME>>> sentinel block found, no balanced JSON object found",
     );
   });
 
@@ -1464,7 +1464,7 @@ describe("invokeAgent — backward-scan trailing-JSON extractor (bug-006)", () =
     });
     expect(result.taskStatus.t1).toBe("failed");
     expect(result.errors.t1).toContain(
-      "text didn't contain a parseable trailing JSON",
+      "no <<<TASK_OUTCOME>>> sentinel block found, no balanced JSON object found",
     );
     // Tail breadcrumb included for debug
     expect(result.errors.t1).toContain("another, broken, example");
@@ -1503,6 +1503,169 @@ describe("invokeAgent — backward-scan trailing-JSON extractor (bug-006)", () =
       tasks: [task1],
     });
     expect(result.taskStatus).toEqual({ t1: "completed" });
+  });
+});
+
+// ─── bug-007 — sentinel + balanced-brace strategy stack ─────────────
+describe("invokeAgent — sentinel + balanced-brace extraction (bug-007)", () => {
+  function dispatch(text: string) {
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      result: text,
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    return invoke({
+      agent: "tester",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+  }
+
+  it("sentinel happy path: agent uses <<<TASK_OUTCOME>>> wrapper", async () => {
+    const text = [
+      "Some prose summary.",
+      "<<<TASK_OUTCOME>>>",
+      JSON.stringify({ taskOutcomes: { t1: "completed" } }),
+      "<<<END_TASK_OUTCOME>>>",
+    ].join("\n");
+    const result = await dispatch(text);
+    expect(result.taskStatus).toEqual({ t1: "completed" });
+  });
+
+  it("sentinel + long markdown summary before sentinels", async () => {
+    const text = [
+      "# Summary",
+      "- ✅ Tests: 16/16 passed",
+      "- ✅ Coverage: 100% on `store.ts`",
+      "Implementation: used `{ boards, columns }` destructuring.",
+      "",
+      "<<<TASK_OUTCOME>>>",
+      JSON.stringify({ taskOutcomes: { t1: "completed" }, errors: {} }),
+      "<<<END_TASK_OUTCOME>>>",
+    ].join("\n");
+    const result = await dispatch(text);
+    expect(result.taskStatus).toEqual({ t1: "completed" });
+  });
+
+  it("sentinel + inner code fence (defensive)", async () => {
+    const text = [
+      "<<<TASK_OUTCOME>>>",
+      "```json",
+      JSON.stringify({ taskOutcomes: { t1: "completed" } }),
+      "```",
+      "<<<END_TASK_OUTCOME>>>",
+    ].join("\n");
+    const result = await dispatch(text);
+    expect(result.taskStatus).toEqual({ t1: "completed" });
+  });
+
+  it("backtick-wrapped JSON: **Outcome:** `{...}` (the bug-007 surfacing case)", async () => {
+    const text = [
+      "## Implementation Summary",
+      "- ✅ Tests: 16/16 passed",
+      "- ✅ Committed: `e8489924`",
+      "",
+      "**Outcome:** `" +
+        JSON.stringify({ taskOutcomes: { t1: "completed" }, errors: {} }) +
+        "`",
+    ].join("\n");
+    const result = await dispatch(text);
+    expect(result.taskStatus).toEqual({ t1: "completed" });
+  });
+
+  it("trailing prose after JSON: `{...} 🎉 done!`", async () => {
+    const text =
+      "Result:\n" +
+      JSON.stringify({ taskOutcomes: { t1: "completed" } }) +
+      " 🎉 done!";
+    const result = await dispatch(text);
+    expect(result.taskStatus).toEqual({ t1: "completed" });
+  });
+
+  it("returns LAST top-level JSON when multiple top-level objects appear", async () => {
+    const text = [
+      "{ user, posts }", // unparseable — not a candidate
+      "Intermediate: " + JSON.stringify({ partial: true, step: "scaffold" }),
+      "Final:",
+      JSON.stringify({ taskOutcomes: { t1: "completed" } }),
+    ].join("\n");
+    const result = await dispatch(text);
+    expect(result.taskStatus).toEqual({ t1: "completed" });
+  });
+
+  it("nested JSON: outer object returned even when inner empty {} exists", async () => {
+    const text =
+      "Result: " +
+      JSON.stringify({ taskOutcomes: { t1: "completed" }, errors: {} });
+    const result = await dispatch(text);
+    expect(result.taskStatus).toEqual({ t1: "completed" });
+  });
+
+  it("JSON with strings containing { and } chars (string-aware brace counting)", async () => {
+    const text = JSON.stringify({
+      taskOutcomes: { t1: "failed" },
+      errors: { t1: "expected `{` got something else; saw `}` first" },
+    });
+    const result = await dispatch(text);
+    expect(result.taskStatus).toEqual({ t1: "failed" });
+    expect(result.errors.t1).toContain("expected");
+  });
+
+  it("clean failure with diagnostic when no JSON anywhere", async () => {
+    const text = "All tasks done! See you tomorrow.";
+    const result = await dispatch(text);
+    expect(result.taskStatus.t1).toBe("failed");
+    expect(result.errors.t1).toContain("no <<<TASK_OUTCOME>>> sentinel block");
+    expect(result.errors.t1).toContain("no balanced JSON object");
+    expect(result.errors.t1).toContain("All tasks done");
+  });
+
+  it("clean failure when only invalid `{...}` blocks exist", async () => {
+    const text =
+      "{ user, posts } and { Record<id, T> } and { another, broken }";
+    const result = await dispatch(text);
+    expect(result.taskStatus.t1).toBe("failed");
+    expect(result.errors.t1).toContain("no balanced JSON object");
+  });
+
+  it("buildAgentPrompt addendum instructs agent to use sentinels", async () => {
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      structured_output: { taskOutcomes: { t1: "completed" } },
+      total_cost_usd: 0.1,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    await invoke({
+      agent: "tester",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const call = (queryFn as any).calls[0];
+    expect(call.prompt).toContain("<<<TASK_OUTCOME>>>");
+    expect(call.prompt).toContain("<<<END_TASK_OUTCOME>>>");
+    expect(call.prompt).toContain("Do NOT wrap the JSON inside the sentinels");
   });
 });
 
