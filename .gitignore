@@ -3,6 +3,8 @@
 .claude/worktrees/*
 !.claude/worktrees/README.md
 .claude/scheduled_tasks.lock
+# bug-013: orchestrator per-worktree runtime state — never commit
+.feature-context.json
 
 # Playwright MCP runtime cache (console logs + page snapshots per session)
 .playwright-mcp/
