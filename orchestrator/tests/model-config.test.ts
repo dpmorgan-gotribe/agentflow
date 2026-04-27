@@ -6,6 +6,7 @@ import {
   readBudgetCaps,
   readModelConfig,
   readProviderConfig,
+  readStallTimeoutMode,
 } from "../src/model-config.js";
 
 let tmpDir: string;
@@ -280,6 +281,116 @@ describe("readModelConfig — provider resolution (feat-017)", () => {
     writeFileSync(projectPath, `apiKeyEnvVar: PROJECT_KEY\n`);
     const cfg = readModelConfig("analyst", tmpDir, { globalPath, projectPath });
     expect(cfg.providerConfig.apiKeyEnvVar).toBe("PROJECT_KEY");
+  });
+});
+
+// ─── feat-024 Phase B: stallTimeoutMs resolution ──────────────────────
+
+describe("readModelConfig — stallTimeoutMs (feat-024 Phase B)", () => {
+  it("uses built-in default for backend-builder (25 min)", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  backend-builder: { tier: build }\n`,
+    );
+    const cfg = readModelConfig("backend-builder", tmpDir, {
+      globalPath,
+      projectPath,
+    });
+    expect(cfg.stallTimeoutMs).toBe(25 * 60 * 1000);
+  });
+
+  it("uses built-in default for tester (20 min)", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  tester: { tier: build }\n`,
+    );
+    const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
+    expect(cfg.stallTimeoutMs).toBe(20 * 60 * 1000);
+  });
+
+  it("uses built-in default for reviewer (10 min)", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  reviewer: { tier: build }\n`,
+    );
+    const cfg = readModelConfig("reviewer", tmpDir, { globalPath, projectPath });
+    expect(cfg.stallTimeoutMs).toBe(10 * 60 * 1000);
+  });
+
+  it("git-agent default is null (never abort by liveness)", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  git-agent: { tier: build }\n`,
+    );
+    const cfg = readModelConfig("git-agent", tmpDir, {
+      globalPath,
+      projectPath,
+    });
+    expect(cfg.stallTimeoutMs).toBeNull();
+  });
+
+  it("project YAML stallTimeoutMs map overrides built-in default", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  tester: { tier: build }\n`,
+    );
+    writeFileSync(
+      projectPath,
+      `stallTimeoutMs:\n  tester: 60000\n`,
+    );
+    const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
+    expect(cfg.stallTimeoutMs).toBe(60_000);
+  });
+
+  it("agent.stallTimeoutMs in project YAML wins over top-level map", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  tester: { tier: build }\n`,
+    );
+    writeFileSync(
+      projectPath,
+      `stallTimeoutMs:\n  tester: 60000\nagents:\n  tester: { stallTimeoutMs: 12345 }\n`,
+    );
+    const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
+    expect(cfg.stallTimeoutMs).toBe(12345);
+  });
+
+  it("project null override disables liveness even when default is set", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  tester: { tier: build }\n`,
+    );
+    writeFileSync(
+      projectPath,
+      `agents:\n  tester: { stallTimeoutMs: null }\n`,
+    );
+    const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
+    expect(cfg.stallTimeoutMs).toBeNull();
+  });
+});
+
+describe("readStallTimeoutMode (feat-024 Phase C)", () => {
+  it("defaults to 'lenient'", () => {
+    writeFileSync(globalPath, `defaults: {}\n`);
+    expect(
+      readStallTimeoutMode(tmpDir, { globalPath, projectPath }),
+    ).toBe("lenient");
+  });
+
+  it("reads 'strict' from project YAML", () => {
+    writeFileSync(globalPath, `defaults: {}\n`);
+    writeFileSync(projectPath, `stallTimeoutMode: strict\n`);
+    expect(
+      readStallTimeoutMode(tmpDir, { globalPath, projectPath }),
+    ).toBe("strict");
+  });
+
+  it("project overrides global", () => {
+    writeFileSync(globalPath, `stallTimeoutMode: strict\n`);
+    writeFileSync(projectPath, `stallTimeoutMode: lenient\n`);
+    expect(
+      readStallTimeoutMode(tmpDir, { globalPath, projectPath }),
+    ).toBe("lenient");
   });
 });
 

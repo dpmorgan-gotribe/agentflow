@@ -6,6 +6,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import {
+  FeatureGraphProgressSchema,
+  type FeatureGraphProgress,
+} from "@repo/orchestrator-contracts";
 import { BudgetTracker } from "./budget-tracker.js";
 import { RetryCounters, type RetryCountersSnapshot } from "./retry-counters.js";
 
@@ -105,4 +109,68 @@ export function loadState(
     retryCounters: restoredSnapshot,
     budget: s.budget,
   };
+}
+
+// ─── feat-024 Phase A: feature-graph-progress.json ────────────────────
+//
+// Sibling of counters.json under <projectRoot>/.claude/state/<runId>/.
+// Captures the feature-graph traversal state — what's merged, what's
+// in-flight, what failed/aborted — so a paused run can resume cleanly
+// (per investigate-007 F3 + F5). Atomic write semantics mirror saveState's
+// tempfile+rename pattern.
+
+/** Path to feature-graph-progress.json for a given run. */
+export function featureGraphProgressPath(
+  projectRoot: string,
+  pipelineRunId: string,
+): string {
+  return join(
+    projectRoot,
+    ".claude",
+    "state",
+    pipelineRunId,
+    "feature-graph-progress.json",
+  );
+}
+
+/**
+ * Atomically write the feature-graph-progress snapshot. Validates against
+ * the Zod schema before write — better to throw on a bad snapshot than to
+ * persist garbage that would crash the resume path. Creates parent dirs.
+ */
+export function writeFeatureGraphProgress(
+  projectRoot: string,
+  pipelineRunId: string,
+  snapshot: FeatureGraphProgress,
+): void {
+  const validated = FeatureGraphProgressSchema.parse(snapshot);
+  const finalPath = featureGraphProgressPath(projectRoot, pipelineRunId);
+  mkdirSync(dirname(finalPath), { recursive: true });
+  const tmpPath = `${finalPath}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify(validated, null, 2), "utf8");
+  renameSync(tmpPath, finalPath);
+}
+
+/**
+ * Load + validate the snapshot for a given run. Returns null when the
+ * file doesn't exist (cold start). Throws on schema mismatch — a corrupt
+ * checkpoint is operator-recoverable; silently dropping it would mask a
+ * real bug in the writer path.
+ */
+export function readFeatureGraphProgress(
+  projectRoot: string,
+  pipelineRunId: string,
+): FeatureGraphProgress | null {
+  const path = featureGraphProgressPath(projectRoot, pipelineRunId);
+  if (!existsSync(path)) return null;
+  const raw = readFileSync(path, "utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `readFeatureGraphProgress: invalid JSON at ${path}: ${(err as Error).message}`,
+    );
+  }
+  return FeatureGraphProgressSchema.parse(parsed);
 }

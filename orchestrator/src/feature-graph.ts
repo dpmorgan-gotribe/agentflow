@@ -2,8 +2,10 @@ import type {
   AgentSequenceMember,
   BuildToSpecVerifyOutput as BuildToSpecVerifyOutputType,
   Feature,
+  FeatureGraphProgress,
   GateResolution,
   GitAgentOutput,
+  InFlightFeature,
   Task,
   TasksV2,
 } from "@repo/orchestrator-contracts";
@@ -21,7 +23,12 @@ import {
   installIfPackageJsonChanged as defaultInstallIfPackageJsonChanged,
 } from "./invoke-agent.js";
 import type { RetryCounters } from "./retry-counters.js";
-import { saveState } from "./state-persistence.js";
+import { existsSync } from "node:fs";
+import { pausedStatePath, pauseRun } from "./pause.js";
+import {
+  saveState,
+  writeFeatureGraphProgress,
+} from "./state-persistence.js";
 
 /**
  * Gate 6 (pr-review) waiter. Fires between the last agent in
@@ -193,6 +200,197 @@ export interface FeatureGraphContext {
    * where `scripts/audit-app-reachability.mjs` + friends live.
    */
   factoryRoot?: string;
+  /**
+   * feat-024 Phase A — progress checkpoint tracker. Default: a real
+   * tracker that writes `feature-graph-progress.json` on every state
+   * transition (dispatch / agent boundary / merge / fail / abort) so
+   * paused / crashed runs can resume cleanly. Tests inject a no-op
+   * tracker via `noopProgressTracker()` to avoid touching disk.
+   */
+  progressTracker?: ProgressTracker;
+  /**
+   * feat-024 Phase A — master commit SHA captured at run start, written
+   * into the progress snapshot for resume-time drift detection. Default
+   * `"unknown"` when unset (tests). The real CLI entry point reads
+   * `git rev-parse HEAD` against the project root and passes it here.
+   */
+  masterCommitSha?: string;
+  /**
+   * feat-024 Phase C — auth provider in effect at run start. Persisted
+   * into paused.json so the resume helper can detect mid-pause provider
+   * switches. Default "unknown" when unset (tests).
+   */
+  authProvider?: string;
+  /**
+   * feat-024 Phase C — disable the paused.json sentinel poll between
+   * agents. Default false (poll happens). Tests that don't exercise
+   * pause logic typically leave this false too — there's no perf cost
+   * since `existsSync` against a non-existent path is microseconds.
+   */
+  pauseSentinelPollDisabled?: boolean;
+}
+
+// ─── feat-024 Phase A: progress tracker ──────────────────────────────
+//
+// Funnels every feature-graph state transition into the
+// `feature-graph-progress.json` snapshot. The tracker is a small object
+// that owns the in-memory snapshot + flushes after each mutation. We
+// keep the snapshot in memory (incremental update) rather than rebuilding
+// it from scratch — cheaper + matches the plan's "INCREMENTAL" requirement.
+
+export interface ProgressTracker {
+  onFeatureDispatched(args: {
+    featureId: string;
+    worktree: string;
+    branch: string;
+    firstAgent: AgentSequenceMember;
+    nextAgent: AgentSequenceMember | null;
+  }): void;
+  onAgentBoundary(args: {
+    featureId: string;
+    completedAgent: AgentSequenceMember;
+    nextAgent: AgentSequenceMember | null;
+  }): void;
+  onProgress(args: { featureId: string }): void;
+  onFeatureMerged(args: { featureId: string }): void;
+  onFeatureFailed(args: { featureId: string }): void;
+  onFeatureAborted(args: { featureId: string }): void;
+  /** Flush the snapshot to disk (or no-op for the noop tracker). */
+  flush(): void;
+  /** Read-only snapshot accessor (used by `pause` to capture a copy). */
+  snapshot(): FeatureGraphProgress;
+}
+
+/** A no-op tracker — the default in tests so they don't touch disk. */
+export function noopProgressTracker(): ProgressTracker {
+  const empty: FeatureGraphProgress = {
+    version: "1.0",
+    pipelineRunId: "noop",
+    lastUpdatedAt: new Date().toISOString(),
+    masterCommitSha: "unknown",
+    completed: [],
+    failed: [],
+    aborted: [],
+    inFlight: [],
+  };
+  return {
+    onFeatureDispatched() {},
+    onAgentBoundary() {},
+    onProgress() {},
+    onFeatureMerged() {},
+    onFeatureFailed() {},
+    onFeatureAborted() {},
+    flush() {},
+    snapshot: () => empty,
+  };
+}
+
+/**
+ * Factory for the real disk-backed tracker. Holds the snapshot in memory;
+ * `flush()` writes atomically to `feature-graph-progress.json`. Each
+ * mutation method calls `flush()` so the on-disk file always reflects the
+ * latest known state (a Mode B crash leaves a usable checkpoint).
+ */
+export function createProgressTracker(args: {
+  projectRoot: string;
+  pipelineRunId: string;
+  masterCommitSha: string;
+}): ProgressTracker {
+  const snapshot: FeatureGraphProgress = {
+    version: "1.0",
+    pipelineRunId: args.pipelineRunId,
+    lastUpdatedAt: new Date().toISOString(),
+    masterCommitSha: args.masterCommitSha,
+    completed: [],
+    failed: [],
+    aborted: [],
+    inFlight: [],
+  };
+
+  function bump(): void {
+    snapshot.lastUpdatedAt = new Date().toISOString();
+  }
+
+  function findInFlight(featureId: string): InFlightFeature | undefined {
+    return snapshot.inFlight.find((f) => f.featureId === featureId);
+  }
+
+  function removeInFlight(featureId: string): void {
+    snapshot.inFlight = snapshot.inFlight.filter(
+      (f) => f.featureId !== featureId,
+    );
+  }
+
+  const tracker: ProgressTracker = {
+    onFeatureDispatched({ featureId, worktree, branch, firstAgent, nextAgent }) {
+      removeInFlight(featureId);
+      const now = new Date().toISOString();
+      snapshot.inFlight.push({
+        featureId,
+        worktree,
+        branch,
+        lastAgent: firstAgent,
+        nextAgent,
+        lastProgressAt: now,
+        dispatchedAt: now,
+      });
+      bump();
+      tracker.flush();
+    },
+    onAgentBoundary({ featureId, completedAgent, nextAgent }) {
+      const entry = findInFlight(featureId);
+      if (!entry) return;
+      entry.lastAgent = completedAgent;
+      entry.nextAgent = nextAgent;
+      entry.dispatchedAt = new Date().toISOString();
+      entry.lastProgressAt = entry.dispatchedAt;
+      bump();
+      tracker.flush();
+    },
+    onProgress({ featureId }) {
+      const entry = findInFlight(featureId);
+      if (!entry) return;
+      entry.lastProgressAt = new Date().toISOString();
+      // Don't flush on every keepalive — too chatty. Caller should flush
+      // explicitly at coarser boundaries (agent completion, merge, etc.).
+      bump();
+    },
+    onFeatureMerged({ featureId }) {
+      removeInFlight(featureId);
+      if (!snapshot.completed.includes(featureId)) {
+        snapshot.completed.push(featureId);
+      }
+      bump();
+      tracker.flush();
+    },
+    onFeatureFailed({ featureId }) {
+      removeInFlight(featureId);
+      if (!snapshot.failed.includes(featureId)) {
+        snapshot.failed.push(featureId);
+      }
+      bump();
+      tracker.flush();
+    },
+    onFeatureAborted({ featureId }) {
+      removeInFlight(featureId);
+      if (!snapshot.aborted.includes(featureId)) {
+        snapshot.aborted.push(featureId);
+      }
+      bump();
+      tracker.flush();
+    },
+    flush() {
+      writeFeatureGraphProgress(args.projectRoot, args.pipelineRunId, snapshot);
+    },
+    snapshot: () => ({
+      ...snapshot,
+      completed: [...snapshot.completed],
+      failed: [...snapshot.failed],
+      aborted: [...snapshot.aborted],
+      inFlight: snapshot.inFlight.map((f) => ({ ...f })),
+    }),
+  };
+  return tracker;
 }
 
 export type FeatureStatus = "completed" | "failed" | "aborted";
@@ -261,11 +459,21 @@ export async function runFeature(
   ctx: FeatureGraphContext,
 ): Promise<FeatureResult> {
   const startedAt = Date.now();
+  const tracker = ctx.progressTracker ?? noopProgressTracker();
   const featureContext = {
     id: feature.id,
     branch: feature.branch,
     priority: feature.priority,
   };
+  // Compute the first/next agent in the sequence for the dispatch breadcrumb.
+  // First non-git-agent in agent_sequence (or fall back to the first member).
+  const sequenceForTrack = feature.agent_sequence.filter(
+    (a): a is AgentSequenceMember => a !== "git-agent",
+  );
+  const firstSeqAgent: AgentSequenceMember =
+    sequenceForTrack[0] ?? feature.agent_sequence[0]!;
+  const secondSeqAgent: AgentSequenceMember | null =
+    sequenceForTrack[1] ?? null;
   // Absolute path: SDK's child_process.spawn would otherwise resolve a
   // project-relative cwd against the orchestrator's process.cwd() (factory
   // root), which is the wrong dir.
@@ -296,6 +504,10 @@ export async function runFeature(
     feature.tasks.every((t) => t.status === "completed")
   ) {
     for (const t of feature.tasks) taskOutcomes[t.id] = "completed";
+    // Treat fast-skip as merge for the progress checkpoint — the feature
+    // is already on master from a prior run, so resume should treat it
+    // as completed (don't re-dispatch).
+    tracker.onFeatureMerged({ featureId: feature.id });
     return {
       featureId: feature.id,
       status: "completed",
@@ -305,6 +517,18 @@ export async function runFeature(
       taskOutcomes,
     };
   }
+
+  // feat-024 Phase A: dispatch breadcrumb. Fires AFTER the fast-skip
+  // check (a fast-skipped feature is already on master, never enters
+  // inFlight[]) but BEFORE checkout — checkout failures still warrant
+  // a recorded "we tried" state via the matched onFeatureFailed call.
+  tracker.onFeatureDispatched({
+    featureId: feature.id,
+    worktree: feature.worktree,
+    branch: feature.branch,
+    firstAgent: firstSeqAgent,
+    nextAgent: secondSeqAgent,
+  });
 
   // 1. Checkout feature worktree
   const checkout = await ctx.invokeAgent({
@@ -327,6 +551,7 @@ export async function runFeature(
     checkoutParsed.op !== "checkout-feature" ||
     !checkoutParsed.success
   ) {
+    tracker.onFeatureFailed({ featureId: feature.id });
     return finish(
       feature.id,
       "failed",
@@ -340,7 +565,30 @@ export async function runFeature(
   }
 
   // 2. Walk agent_sequence[]
-  for (const agentName of feature.agent_sequence) {
+  for (let seqIdx = 0; seqIdx < feature.agent_sequence.length; seqIdx++) {
+    // feat-024 Phase C: poll for paused.json sentinel before each agent
+    // dispatch. If present, drain happens implicitly (this in-flight
+    // feature finishes its current agent before we re-check + abort the
+    // walk). The throw propagates up to runFeatureGraph + cli.ts, which
+    // catches PauseSignal and exits 0.
+    if (
+      !ctx.pauseSentinelPollDisabled &&
+      existsSync(pausedStatePath(ctx.projectRoot, ctx.pipelineRunId))
+    ) {
+      tracker.flush();
+      await pauseRun(
+        {
+          projectRoot: ctx.projectRoot,
+          pipelineRunId: ctx.pipelineRunId,
+          authProvider: ctx.authProvider ?? "unknown",
+          progressTracker: tracker,
+        },
+        "user-request",
+        `paused.json sentinel detected before ${feature.agent_sequence[seqIdx]} on ${feature.id}`,
+        { drained: true },
+      );
+    }
+    const agentName = feature.agent_sequence[seqIdx]!;
     if (agentName === "git-agent") continue; // lifecycle is owned by the orchestrator
 
     const surface = agentSurface(agentName);
@@ -348,6 +596,13 @@ export async function runFeature(
 
     const agentTasks = feature.tasks.filter((t) => t.agent === agentName);
     if (agentTasks.length === 0) continue;
+
+    // Compute the next non-git-agent in the sequence for the boundary breadcrumb.
+    const nextAgentForTrack: AgentSequenceMember | null =
+      (feature.agent_sequence
+        .slice(seqIdx + 1)
+        .find((a) => a !== "git-agent") as AgentSequenceMember | undefined) ??
+      null;
 
     attempts += 1;
     const result = await ctx.invokeAgent({
@@ -407,6 +662,7 @@ export async function runFeature(
       }
 
       if (taskOutcomes[t.id] !== "completed") {
+        tracker.onFeatureFailed({ featureId: feature.id });
         return finish(
           feature.id,
           "failed",
@@ -458,6 +714,14 @@ export async function runFeature(
         );
       }
 
+      // feat-024 Phase A: agent boundary — record completion of this
+      // agent + the next agent in agent_sequence for resume routing.
+      tracker.onAgentBoundary({
+        featureId: feature.id,
+        completedAgent: agentName,
+        nextAgent: nextAgentForTrack,
+      });
+
       // feat-019 Phase B: if the commit landed, refresh the dep tree
       // when the change set touched any package.json. Failures here
       // are warnings — the next agent may still succeed.
@@ -503,6 +767,7 @@ export async function runFeature(
       projectRoot: ctx.projectRoot,
     });
     if (!decision.approved) {
+      tracker.onFeatureFailed({ featureId: feature.id });
       return finish(
         feature.id,
         "failed",
@@ -527,6 +792,7 @@ export async function runFeature(
   totalCostUsd += closeResult.costUsd;
 
   if (!closeResult.success) {
+    tracker.onFeatureFailed({ featureId: feature.id });
     return finish(
       feature.id,
       "failed",
@@ -539,6 +805,7 @@ export async function runFeature(
     );
   }
 
+  tracker.onFeatureMerged({ featureId: feature.id });
   return finish(
     feature.id,
     "completed",
@@ -725,6 +992,24 @@ export async function runFeatureGraph(
 ): Promise<FeatureGraphResult> {
   assertNoDependencyCycle(tasks.features);
 
+  // feat-024 Phase A: build (or accept) a progress tracker. The real
+  // tracker writes feature-graph-progress.json on every transition;
+  // tests inject a noop tracker via ctx.progressTracker to avoid disk.
+  const tracker: ProgressTracker =
+    ctx.progressTracker ??
+    createProgressTracker({
+      projectRoot: ctx.projectRoot,
+      pipelineRunId: ctx.pipelineRunId,
+      masterCommitSha: ctx.masterCommitSha ?? "unknown",
+    });
+  // Wrap ctx so runFeature inherits the tracker even if the caller didn't
+  // set one — without this, runFeature's `ctx.progressTracker ?? noop`
+  // would no-op even when runFeatureGraph created a real tracker.
+  const wrappedCtx: FeatureGraphContext = { ...ctx, progressTracker: tracker };
+  // Initial flush so the file exists from t=0 of the run (consumers like
+  // /pause-build can find it even before any feature dispatches).
+  tracker.flush();
+
   const concurrency = ctx.maxConcurrentFeatures ?? 4;
   const features = tasks.features;
   const completed = new Set<string>();
@@ -753,6 +1038,7 @@ export async function runFeatureGraph(
         taskOutcomes: {},
         abortReason: `dependency ${depFailed} failed`,
       };
+      tracker.onFeatureAborted({ featureId: f.id });
     }
 
     // Schedule ready features up to concurrency
@@ -768,7 +1054,7 @@ export async function runFeatureGraph(
       remaining.delete(ready.id);
       inFlight.set(
         ready.id,
-        runFeature(ready, ctx).then((r) => {
+        runFeature(ready, wrappedCtx).then((r) => {
           featureResults[r.featureId] = r;
           totalCostUsd += r.totalCostUsd;
           if (r.status === "completed") completed.add(r.featureId);
@@ -780,10 +1066,37 @@ export async function runFeatureGraph(
 
     if (inFlight.size === 0) break;
 
+    // feat-024 Phase C: drain all in-flight + propagate PauseSignal if
+    // any of them threw it. Without this, Promise.race would resolve on
+    // the FIRST settle but leave the other in-flight features hanging
+    // (and miss their pause throws). We instead await the next settle
+    // explicitly + re-throw if we see a PauseSignal.
     const settled = await Promise.race(
-      [...inFlight.entries()].map(([id, p]) => p.then(() => id)),
+      [...inFlight.entries()].map(([id, p]) =>
+        p.then(
+          () => ({ id, error: null as Error | null }),
+          (err: Error) => ({ id, error: err }),
+        ),
+      ),
     );
-    inFlight.delete(settled);
+    inFlight.delete(settled.id);
+    if (settled.error) {
+      // Drain other in-flight features so they don't leak — but bound
+      // it so a deadlocked feature can't hang the pause forever. Caller
+      // (cli.ts) catches PauseSignal regardless.
+      const remainingDrains = [...inFlight.values()];
+      inFlight.clear();
+      for (const p of remainingDrains) {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await p;
+        } catch {
+          /* swallow — pause cascades naturally; we've already captured the first */
+        }
+      }
+      tracker.flush();
+      throw settled.error;
+    }
   }
 
   // ── feat-022: post-merge build-to-spec verification ────────────────────────

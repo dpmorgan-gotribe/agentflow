@@ -25,3 +25,26 @@ agents: {}
 # budget:
 #   perPipelineMaxUsd: 250.00
 budget: {}
+
+# feat-024 Phase B — per-agent stall-timeout (ms). The orchestrator wraps
+# every runLlmAgent call with an AbortController + a SDKKeepAliveMessage
+# gap watcher. When a stall fires, the abort surfaces as
+# `error_stall_timeout` and the feature is failed (lenient mode) or the
+# run is paused (strict mode — see stallTimeoutMode below).
+#
+# Built-in defaults (edit per project to override):
+#   backend-builder, web-frontend-builder, mobile-frontend-builder: 25 * 60 * 1000 (25 min)
+#   tester:                                                          20 * 60 * 1000 (20 min)
+#   reviewer, security:                                              10 * 60 * 1000 (10 min)
+#   git-agent:                                                        null (never abort)
+#
+# Set explicit `null` to disable the timer entirely; an integer (ms) wins.
+# Per-agent map overrides built-ins; per-agent `agents.<name>.stallTimeoutMs`
+# overrides the map.
+# stallTimeoutMs:
+#   tester: 1800000           # 30 min override for slow test suites
+
+# feat-024 Phase C — what to do when stallTimeoutMs fires:
+#   "lenient" (default) — mark the feature as failed, continue the run
+#   "strict"            — pause the entire orchestrator (writes paused.json)
+# stallTimeoutMode: lenient

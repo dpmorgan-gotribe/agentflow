@@ -7,10 +7,18 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { FeatureGraphProgress } from "@repo/orchestrator-contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BudgetTracker } from "../src/budget-tracker.js";
 import { RetryCounters } from "../src/retry-counters.js";
-import { loadState, saveState, statePath } from "../src/state-persistence.js";
+import {
+  featureGraphProgressPath,
+  loadState,
+  readFeatureGraphProgress,
+  saveState,
+  statePath,
+  writeFeatureGraphProgress,
+} from "../src/state-persistence.js";
 
 let projectRoot: string;
 const pipelineRunId = "pipe-20260422-abcd";
@@ -190,5 +198,126 @@ describe("state-persistence — loadState round-trip (crash recovery)", () => {
         new BudgetTracker(caps),
       ),
     ).toThrow(/missing retryCounters/);
+  });
+});
+
+// ─── feat-024 Phase A: feature-graph-progress.json ────────────────────
+
+function emptySnapshot(
+  overrides: Partial<FeatureGraphProgress> = {},
+): FeatureGraphProgress {
+  return {
+    version: "1.0",
+    pipelineRunId,
+    lastUpdatedAt: new Date().toISOString(),
+    masterCommitSha: "abc1234567890abcdef",
+    completed: [],
+    failed: [],
+    aborted: [],
+    inFlight: [],
+    ...overrides,
+  };
+}
+
+describe("feature-graph-progress — path resolution", () => {
+  it("featureGraphProgressPath composes the expected layout", () => {
+    const p = featureGraphProgressPath("/proj", "run-2");
+    expect(p).toMatch(
+      /[/\\]proj[/\\]\.claude[/\\]state[/\\]run-2[/\\]feature-graph-progress\.json$/,
+    );
+  });
+});
+
+describe("feature-graph-progress — write + read round-trip", () => {
+  it("writeFeatureGraphProgress creates the file at the expected path", () => {
+    writeFeatureGraphProgress(projectRoot, pipelineRunId, emptySnapshot());
+    const path = featureGraphProgressPath(projectRoot, pipelineRunId);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it("creates nested parent directories when missing", () => {
+    writeFeatureGraphProgress(projectRoot, pipelineRunId, emptySnapshot());
+    expect(
+      existsSync(join(projectRoot, ".claude", "state", pipelineRunId)),
+    ).toBe(true);
+  });
+
+  it("readFeatureGraphProgress round-trips an empty snapshot", () => {
+    const snap = emptySnapshot();
+    writeFeatureGraphProgress(projectRoot, pipelineRunId, snap);
+    const loaded = readFeatureGraphProgress(projectRoot, pipelineRunId);
+    expect(loaded).toEqual(snap);
+  });
+
+  it("readFeatureGraphProgress round-trips a populated snapshot", () => {
+    const snap = emptySnapshot({
+      completed: ["feat-shell", "feat-board"],
+      failed: ["feat-broken"],
+      aborted: ["feat-skipped"],
+      inFlight: [
+        {
+          featureId: "feat-filters",
+          worktree: "feat-filters",
+          branch: "feat/filters",
+          lastAgent: "web-frontend-builder",
+          nextAgent: "tester",
+          lastProgressAt: "2026-04-27T10:55:01.000Z",
+          dispatchedAt: "2026-04-27T10:50:00.000Z",
+        },
+      ],
+    });
+    writeFeatureGraphProgress(projectRoot, pipelineRunId, snap);
+    const loaded = readFeatureGraphProgress(projectRoot, pipelineRunId);
+    expect(loaded).toEqual(snap);
+  });
+
+  it("readFeatureGraphProgress returns null when no file exists", () => {
+    const loaded = readFeatureGraphProgress(projectRoot, pipelineRunId);
+    expect(loaded).toBeNull();
+  });
+
+  it("write atomically replaces — no torn-write tmpfile remains", () => {
+    writeFeatureGraphProgress(projectRoot, pipelineRunId, emptySnapshot());
+    const path = featureGraphProgressPath(projectRoot, pipelineRunId);
+    const tmpPath = `${path}.tmp`;
+    expect(existsSync(tmpPath)).toBe(false);
+
+    // Second write also leaves no .tmp behind.
+    writeFeatureGraphProgress(
+      projectRoot,
+      pipelineRunId,
+      emptySnapshot({ completed: ["feat-x"] }),
+    );
+    expect(existsSync(tmpPath)).toBe(false);
+  });
+
+  it("write rejects an invalid snapshot (zod validation throws)", () => {
+    const bad = {
+      ...emptySnapshot(),
+      version: "0.9", // wrong literal — schema requires "1.0"
+    } as unknown as FeatureGraphProgress;
+    expect(() =>
+      writeFeatureGraphProgress(projectRoot, pipelineRunId, bad),
+    ).toThrow();
+  });
+
+  it("read throws on JSON corruption", () => {
+    const path = featureGraphProgressPath(projectRoot, pipelineRunId);
+    writeFeatureGraphProgress(projectRoot, pipelineRunId, emptySnapshot());
+    writeFileSync(path, "{not-valid-json", "utf8");
+    expect(() => readFeatureGraphProgress(projectRoot, pipelineRunId)).toThrow(
+      /invalid JSON/,
+    );
+  });
+
+  it("read throws on schema-mismatch (missing required field)", () => {
+    const path = featureGraphProgressPath(projectRoot, pipelineRunId);
+    writeFeatureGraphProgress(projectRoot, pipelineRunId, emptySnapshot());
+    const raw = JSON.parse(readFileSync(path, "utf8"));
+    delete raw.completed;
+    writeFileSync(path, JSON.stringify(raw), "utf8");
+    expect(() =>
+      readFeatureGraphProgress(projectRoot, pipelineRunId),
+    ).toThrow();
   });
 });

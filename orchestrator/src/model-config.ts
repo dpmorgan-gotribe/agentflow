@@ -23,6 +23,17 @@ export interface ModelConfig {
   model: string;
   effort: "low" | "medium" | "high" | "max";
   budgetUsd: number;
+  /**
+   * feat-024 Phase B — wall-clock + keepalive abort budget for one
+   * `runLlmAgent` invocation. `null` means "never abort by liveness"
+   * (used by git-agent which doesn't actually call the SDK). Defaults
+   * documented in `.claude/models.yaml` template:
+   *   - backend-builder, web-frontend-builder, mobile-frontend-builder: 25*60*1000
+   *   - tester: 20*60*1000
+   *   - reviewer, security: 10*60*1000
+   *   - git-agent: null
+   */
+  stallTimeoutMs: number | null;
 }
 
 export interface BudgetCaps {
@@ -49,8 +60,23 @@ interface RawYaml {
       model: string;
       effort: ModelConfig["effort"];
       budgetUsd: number;
+      /**
+       * feat-024 Phase B — `null` (or omitted) inherits from
+       * `defaults.stallTimeoutMs.<agent>` (project YAML) or the
+       * built-in fallback in DEFAULT_STALL_TIMEOUT_BY_AGENT below.
+       */
+      stallTimeoutMs: number | null;
     }>
   >;
+  /**
+   * feat-024 Phase B + feat-024 Phase C: top-level liveness defaults.
+   * `stallTimeoutMs` is the per-agent wall-clock + keepalive budget.
+   * `stallTimeoutMode` selects "lenient" (default) → mark feature
+   * failed and continue, or "strict" → trigger a pause via paused.json
+   * so the operator can intervene.
+   */
+  stallTimeoutMs?: Record<string, number | null>;
+  stallTimeoutMode?: "lenient" | "strict";
   budget?: {
     perPipelineMaxUsd?: number;
     perStageMaxUsd?: Record<string, number>;
@@ -60,6 +86,24 @@ interface RawYaml {
 const DEFAULT_EFFORT: ModelConfig["effort"] = "medium";
 const DEFAULT_BUDGET_USD = 5;
 const DEFAULT_PIPELINE_MAX_USD = 150;
+
+/**
+ * feat-024 Phase B factory defaults for `stallTimeoutMs`. Mirrors the
+ * recommendation in investigate-007 §F4-#1 — builders get more headroom
+ * than testers/reviewers, git-agent is exempt entirely (deterministic
+ * git ops, no SDK call). Override per-agent in the project's
+ * `.claude/models.yaml` under `stallTimeoutMs:` or per-agent
+ * `agents.<name>.stallTimeoutMs`.
+ */
+const DEFAULT_STALL_TIMEOUT_BY_AGENT: Record<string, number | null> = {
+  "backend-builder": 25 * 60 * 1000,
+  "web-frontend-builder": 25 * 60 * 1000,
+  "mobile-frontend-builder": 25 * 60 * 1000,
+  tester: 20 * 60 * 1000,
+  reviewer: 10 * 60 * 1000,
+  security: 10 * 60 * 1000,
+  "git-agent": null,
+};
 
 /**
  * Factory default auth provider. Subscription mode is chosen so the factory
@@ -181,6 +225,25 @@ export function readModelConfig(
   const effort = agent.effort ?? DEFAULT_EFFORT;
   const budgetUsd = agent.budgetUsd ?? DEFAULT_BUDGET_USD;
 
+  // feat-024 Phase B: resolve stallTimeoutMs per agent. Precedence
+  //   1. agent.stallTimeoutMs in project YAML
+  //   2. agent.stallTimeoutMs in global YAML
+  //   3. project YAML's top-level `stallTimeoutMs.<agent>` map
+  //   4. global YAML's top-level `stallTimeoutMs.<agent>` map
+  //   5. built-in `DEFAULT_STALL_TIMEOUT_BY_AGENT[agent]`
+  //   6. `null` (never abort by liveness) for unmapped agents
+  // `null` explicitly disables; missing means "fall through".
+  let stallTimeoutMs: number | null = null;
+  if (agent.stallTimeoutMs !== undefined) {
+    stallTimeoutMs = agent.stallTimeoutMs;
+  } else if (projectCfg.stallTimeoutMs?.[agentName] !== undefined) {
+    stallTimeoutMs = projectCfg.stallTimeoutMs[agentName] ?? null;
+  } else if (globalCfg.stallTimeoutMs?.[agentName] !== undefined) {
+    stallTimeoutMs = globalCfg.stallTimeoutMs[agentName] ?? null;
+  } else if (agentName in DEFAULT_STALL_TIMEOUT_BY_AGENT) {
+    stallTimeoutMs = DEFAULT_STALL_TIMEOUT_BY_AGENT[agentName] ?? null;
+  }
+
   const providerConfig = resolveProviderConfig(globalCfg, projectCfg);
 
   return {
@@ -189,7 +252,24 @@ export function readModelConfig(
     model,
     effort,
     budgetUsd,
+    stallTimeoutMs,
   };
+}
+
+/** feat-024 Phase C — read the `stallTimeoutMode` setting (default lenient). */
+export function readStallTimeoutMode(
+  projectRoot: string,
+  opts?: { globalPath?: string; projectPath?: string },
+): "lenient" | "strict" {
+  const globalPath =
+    opts?.globalPath ?? join(homedir(), ".claude", "models.yaml");
+  const projectPath =
+    opts?.projectPath ?? join(projectRoot, ".claude", "models.yaml");
+  const globalCfg = loadYaml(globalPath);
+  const projectCfg = loadYaml(projectPath);
+  return (
+    projectCfg.stallTimeoutMode ?? globalCfg.stallTimeoutMode ?? "lenient"
+  );
 }
 
 /**

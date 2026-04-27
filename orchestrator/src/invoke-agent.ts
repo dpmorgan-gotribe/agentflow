@@ -1,5 +1,6 @@
 import { exec } from "node:child_process";
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -70,6 +71,61 @@ export interface CreateInvokeAgentConfig {
   execShell?: ShellExecFn;
   /** Test hook — overrides readModelConfig paths. */
   modelConfigOverride?: { globalPath?: string; projectPath?: string };
+  /**
+   * feat-024 Phase B — pipeline run id is used as the directory name
+   * under `<projectRoot>/.claude/state/<runId>/` for the stall-log
+   * breadcrumb file. When unset, the breadcrumb is silently skipped
+   * (back-compat with tests that don't supply a run id).
+   */
+  pipelineRunId?: string;
+  /**
+   * feat-024 Phase B — explicit override for the per-agent stall budget
+   * (ms). When set, takes precedence over the per-agent value resolved
+   * from `.claude/models.yaml`. `null` disables the timer entirely.
+   * Tests use this to inject a tiny budget for fast assertions without
+   * mucking with the YAML resolver.
+   */
+  stallTimeoutMsOverride?: number | null;
+  /**
+   * feat-024 Phase B — keepalive watcher tick interval. Defaults to 30s
+   * in production; tests can drop this to speed up assertions.
+   */
+  keepaliveCheckIntervalMs?: number;
+  /**
+   * feat-024 Phase B — keepalive gap thresholds.
+   *  - `warnMs`: log a warning when no message has arrived for this long
+   *  - `abortMs`: abort the SDK query when no message has arrived for this long
+   * Defaults: 90_000 / 300_000 per investigate-007 §F4-#2.
+   */
+  keepaliveWarnMs?: number;
+  keepaliveAbortMs?: number;
+  /**
+   * feat-024 Phase C — invoked when liveness fires + cfg.stallTimeoutMode
+   * is "strict". The hook is responsible for writing paused.json + any
+   * additional bookkeeping. Default: not set → lenient behavior (mark
+   * the feature failed, continue the run).
+   */
+  onStallTimeoutPause?: (info: {
+    agent: AgentSequenceMember;
+    featureId: string;
+    abortReason: string;
+    lastKeepAliveAt: number;
+    dispatchedAt: number;
+  }) => void | Promise<void>;
+  /**
+   * feat-024 Phase C — invoked when the SDK message stream surfaces a
+   * Claude Max five-hour or seven-day rate limit. Default: not set →
+   * orchestrator continues (the SDK will fail the call naturally).
+   */
+  onRateLimitPause?: (info: {
+    rateLimitType: string;
+    resetsAt?: number;
+  }) => void | Promise<void>;
+  /**
+   * feat-024 Phase C — invoked when SDKAssistantMessage carries
+   * errorCode "authentication_failed". Default: not set.
+   */
+  onAuthFailedPause?: (info: { detail: string }) => void | Promise<void>;
 }
 
 /** Build-agent surfaces that should populate `lastWritingAgent`. */
@@ -81,6 +137,40 @@ const BUILD_AGENTS: readonly AgentSequenceMember[] = [
 
 function isBuildAgent(agent: AgentSequenceMember): boolean {
   return BUILD_AGENTS.includes(agent);
+}
+
+/**
+ * feat-024 Phase B — append a stall-log breadcrumb when liveness fires.
+ * NDJSON-style append (one JSON object per line) so the tester can
+ * accumulate breadcrumbs across multiple aborts in one Mode B run
+ * without a parser. Lives at
+ * `<projectRoot>/.claude/state/<runId>/stall-log.json`.
+ *
+ * Silent no-op when `cfg.pipelineRunId` isn't set (back-compat with
+ * tests that construct an InvokeAgent without a run id).
+ */
+function writeStallLogBreadcrumb(
+  cfg: CreateInvokeAgentConfig,
+  entry: {
+    featureId: string;
+    agent: AgentSequenceMember;
+    dispatchedAt: number;
+    lastKeepAliveAt: number;
+    abortReason: string;
+    wallTimeMs: number;
+  },
+): void {
+  if (!cfg.pipelineRunId) return;
+  const dir = join(cfg.projectRoot, ".claude", "state", cfg.pipelineRunId);
+  try {
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "stall-log.json");
+    const line = `${JSON.stringify({ ...entry, ts: new Date().toISOString() })}\n`;
+    appendFileSync(path, line, "utf8");
+  } catch {
+    // Breadcrumb best-effort — never crash the orchestrator on a write
+    // failure to .claude/state/.
+  }
 }
 
 /**
@@ -931,20 +1021,189 @@ async function runLlmAgent(
   // count stays at zero when the tracker is already at cap.
   cfg.budget.assertUnderBudget(modelConfig.budgetUsd);
 
+  // feat-024 Phase B: per-invocation AbortController. Resolved budget is
+  // either an explicit override (tests) or the per-agent value from the
+  // model config. `null` means no liveness probe (e.g. git-agent — but
+  // that path doesn't run an LLM anyway).
+  const stallTimeoutMs =
+    cfg.stallTimeoutMsOverride !== undefined
+      ? cfg.stallTimeoutMsOverride
+      : modelConfig.stallTimeoutMs;
+  const abortController = new AbortController();
+  const dispatchedAt = Date.now();
+  let lastKeepAliveAt = dispatchedAt;
+  let abortReason: string | null = null;
+
+  // Wall-clock timer fires once at stallTimeoutMs.
+  let wallTimer: NodeJS.Timeout | null = null;
+  // Keepalive watcher ticks every keepaliveCheckIntervalMs and warns at
+  // warnMs / aborts at abortMs since the last observed message.
+  let keepaliveTimer: NodeJS.Timeout | null = null;
+
+  const checkIntervalMs = cfg.keepaliveCheckIntervalMs ?? 30_000;
+  const warnMs = cfg.keepaliveWarnMs ?? 90_000;
+  const abortMs = cfg.keepaliveAbortMs ?? 300_000;
+  let warnedAt = 0;
+
+  if (stallTimeoutMs && stallTimeoutMs > 0) {
+    wallTimer = setTimeout(() => {
+      abortReason = `wall-clock-${stallTimeoutMs}ms`;
+      abortController.abort(abortReason);
+    }, stallTimeoutMs);
+  }
+  if (stallTimeoutMs !== null) {
+    // Keepalive watcher uses checkIntervalMs ticks. We allow tests to
+    // disable it by setting checkIntervalMs to 0.
+    if (checkIntervalMs > 0) {
+      keepaliveTimer = setInterval(() => {
+        const sinceLast = Date.now() - lastKeepAliveAt;
+        if (sinceLast >= abortMs) {
+          abortReason ??= `keepalive-gap-${sinceLast}ms`;
+          abortController.abort(abortReason);
+          return;
+        }
+        if (sinceLast >= warnMs && warnedAt < lastKeepAliveAt) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[runLlmAgent] ${agent} on ${args.featureContext.id}: no SDK message in ${Math.round(sinceLast / 1000)}s (warn threshold ${warnMs}ms)`,
+          );
+          warnedAt = lastKeepAliveAt;
+        }
+      }, checkIntervalMs);
+    }
+  }
+
+  function clearTimers(): void {
+    if (wallTimer) {
+      clearTimeout(wallTimer);
+      wallTimer = null;
+    }
+    if (keepaliveTimer) {
+      clearInterval(keepaliveTimer);
+      keepaliveTimer = null;
+    }
+  }
+
   const prompt = buildAgentPrompt(agent, args);
-  const options = buildAgentOptions(agent, args, cfg, modelConfig);
+  const options = buildAgentOptions(
+    agent,
+    args,
+    cfg,
+    modelConfig,
+    abortController,
+  );
 
   let result: SDKResultMessage | undefined;
+  let queryThrew: Error | null = null;
   try {
     const q = queryFn({ prompt, options });
     for await (const msg of q as AsyncIterable<SDKMessage>) {
+      // feat-024 Phase B: ANY SDK message resets the keepalive clock.
+      // Includes 'keep_alive', 'assistant', 'tool_progress', system
+      // events, etc. — anything that proves the SDK is alive.
+      lastKeepAliveAt = Date.now();
+
+      // feat-024 Phase C: route Claude Max five-hour / seven-day rate
+      // limits into the pause-trigger hook. We DO NOT abort the SDK here
+      // — the hook decides (it'll typically pauseRun + propagate).
+      if (msg.type === "rate_limit_event") {
+        // Wide cast — the SDK's own type uses snake_case but we don't
+        // import the type here to keep this layer SDK-version-tolerant.
+        const evt = msg as unknown as {
+          rate_limit_info?: {
+            rateLimitType?: string;
+            resetsAt?: number;
+            status?: string;
+          };
+        };
+        const rateLimitType = evt.rate_limit_info?.rateLimitType ?? "";
+        if (
+          (rateLimitType === "five_hour" || rateLimitType === "seven_day") &&
+          cfg.onRateLimitPause
+        ) {
+          try {
+            const pauseInfo: { rateLimitType: string; resetsAt?: number } = {
+              rateLimitType,
+            };
+            if (evt.rate_limit_info?.resetsAt !== undefined) {
+              pauseInfo.resetsAt = evt.rate_limit_info.resetsAt;
+            }
+            await cfg.onRateLimitPause(pauseInfo);
+          } catch {
+            /* swallow — pause helper failures shouldn't crash the loop */
+          }
+        }
+      }
+
+      // feat-024 Phase C: route auth-failed errors on assistant messages
+      // into the pause-trigger hook.
+      if (msg.type === "assistant") {
+        const am = msg as unknown as { error?: string };
+        if (am.error === "authentication_failed" && cfg.onAuthFailedPause) {
+          try {
+            await cfg.onAuthFailedPause({ detail: am.error });
+          } catch {
+            /* same — never fail the loop on a pause-helper bug */
+          }
+        }
+      }
+
       if (msg.type === "result") {
         result = msg;
         break;
       }
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    queryThrew = err instanceof Error ? err : new Error(String(err));
+  } finally {
+    clearTimers();
+  }
+
+  // feat-024 Phase B: classify aborts. If an abort fired, treat as
+  // error_stall_timeout regardless of whether the SDK threw or simply
+  // exited the iterator.
+  if (abortController.signal.aborted) {
+    const reason = abortReason ?? "abort";
+    writeStallLogBreadcrumb(cfg, {
+      featureId: args.featureContext.id,
+      agent,
+      dispatchedAt,
+      lastKeepAliveAt,
+      abortReason: reason,
+      wallTimeMs: Date.now() - dispatchedAt,
+    });
+    // Phase C: optional strict-mode pause hook. Failures-or-not, we still
+    // mark the feature failed in lenient mode (the hook decides whether
+    // to ALSO write paused.json).
+    if (cfg.onStallTimeoutPause) {
+      try {
+        await cfg.onStallTimeoutPause({
+          agent,
+          featureId: args.featureContext.id,
+          abortReason: reason,
+          lastKeepAliveAt,
+          dispatchedAt,
+        });
+      } catch {
+        /* swallow */
+      }
+    }
+    const failed: Record<string, "completed" | "failed"> = {};
+    const errors: Record<string, string> = {};
+    for (const t of args.tasks) {
+      failed[t.id] = "failed";
+      errors[t.id] = `error_stall_timeout: ${reason}`;
+    }
+    return {
+      taskStatus: failed,
+      errors,
+      costUsd: 0,
+      ...(isBuildAgent(agent) ? { lastWritingAgent: agent } : {}),
+    };
+  }
+
+  if (queryThrew) {
+    const msg = queryThrew.message;
     const failed: Record<string, "completed" | "failed"> = {};
     const errors: Record<string, string> = {};
     for (const t of args.tasks) {
@@ -1069,6 +1328,7 @@ function buildAgentOptions(
   args: Parameters<InvokeAgentFn>[0],
   cfg: CreateInvokeAgentConfig,
   modelConfig: ModelConfig,
+  abortController?: AbortController,
 ): Options {
   // Resolve auth backend FIRST (same pattern as stage-runner.buildOptions):
   // provider-specific env vars layer in before our pipeline-specific keys.
@@ -1091,6 +1351,7 @@ function buildAgentOptions(
     cwd: args.cwd,
     env,
     maxBudgetUsd: modelConfig.budgetUsd,
+    ...(abortController ? { abortController } : {}),
     ...(auth.forceLoginMethod
       ? { forceLoginMethod: auth.forceLoginMethod }
       : {}),

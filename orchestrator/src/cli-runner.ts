@@ -9,7 +9,11 @@ import {
   skillExists,
   type StageCompletion,
 } from "./project-state.js";
-import { readBudgetCaps, readProviderConfig } from "./model-config.js";
+import {
+  readBudgetCaps,
+  readProviderConfig,
+  readStallTimeoutMode,
+} from "./model-config.js";
 import type { QueryFn } from "./stage-runner.js";
 import { STAGES, getStage } from "./stages-array.js";
 
@@ -23,6 +27,12 @@ export interface CliOptions {
   autoMergeAfterReviewer?: boolean;
   /** Override Mode B's `maxConcurrentFeatures` (default 4). */
   maxConcurrent?: number;
+  /**
+   * feat-024 Phase D — explicit pipeline run id (used by /resume-build to
+   * target the right state directory). When omitted, a fresh UUID is
+   * generated as before.
+   */
+  pipelineRunId?: string;
   /**
    * Test hook — override Mode B's `InvokeAgentFn`. When set, the CLI uses
    * this instead of `createInvokeAgent`'s real SDK wiring. Production code
@@ -164,15 +174,101 @@ export async function runCli(
   const { createInvokeAgent } = await import("./invoke-agent.js");
   const { RetryCounters } = await import("./retry-counters.js");
   const { randomUUID } = await import("node:crypto");
+  const { writeOrchestratorPid } = await import("./pause.js");
 
-  const pipelineRunId = randomUUID();
+  const pipelineRunId = opts.pipelineRunId ?? randomUUID();
+
+  // feat-024 Phase C: register the active pause-context globally so the
+  // SIGINT handler in cli.ts can write paused.json. Idempotent set.
+  (
+    globalThis as unknown as {
+      __agentflowActivePauseCtx?: {
+        projectRoot: string;
+        pipelineRunId: string;
+        authProvider: string;
+      };
+    }
+  ).__agentflowActivePauseCtx = {
+    projectRoot,
+    pipelineRunId,
+    authProvider: providerConfig.provider,
+  };
+  // feat-024 Phase C: drop orchestrator.pid so /pause-build --hard can SIGINT.
+  writeOrchestratorPid(projectRoot, pipelineRunId);
+
   const retryCounters = new RetryCounters();
+  const stallMode = readStallTimeoutMode(projectRoot);
+  // feat-024 Phase C: in strict mode, route stall aborts through pauseRun
+  // (writes paused.json + throws PauseSignal). In lenient mode (default),
+  // the abort just fails the feature and the run continues.
+  const stallPauseHook =
+    stallMode === "strict"
+      ? async (info: {
+          agent: string;
+          featureId: string;
+          abortReason: string;
+        }) => {
+          const { pauseRun } = await import("./pause.js");
+          await pauseRun(
+            {
+              projectRoot,
+              pipelineRunId,
+              authProvider: providerConfig.provider,
+            },
+            "stall-timeout",
+            `${info.agent} on ${info.featureId}: ${info.abortReason}`,
+            { drained: false },
+          );
+        }
+      : undefined;
+  // Same for rate-limit / auth-failed (always pause — these are explicit
+  // hard signals from the SDK, not heuristic).
+  const ratePauseHook = async (info: {
+    rateLimitType: string;
+    resetsAt?: number;
+  }) => {
+    const { pauseRun } = await import("./pause.js");
+    const reason =
+      info.rateLimitType === "five_hour"
+        ? "claude-max-five-hour-limit"
+        : "claude-max-seven-day-limit";
+    await pauseRun(
+      {
+        projectRoot,
+        pipelineRunId,
+        authProvider: providerConfig.provider,
+      },
+      reason as "claude-max-five-hour-limit" | "claude-max-seven-day-limit",
+      `SDKRateLimitEvent rateLimitType=${info.rateLimitType}`,
+      info.resetsAt !== undefined
+        ? { drained: false, resetsAt: info.resetsAt }
+        : { drained: false },
+    );
+  };
+  const authPauseHook = async (info: { detail: string }) => {
+    const { pauseRun } = await import("./pause.js");
+    await pauseRun(
+      {
+        projectRoot,
+        pipelineRunId,
+        authProvider: providerConfig.provider,
+      },
+      "auth-failed",
+      info.detail,
+      { drained: false },
+    );
+  };
+
   const invokeAgent: InvokeAgentFn =
     opts.invokeAgentOverride ??
     createInvokeAgent({
       projectRoot,
       budget,
       flags,
+      pipelineRunId,
+      ...(stallPauseHook ? { onStallTimeoutPause: stallPauseHook } : {}),
+      onRateLimitPause: ratePauseHook,
+      onAuthFailedPause: authPauseHook,
     });
 
   if (opts.resumeFeatureGraph) {
@@ -192,6 +288,7 @@ export async function runCli(
       budget,
       retryCounters,
       invokeAgent,
+      authProvider: providerConfig.provider,
       ...(opts.autoMergeAfterReviewer ? { autoMergeAfterReviewer: true } : {}),
       ...(opts.maxConcurrent
         ? { maxConcurrentFeatures: opts.maxConcurrent }
