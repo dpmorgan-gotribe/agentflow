@@ -1,0 +1,576 @@
+#!/usr/bin/env node
+// scripts/run-synthesized-flows.mjs — feat-025 Phase 2.
+//
+// Executes the Playwright `*.spec.ts` files emitted by
+// `scripts/synthesize-flow-e2e.mjs` against a freshly-spawned dev server
+// for the project. Closes the v1 EXECUTION gap left by feat-022 (which
+// only SYNTHESIZED specs).
+//
+// Usage:
+//   node scripts/run-synthesized-flows.mjs <projectDir> [--browser=chromium]
+//
+// Algorithm:
+//   1. Pre-flight: confirm <projectDir>/apps/web/package.json has
+//      @playwright/test AND playwright.config.ts exists. If missing,
+//      return { ok: false, reason: "playwright-not-installed", remediation }.
+//   2. Confirm at least one spec file under apps/web/e2e/synthesized/.
+//      If none, return { ok: true, flows: { passed:[], failed:[], skipped:[] }, warnings:["no-specs"] }.
+//   3. Spawn `pnpm -C apps/web dev` from the project. Wait for HTTP 200
+//      on the baseURL (default http://localhost:3000) with 60s timeout.
+//      Reuses the cross-platform spawn pattern from visual-review-preflight.mjs.
+//   4. Run `pnpm -C apps/web exec playwright test e2e/synthesized/ --reporter=json`.
+//      Capture stdout (the JSON reporter writes the entire run to stdout).
+//   5. Parse the JSON reporter output: per-suite (= flow file) → pass/fail,
+//      failed step name + error + screenshot path + html dump path.
+//   6. Tear down the dev server (cross-platform process-tree kill: taskkill
+//      /T on Windows; process.kill(-pid) on POSIX).
+//   7. Return { ok, browser, flows: {...}, devServerStartedMs, totalRunMs, warnings }.
+//
+// Output JSON shape (BuildToSpecVerifyOutput.flows-compatible):
+//   {
+//     ok: true,
+//     browser: "chromium",
+//     flows: {
+//       passed: ["flow-1", "flow-2"],
+//       failed: [{ flowId, flowName, step, fromScreenId, expectedScreenId,
+//                  actualScreenId, selector, screenshotPath, htmlDumpPath, message }],
+//       skipped: ["flow-3"]
+//     },
+//     devServerStartedMs: 12345,
+//     totalRunMs: 45678,
+//     warnings: []
+//   }
+//
+// Exit code 0 always (failures surface via JSON).
+
+import fs from "node:fs";
+import http from "node:http";
+import path from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+
+const args = process.argv.slice(2);
+const positional = args.filter((a) => !a.startsWith("--"));
+const flags = Object.fromEntries(
+  args
+    .filter((a) => a.startsWith("--"))
+    .map((a) => {
+      const [k, v = "true"] = a.replace(/^--/, "").split("=");
+      return [k, v];
+    }),
+);
+
+const DEFAULT_BROWSER = "chromium";
+const DEV_SERVER_TIMEOUT_MS = 60_000;
+const DEV_SERVER_POLL_INTERVAL_MS = 500;
+
+/**
+ * Test seam — exposes the runner as an importable function so unit tests
+ * can stub spawn + http-poll + reporter parsing without booting a real
+ * dev server. CLI mode (below) calls this with default helpers.
+ */
+export async function runSynthesizedFlows({
+  projectDir,
+  browser = DEFAULT_BROWSER,
+  // Test seams — defaults shell out to real subprocesses.
+  spawnFn = spawn,
+  spawnSyncFn = spawnSync,
+  httpGet = defaultHttpGet,
+  fsApi = fs,
+  now = Date.now,
+  // Optional override for the dev-server URL (the script otherwise reads
+  // playwright.config.ts heuristically; tests pin this explicitly).
+  baseUrlOverride,
+  // Test seams for the dev-server-wait loop — defaults are
+  // DEV_SERVER_POLL_INTERVAL_MS / DEV_SERVER_TIMEOUT_MS. Tests can shrink
+  // these to keep the polling loop cheap.
+  pollIntervalMs = DEV_SERVER_POLL_INTERVAL_MS,
+  devServerTimeoutMs = DEV_SERVER_TIMEOUT_MS,
+} = {}) {
+  const startedAt = now();
+  const warnings = [];
+
+  // ── Step 1: pre-flight ────────────────────────────────────────────────────
+  const pkgPath = path.join(projectDir, "apps/web/package.json");
+  const cfgPath = path.join(projectDir, "apps/web/playwright.config.ts");
+  if (!fsApi.existsSync(pkgPath)) {
+    return preflightFail(
+      "playwright-not-installed",
+      `apps/web/package.json not found at ${pkgPath}`,
+    );
+  }
+
+  let pkg;
+  try {
+    pkg = JSON.parse(fsApi.readFileSync(pkgPath, "utf8"));
+  } catch (err) {
+    return preflightFail(
+      "playwright-not-installed",
+      `apps/web/package.json could not be parsed: ${err.message}`,
+    );
+  }
+
+  const hasDep = Boolean(
+    (pkg.devDependencies && pkg.devDependencies["@playwright/test"]) ||
+    (pkg.dependencies && pkg.dependencies["@playwright/test"]),
+  );
+  if (!hasDep) {
+    return preflightFail(
+      "playwright-not-installed",
+      "Run: pnpm -C apps/web add -D @playwright/test && pnpm -C apps/web exec playwright install chromium",
+    );
+  }
+  if (!fsApi.existsSync(cfgPath)) {
+    return preflightFail(
+      "playwright-not-installed",
+      "apps/web/playwright.config.ts missing — author per .claude/skills/agents/front-end/{stack}/SKILL.md §3a",
+    );
+  }
+
+  // ── Step 2: confirm at least one synthesized spec exists ──────────────────
+  const synthDir = path.join(projectDir, "apps/web/e2e/synthesized");
+  let specFiles = [];
+  if (fsApi.existsSync(synthDir)) {
+    specFiles = fsApi
+      .readdirSync(synthDir)
+      .filter((f) => f.endsWith(".spec.ts"));
+  }
+  if (specFiles.length === 0) {
+    return {
+      ok: true,
+      browser,
+      flows: { passed: [], failed: [], skipped: [] },
+      devServerStartedMs: 0,
+      totalRunMs: now() - startedAt,
+      warnings: [
+        "no synthesized specs found under apps/web/e2e/synthesized/ — run scripts/synthesize-flow-e2e.mjs first",
+      ],
+    };
+  }
+
+  // ── Step 3: spawn dev server + wait for ready ─────────────────────────────
+  const baseUrl = baseUrlOverride ?? readBaseUrlFromConfig(cfgPath, fsApi);
+  const devServerStart = now();
+  const devProc = spawnDevServer(spawnFn, projectDir);
+  let devServerStartedMs = 0;
+
+  try {
+    await waitForDevServer(
+      baseUrl,
+      devServerTimeoutMs,
+      httpGet,
+      now,
+      pollIntervalMs,
+    );
+    devServerStartedMs = now() - devServerStart;
+  } catch (err) {
+    teardownDevServer(devProc, spawnSyncFn);
+    return {
+      ok: false,
+      reason: "dev-server-not-ready",
+      remediation: `dev server at ${baseUrl} did not respond within ${devServerTimeoutMs}ms: ${err.message}`,
+      browser,
+      flows: { passed: [], failed: [], skipped: [] },
+      devServerStartedMs: now() - devServerStart,
+      totalRunMs: now() - startedAt,
+      warnings,
+    };
+  }
+
+  // ── Step 4: run playwright + capture JSON reporter ────────────────────────
+  let reporterStdout = "";
+  let reporterStderr = "";
+  let reporterExit = 0;
+  try {
+    const result = await runPlaywright(spawnFn, projectDir, browser, specFiles);
+    reporterStdout = result.stdout;
+    reporterStderr = result.stderr;
+    reporterExit = result.exitCode;
+  } catch (err) {
+    warnings.push(`playwright runner threw: ${err.message}`);
+  } finally {
+    // Step 6: tear down ALWAYS, even if runner crashed.
+    teardownDevServer(devProc, spawnSyncFn);
+  }
+
+  // ── Step 5: parse reporter JSON ───────────────────────────────────────────
+  const flows = parseReporterJson(reporterStdout, warnings, reporterStderr);
+
+  // playwright exit code 1 = test failures; we don't treat that as runner-fail.
+  // Exit code > 1 typically means runner crashed (no JSON to parse).
+  if (reporterExit > 1 && flows.passed.length + flows.failed.length === 0) {
+    warnings.push(
+      `playwright runner exited ${reporterExit}; stderr=${reporterStderr.slice(0, 300)}`,
+    );
+  }
+
+  return {
+    ok: flows.failed.length === 0,
+    browser,
+    flows,
+    devServerStartedMs,
+    totalRunMs: now() - startedAt,
+    warnings,
+  };
+}
+
+function preflightFail(reason, remediation) {
+  return {
+    ok: false,
+    reason,
+    remediation,
+    browser: DEFAULT_BROWSER,
+    flows: { passed: [], failed: [], skipped: [] },
+    devServerStartedMs: 0,
+    totalRunMs: 0,
+    warnings: [],
+  };
+}
+
+/**
+ * Best-effort baseURL extraction from playwright.config.ts. Falls back to
+ * http://localhost:3000 (Next.js default). Format:
+ *   use: { baseURL: "http://localhost:5173", ... }
+ */
+function readBaseUrlFromConfig(cfgPath, fsApi) {
+  try {
+    const src = fsApi.readFileSync(cfgPath, "utf8");
+    const m = src.match(/baseURL\s*:\s*["'`]([^"'`]+)["'`]/);
+    if (m) return m[1];
+  } catch {
+    // fall through
+  }
+  return "http://localhost:3000";
+}
+
+/**
+ * Spawn `pnpm -C apps/web dev` from the project root. Cross-platform per
+ * the visual-review-preflight pattern: shell:true on Windows for .cmd shim,
+ * detached on POSIX so we can kill the process group.
+ */
+function spawnDevServer(spawnFn, projectDir) {
+  const isWin = process.platform === "win32";
+  const cmd = isWin ? "pnpm.cmd" : "pnpm";
+  const child = spawnFn(cmd, ["-C", "apps/web", "dev"], {
+    cwd: projectDir,
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: !isWin,
+    windowsHide: true,
+    shell: isWin,
+    env: { ...process.env, BROWSER: "none", FORCE_COLOR: "0" },
+  });
+  // Don't keep parent alive on POSIX
+  if (!isWin && typeof child.unref === "function") child.unref();
+  // Drain stdout/stderr so the buffer doesn't fill (tests can ignore).
+  if (child.stdout) child.stdout.on("data", () => {});
+  if (child.stderr) child.stderr.on("data", () => {});
+  return child;
+}
+
+/**
+ * Poll `baseUrl` until any 2xx/3xx/4xx (server is responsive), or timeout.
+ */
+async function waitForDevServer(
+  baseUrl,
+  timeoutMs,
+  httpGetFn,
+  now,
+  pollIntervalMs = DEV_SERVER_POLL_INTERVAL_MS,
+) {
+  const deadline = now() + timeoutMs;
+  let lastErr = null;
+  while (now() < deadline) {
+    try {
+      const code = await httpGetFn(baseUrl);
+      // Accept anything < 500 — Next.js dev server returns 200 on /; some
+      // SPAs return 404 on / before a route is hit; both indicate the server
+      // is up.
+      if (code !== null && code < 500) return;
+    } catch (err) {
+      lastErr = err;
+    }
+    await sleep(pollIntervalMs);
+  }
+  throw new Error(
+    lastErr ? `last error: ${lastErr.message}` : "no server response",
+  );
+}
+
+function defaultHttpGet(url) {
+  return new Promise((resolveP, rejectP) => {
+    const req = http.get(url, (res) => {
+      // Drain body; we only care about the status code.
+      res.resume();
+      resolveP(res.statusCode ?? null);
+    });
+    req.on("error", rejectP);
+    req.setTimeout(5000, () => {
+      req.destroy(new Error("http get timeout"));
+    });
+  });
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Run `pnpm -C apps/web exec playwright test e2e/synthesized/ --reporter=json
+ * --project=<browser>`. Captures the entire stdout (JSON reporter dumps a
+ * single object at end). Returns { stdout, stderr, exitCode }.
+ */
+function runPlaywright(spawnFn, projectDir, browser, specFiles) {
+  return new Promise((resolveP) => {
+    const isWin = process.platform === "win32";
+    const cmd = isWin ? "pnpm.cmd" : "pnpm";
+    const child = spawnFn(
+      cmd,
+      [
+        "-C",
+        "apps/web",
+        "exec",
+        "playwright",
+        "test",
+        "e2e/synthesized/",
+        "--reporter=json",
+        `--project=${browser}`,
+      ],
+      {
+        cwd: projectDir,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        shell: isWin,
+        env: { ...process.env, FORCE_COLOR: "0", CI: "1" },
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    if (child.stdout) child.stdout.on("data", (d) => (stdout += d.toString()));
+    if (child.stderr) child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.on("close", (code) =>
+      resolveP({ stdout, stderr, exitCode: code ?? 0 }),
+    );
+    child.on("error", (err) =>
+      resolveP({ stdout, stderr: stderr + String(err), exitCode: 2 }),
+    );
+  });
+}
+
+/**
+ * Cross-platform process-tree kill. On Windows, spawn-with-shell:true
+ * returns the PID of cmd.exe; we taskkill /T to kill the tree. On POSIX,
+ * we spawned detached, so process.kill(-pid) targets the process group.
+ */
+function teardownDevServer(devProc, spawnSyncFn) {
+  if (!devProc || !devProc.pid) return;
+  try {
+    if (process.platform === "win32") {
+      spawnSyncFn("taskkill", ["/PID", String(devProc.pid), "/T", "/F"], {
+        stdio: "ignore",
+      });
+    } else {
+      try {
+        process.kill(-devProc.pid, "SIGTERM");
+      } catch {
+        // group may already be gone
+      }
+      try {
+        process.kill(devProc.pid, "SIGTERM");
+      } catch {
+        // process may already be gone
+      }
+    }
+  } catch {
+    // best-effort; never throw out of teardown
+  }
+}
+
+/**
+ * Parse Playwright's --reporter=json output into our flow-shaped result.
+ *
+ * The JSON reporter emits a single top-level object:
+ *   { suites: [{ file, suites: [{ specs: [{ title, ok, tests: [{ results: [{ status, error, attachments }] }] }] }] }], ... }
+ *
+ * We treat each spec FILE as one flow (flow-N → flow-N.spec.ts). For
+ * failed flows we capture the first failed test's error message + the
+ * first PNG attachment as screenshot + the first HTML attachment as
+ * htmlDumpPath (the synthesizer writes both alongside the test).
+ */
+function parseReporterJson(stdout, warnings, stderr = "") {
+  const flows = { passed: [], failed: [], skipped: [] };
+  if (!stdout || !stdout.trim()) {
+    if (stderr && stderr.trim()) {
+      warnings.push(
+        `playwright reporter stdout empty; stderr=${stderr.slice(0, 200)}`,
+      );
+    }
+    return flows;
+  }
+
+  // Playwright sometimes prefixes stdout with non-JSON noise (warnings,
+  // package-manager output). Find the outermost JSON object.
+  const jsonStart = stdout.indexOf("{");
+  const jsonEnd = stdout.lastIndexOf("}");
+  if (jsonStart < 0 || jsonEnd < jsonStart) {
+    warnings.push("playwright reporter stdout had no JSON object");
+    return flows;
+  }
+  let report;
+  try {
+    report = JSON.parse(stdout.slice(jsonStart, jsonEnd + 1));
+  } catch (err) {
+    warnings.push(`playwright reporter JSON parse failed: ${err.message}`);
+    return flows;
+  }
+
+  // Walk every spec — Playwright nests describe blocks arbitrarily deep.
+  const allSpecs = [];
+  function walk(node) {
+    if (!node) return;
+    if (Array.isArray(node.specs)) {
+      for (const s of node.specs) {
+        allSpecs.push({ ...s, file: node.file ?? s.file ?? "(unknown)" });
+      }
+    }
+    if (Array.isArray(node.suites)) {
+      for (const child of node.suites) {
+        walk({ ...child, file: child.file ?? node.file });
+      }
+    }
+  }
+  if (Array.isArray(report.suites)) {
+    for (const top of report.suites) walk(top);
+  }
+
+  for (const spec of allSpecs) {
+    const flowId = flowIdFromFile(spec.file);
+    const tests = Array.isArray(spec.tests) ? spec.tests : [];
+    const allResults = tests.flatMap((t) =>
+      Array.isArray(t.results) ? t.results : [],
+    );
+    const anyFailed = allResults.some(
+      (r) => r.status === "failed" || r.status === "timedOut",
+    );
+    const anyPassed = allResults.some((r) => r.status === "passed");
+    const allSkipped =
+      allResults.length > 0 && allResults.every((r) => r.status === "skipped");
+
+    if (anyFailed) {
+      const firstFailed = allResults.find(
+        (r) => r.status === "failed" || r.status === "timedOut",
+      );
+      const errorMsg =
+        (firstFailed?.error?.message ?? firstFailed?.error?.value ?? "")
+          .toString()
+          .trim() || "unknown failure";
+      const attachments = Array.isArray(firstFailed?.attachments)
+        ? firstFailed.attachments
+        : [];
+      const screenshot =
+        attachments.find(
+          (a) => a.contentType === "image/png" || /\.png$/i.test(a.path ?? ""),
+        )?.path ?? null;
+      const htmlDump =
+        attachments.find(
+          (a) => a.contentType === "text/html" || /\.html$/i.test(a.path ?? ""),
+        )?.path ?? null;
+      // Try to extract step / from / expected from the error message
+      // (the synthesizer formats them as
+      //   `step N: clicked toward "X" but landed on "Y" (selector: ...)`).
+      const meta = parseFailureMessage(errorMsg);
+      flows.failed.push({
+        flowId,
+        flowName: spec.title ?? flowId,
+        step: meta.step ?? 0,
+        fromScreenId: meta.fromScreenId ?? "",
+        expectedScreenId: meta.expectedScreenId ?? "",
+        actualScreenId: meta.actualScreenId ?? null,
+        selector: meta.selector ?? null,
+        screenshotPath: screenshot,
+        htmlDumpPath: htmlDump,
+        message: errorMsg,
+      });
+    } else if (anyPassed) {
+      flows.passed.push(flowId);
+    } else if (allSkipped) {
+      flows.skipped.push(flowId);
+    } else {
+      // Empty or interrupted — count as skipped for surface visibility.
+      flows.skipped.push(flowId);
+    }
+  }
+
+  // De-dupe (a flow file can have multiple tests; we collapse to one entry).
+  flows.passed = [...new Set(flows.passed)];
+  flows.skipped = [...new Set(flows.skipped)].filter(
+    (id) =>
+      !flows.passed.includes(id) && !flows.failed.some((f) => f.flowId === id),
+  );
+
+  return flows;
+}
+
+function flowIdFromFile(file) {
+  if (!file) return "unknown";
+  const base = path.basename(String(file), ".spec.ts");
+  return base; // e.g., "flow-1"
+}
+
+/**
+ * Extract step/from/expected/actual/selector from the synthesizer's
+ * canonical error message:
+ *   "flow-1 (Sign in) — 1 transition failure(s):
+ *      - step 2: clicked toward "card-modal" but landed on "home" (selector: ...)"
+ * Returns {} if no match.
+ */
+function parseFailureMessage(msg) {
+  const out = {};
+  const stepM = msg.match(/step\s+(\d+)\s*:/i);
+  if (stepM) out.step = Number.parseInt(stepM[1], 10);
+  const towardM = msg.match(/clicked toward\s+["']([^"']+)["']/i);
+  if (towardM) out.expectedScreenId = towardM[1];
+  const landedM = msg.match(/landed on\s+["']([^"']+)["']/i);
+  if (landedM) out.actualScreenId = landedM[1];
+  const fromM = msg.match(/expected on-screen\s+["']([^"']+)["']/i);
+  if (fromM) out.fromScreenId = fromM[1];
+  const selM = msg.match(/selector:\s*([^)]+)\)/);
+  if (selM) out.selector = selM[1].trim();
+  return out;
+}
+
+// ─── CLI mode ──────────────────────────────────────────────────────────────
+if (
+  import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}` ||
+  import.meta.url === `file:///${process.argv[1].replace(/\\/g, "/")}`
+) {
+  const projectDir = path.resolve(positional[0] ?? process.cwd());
+  if (!fs.existsSync(projectDir)) {
+    console.error(`projectDir not found: ${projectDir}`);
+    process.exit(2);
+  }
+  const browser = flags.browser ?? DEFAULT_BROWSER;
+  runSynthesizedFlows({ projectDir, browser })
+    .then((result) => {
+      console.log(JSON.stringify(result, null, 2));
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error(`runSynthesizedFlows failed: ${err.message}`);
+      console.log(
+        JSON.stringify(
+          {
+            ok: false,
+            reason: "runner-crashed",
+            remediation: err.message,
+            browser,
+            flows: { passed: [], failed: [], skipped: [] },
+            devServerStartedMs: 0,
+            totalRunMs: 0,
+            warnings: [String(err.stack ?? err.message)],
+          },
+          null,
+          2,
+        ),
+      );
+      process.exit(0);
+    });
+}

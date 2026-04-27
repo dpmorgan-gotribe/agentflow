@@ -95,19 +95,42 @@ function flowFailureBody(v, opts) {
   const owner =
     opts.relatedOwner ?? "(unknown — no docs/tasks.yaml affects_files match)";
   const importers = (opts.relatedImporters ?? []).slice(0, 3);
+  // feat-025: prefer the runner-populated `screenshot` / `html` aliases,
+  // fall back to the v1 `*Path` fields.
+  const screenshotPath = v.screenshot ?? v.screenshotPath ?? null;
+  const htmlPath = v.html ?? v.htmlDumpPath ?? null;
+  const TRANSITION_TIMEOUT_MS = 2000;
   const lines = [
     "## Description",
     "",
-    `Flow \`${v.flowName}\` (${v.flowId}) failed at step ${v.step}: clicked \`${v.selector ?? "(no selector matched)"}\` on \`${v.fromScreenId}\`, expected to land on \`${v.expectedScreenId}\` within 2s; landed on \`${v.actualScreenId ?? "(no screen-id present)"}\`.`,
+    `Synthesized flow \`${v.flowName}\` (${v.flowId}) failed at step ${v.step}: clicked \`${v.selector ?? "(no selector matched)"}\` on \`[data-screen-id="${v.fromScreenId}"]\`, expected to land on \`[data-screen-id="${v.expectedScreenId}"]\` within ${TRANSITION_TIMEOUT_MS}ms; landed on \`${v.actualScreenId ?? "(no screen-id present)"}\`.`,
     "",
     `**Synthesizer message:** ${v.message}`,
     "",
-    "## Likely cause",
-    "",
   ];
+  if (screenshotPath) {
+    lines.push("### Screenshot");
+    lines.push("");
+    lines.push(`![flow-${v.flowId}-step-${v.step} failure](${screenshotPath})`);
+    lines.push("");
+  }
+  if (htmlPath) {
+    lines.push("### Page HTML at failure");
+    lines.push("");
+    lines.push(`See \`${htmlPath}\``);
+    lines.push("");
+  }
+  lines.push("## Likely cause");
+  lines.push("");
   if (opts.relatedOrphan) {
+    const orphanName =
+      opts.relatedOrphan.exportNames?.[0] ??
+      path.basename(
+        opts.relatedOrphan.path,
+        path.extname(opts.relatedOrphan.path),
+      );
     lines.push(
-      `- **Orphan component:** \`${opts.relatedOrphan.path}\` exports \`${(opts.relatedOrphan.exportNames ?? []).join(", ") || "(default)"}\` but is never imported in production code.`,
+      `- **Orphan component (correlated):** \`${orphanName}\` (\`${opts.relatedOrphan.path}\`) is exported but never imported in production.`,
     );
     lines.push(`- **Owning feature:** \`${owner}\``);
     if (importers.length > 0) {
@@ -123,8 +146,8 @@ function flowFailureBody(v, opts) {
   lines.push("");
   lines.push("## Failure context");
   lines.push("");
-  if (v.screenshotPath) lines.push(`- Screenshot: \`${v.screenshotPath}\``);
-  if (v.htmlDumpPath) lines.push(`- HTML dump: \`${v.htmlDumpPath}\``);
+  if (screenshotPath) lines.push(`- Screenshot: \`${screenshotPath}\``);
+  if (htmlPath) lines.push(`- HTML dump: \`${htmlPath}\``);
   lines.push(
     `- Synthesized spec: \`apps/web/e2e/synthesized/${v.flowId.replace(/^flow-/, "flow-")}.spec.ts\``,
   );
@@ -132,8 +155,14 @@ function flowFailureBody(v, opts) {
   lines.push("## Fix approach");
   lines.push("");
   if (opts.relatedOrphan && importers.length > 0) {
+    const orphanName =
+      opts.relatedOrphan.exportNames?.[0] ??
+      path.basename(
+        opts.relatedOrphan.path,
+        path.extname(opts.relatedOrphan.path),
+      );
     lines.push(
-      `Wire \`${opts.relatedOrphan.exportNames?.[0] ?? path.basename(opts.relatedOrphan.path)}\` into \`${importers[0]}\`; pass the expected props from parent state. See screen mockup at \`docs/screens/${v.fromScreenId.startsWith("/") ? "" : "webapp/"}${v.expectedScreenId}.html\` for layout reference.`,
+      `Wire \`${orphanName}\` into \`${importers[0]}\`; pass the expected props from parent state. See screen mockup at \`docs/screens/${v.fromScreenId.startsWith("/") ? "" : "webapp/"}${v.expectedScreenId}.html\` for layout reference.`,
     );
   } else {
     lines.push(
@@ -141,10 +170,16 @@ function flowFailureBody(v, opts) {
     );
   }
   lines.push("");
+  lines.push("## Retry routing (feat-025 Phase 4)");
+  lines.push("");
+  lines.push(
+    "Orchestrator dispatches `web-frontend-builder` (or stack-appropriate front-end builder) for retry. Per-task retry: max 3 attempts; escalation to human at 5 — same retry ladder as the tester's `genuineProductBugs[]`.",
+  );
+  lines.push("");
   lines.push("## Validation");
   lines.push("");
   lines.push(
-    `Re-run \`/build-to-spec-verify\`; \`${v.flowId}\` must pass + reachability for \`${opts.relatedOrphan?.exportNames?.[0] ?? "the wired component"}\` must clear.`,
+    `Re-run \`/build-to-spec-verify\`; \`${v.flowId}\` must pass${opts.relatedOrphan ? ` + reachability for \`${opts.relatedOrphan.exportNames?.[0] ?? "the wired component"}\` must clear` : ""}.`,
   );
   return lines.join("\n");
 }

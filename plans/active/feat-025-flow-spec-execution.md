@@ -1,7 +1,9 @@
 ---
 id: feat-025-flow-spec-execution
 type: feature
-status: draft
+status: in-progress
+approved-at: 2026-04-27
+approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-04-27
 updated: 2026-04-27

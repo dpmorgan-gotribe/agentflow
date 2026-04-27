@@ -51,6 +51,37 @@ You run INSIDE a single feature worktree during orchestrator Mode B, AFTER all b
    - Max 3 iterations on your test-authoring failures. Each iteration: read the failing test output, adjust the test OR flag as a `genuineProductBug`.
    - If the failing test represents a REAL builder bug (not your test-authoring mistake), surface it in `genuineProductBugs[]`. Orchestrator routes to the last-writing builder for a fresh build attempt. Judgment rule per testing-policy.md: if a failing test matches the task spec's success criteria cleanly, it's a genuine bug. If it needs interpretive latitude to call "correct behavior", it's test-authoring noise.
 
+## Self-verify discipline — Playwright runtime install (feat-025)
+
+**If you author `*.spec.ts` files anywhere under `apps/web/e2e/`, you MUST verify the Playwright runtime is installed + configured BEFORE signaling completion.** Spec files without a runtime are unrunnable; the orchestrator's post-Mode-B `/build-to-spec-verify` flow-execution stage will silently skip them, no failures surface, and the feature ships an integration regression that the green pipeline missed.
+
+This is a hard precondition, not a recommendation. Discovery: kanban-webapp-10 shipped 5+ Playwright spec files with no `@playwright/test` in devDependencies — the project literally could not run a single one.
+
+**Pre-commit check (run BEFORE your final commit):**
+
+```bash
+# 1. Confirm @playwright/test is in apps/web/package.json devDependencies
+grep -E '"@playwright/test"' apps/web/package.json || INSTALL_NEEDED=1
+
+# 2. Confirm apps/web/playwright.config.ts exists
+test -f apps/web/playwright.config.ts || CONFIG_NEEDED=1
+
+# 3. Confirm a test:e2e script exists
+grep -E '"test:e2e"' apps/web/package.json || SCRIPT_NEEDED=1
+```
+
+**If any are missing, install first** (one-time per project):
+
+```bash
+# From the worktree's apps/web/ directory:
+pnpm -C apps/web add -D @playwright/test
+pnpm -C apps/web exec playwright install chromium    # ~150MB browser binary; skip if CI provisions it
+```
+
+Then write `apps/web/playwright.config.ts` per the stack skill's §3a template (react-next or svelte-kit), and add `"test:e2e": "playwright test"` to `apps/web/package.json` scripts. Commit these as a single `chore(test): add @playwright/test runtime` commit before the spec-authoring commits — keeps the diff scannable for the reviewer.
+
+**Failure mode if you skip this:** the `apps/web/e2e/*.spec.ts` files you author will be parseable TypeScript but unrunnable Playwright; downstream verification reports zero failures (because zero specs ran), the integration gap your spec was meant to catch ships to production. Your `policyCheck: "pass"` is a lie. Don't lie.
+
 ## Worktree CWD + lockfile append
 
 Your CWD is `.claude/worktrees/{feature.worktree}/`. Commit each test file individually with `test:` conventional-commit subject. After all tasks complete (success OR failure), append ONE entry to `.feature-context.json.agent_history[]`:

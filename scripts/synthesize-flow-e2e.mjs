@@ -262,6 +262,39 @@ for (let i = 0; i < manifest.flows.length; i++) {
   else generated.push(rel);
 }
 
+// ─── Sanity-check Playwright runtime is installed (feat-025 Phase 1) ────────
+// Spec files without the runtime are unrunnable; surface a warning so the
+// operator knows the synthesizer's output is dead-code unless install-discipline
+// closes the gap. Mirrors the pre-flight in scripts/run-synthesized-flows.mjs.
+
+const warnings = [];
+const webPkgPath = path.join(projectDir, "apps/web/package.json");
+const webConfigPath = path.join(projectDir, "apps/web/playwright.config.ts");
+let hasPlaywrightDep = false;
+let hasPlaywrightConfig = false;
+try {
+  if (fs.existsSync(webPkgPath)) {
+    const pkg = JSON.parse(fs.readFileSync(webPkgPath, "utf8"));
+    hasPlaywrightDep = Boolean(
+      (pkg.devDependencies && pkg.devDependencies["@playwright/test"]) ||
+      (pkg.dependencies && pkg.dependencies["@playwright/test"]),
+    );
+  }
+  hasPlaywrightConfig = fs.existsSync(webConfigPath);
+} catch {
+  // ignore — fall through to warning
+}
+if (!hasPlaywrightDep && generated.length > 0) {
+  warnings.push(
+    "@playwright/test not installed; specs will not run until installed via: pnpm -C apps/web add -D @playwright/test",
+  );
+}
+if (!hasPlaywrightConfig && generated.length > 0) {
+  warnings.push(
+    "apps/web/playwright.config.ts missing; specs will not run until configured (see .claude/skills/agents/front-end/{stack}/SKILL.md §3a)",
+  );
+}
+
 console.log(
   JSON.stringify(
     {
@@ -271,6 +304,7 @@ console.log(
       skippedFiles: skipped,
       projectDir,
       outDir: path.relative(projectDir, outDir).replace(/\\/g, "/"),
+      warnings,
     },
     null,
     2,

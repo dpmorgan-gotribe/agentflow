@@ -135,6 +135,35 @@ The mockup's `<body data-screen-id="...">` (see screens skill §4e.1) is the sou
 - **Coverage expectation**: 60% builder / 80% total (same as react-next).
 - **Playwright E2E** (tester-owned): `apps/web/e2e/*.spec.ts`; runner `pnpm playwright test`.
 
+### 3a. Playwright runtime self-verify (feat-025 install-discipline)
+
+Authoring `*.spec.ts` files without the runtime installed produces **unrunnable specs that silently fool downstream verification** (the post-Mode-B `/build-to-spec-verify` flow-execution stage will skip them, no failures surface, the builder thinks it's green). Discovery: kanban-webapp-10 shipped with multiple `e2e/*.spec.ts` files but no `@playwright/test` in devDependencies — the project literally couldn't run any of them.
+
+Before any agent commits a Playwright spec, the runtime MUST be installed + configured. The tester is the canonical owner per `.claude/agents/tester.md` §Self-verify discipline.
+
+**Required artifacts:**
+
+1. `apps/web/package.json` devDependencies includes `@playwright/test` (^1.48.0 or newer)
+2. `apps/web/playwright.config.ts` exists with at minimum:
+
+   ```ts
+   import { defineConfig, devices } from "@playwright/test";
+
+   export default defineConfig({
+     testDir: "./e2e",
+     fullyParallel: true,
+     reporter: process.env.CI ? "list" : "html",
+     use: { baseURL: "http://localhost:5173", trace: "on-first-retry" },
+     projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+   });
+   ```
+
+   (SvelteKit's Vite dev server defaults to port 5173 — override only if `vite.config.ts` does.)
+
+3. `apps/web/package.json` scripts includes `"test:e2e": "playwright test"`
+
+**Install command** (run from project root): `pnpm -C apps/web add -D @playwright/test && pnpm -C apps/web exec playwright install chromium`. The orchestrator's `scripts/run-synthesized-flows.mjs` pre-flight checks the three artifacts above and gracefully degrades (warning, not failure) if any are missing — but the project still ships unrunnable specs, so the tester must close the gap.
+
 ## 4. Commands
 
 ```

@@ -88,6 +88,17 @@ export const FlowFailure = z.object({
   selector: z.string().nullable(),
   screenshotPath: z.string().nullable(),
   htmlDumpPath: z.string().nullable(),
+  /**
+   * feat-025 Phase 3 — convenience aliases populated by the live spec
+   * runner (`scripts/run-synthesized-flows.mjs`). They mirror
+   * `screenshotPath` + `htmlDumpPath` but use the shorter names the
+   * downstream bug-plan template + flow-failure template expect. Optional
+   * to preserve back-compat with v1 emitters that only populate the
+   * `*Path` fields. When both are present, the runner-populated `screenshot`
+   * + `html` win for bug-plan rendering.
+   */
+  screenshot: z.string().optional(),
+  html: z.string().optional(),
   message: z.string().min(1),
 });
 export type FlowFailure = z.infer<typeof FlowFailure>;

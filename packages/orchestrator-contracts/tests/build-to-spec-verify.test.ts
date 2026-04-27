@@ -165,6 +165,48 @@ describe("FlowFailure", () => {
       FlowFailure.parse({ ...validFlowFailure, message: "" }),
     ).toThrow();
   });
+
+  // ── feat-025 Phase 3: optional `screenshot` + `html` aliases ─────────────
+
+  it("accepts the runner-populated `screenshot` + `html` shorthand fields", () => {
+    const parsed = FlowFailure.parse({
+      ...validFlowFailure,
+      screenshot: "test-results/flow-4/screenshot-1.png",
+      html: "test-results/flow-4/page-1.html",
+    });
+    expect(parsed.screenshot).toBe("test-results/flow-4/screenshot-1.png");
+    expect(parsed.html).toBe("test-results/flow-4/page-1.html");
+  });
+
+  it("treats screenshot + html as optional (back-compat with v1 emitters)", () => {
+    const parsed = FlowFailure.parse(validFlowFailure);
+    expect(parsed.screenshot).toBeUndefined();
+    expect(parsed.html).toBeUndefined();
+  });
+
+  it("allows screenshot + html to coexist with screenshotPath + htmlDumpPath", () => {
+    const parsed = FlowFailure.parse({
+      ...validFlowFailure,
+      screenshot: "shorthand.png",
+      html: "shorthand.html",
+    });
+    expect(parsed.screenshotPath).toBe(
+      "docs/build-to-spec/failures/flow-4-step-1.png",
+    );
+    expect(parsed.screenshot).toBe("shorthand.png");
+  });
+
+  it("rejects non-string screenshot field", () => {
+    expect(() =>
+      FlowFailure.parse({ ...validFlowFailure, screenshot: 42 }),
+    ).toThrow();
+  });
+
+  it("rejects non-string html field", () => {
+    expect(() =>
+      FlowFailure.parse({ ...validFlowFailure, html: { foo: "bar" } }),
+    ).toThrow();
+  });
 });
 
 describe("BuildToSpecVerifyOutput", () => {

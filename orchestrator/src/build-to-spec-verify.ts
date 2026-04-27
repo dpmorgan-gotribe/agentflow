@@ -51,6 +51,43 @@ export interface BuildToSpecVerifyContext {
     violation: BugPlanViolation;
     relatedOrphan?: OrphanComponent;
   }) => Promise<{ planId: string; planPath: string }>;
+  /**
+   * feat-025 Phase 3 — test seam for the flow-execution runner. Replaces
+   * the `runSynthesizedFlows()` import from `scripts/run-synthesized-flows.mjs`.
+   * If omitted in tests, the runner is invoked via dynamic import (same
+   * pattern as `fileBugPlan`).
+   */
+  runFlows?: (args: {
+    projectDir: string;
+    factoryRoot: string;
+  }) => Promise<RunFlowsResult>;
+  /**
+   * feat-025 Phase 3 — when false, skip the flow-execution stage entirely
+   * (only run reachability + synthesis). Default true. Tests that don't
+   * exercise execution can opt out without supplying a stub.
+   */
+  executeFlows?: boolean;
+}
+
+/**
+ * Output shape from `scripts/run-synthesized-flows.mjs`. Matches the JSON
+ * the runner emits to stdout. Mirrors `BuildToSpecVerifyOutput.flows` plus
+ * pre-flight gating fields (`reason` / `remediation`) when Playwright
+ * isn't installed.
+ */
+export interface RunFlowsResult {
+  ok: boolean;
+  reason?: string;
+  remediation?: string;
+  browser?: string;
+  flows: {
+    passed: string[];
+    failed: FlowFailure[];
+    skipped: string[];
+  };
+  devServerStartedMs?: number;
+  totalRunMs?: number;
+  warnings?: string[];
 }
 
 export type BugPlanViolation =
@@ -156,29 +193,67 @@ export async function runBuildToSpecVerify(
     );
   }
 
-  // v1: We don't execute the synthesized specs here. flows.failed[] is
-  // empty in the deterministic stage and gets populated only when a
-  // future runner runs the persisted specs against a live build (or when
-  // the next tester invocation runs them and feeds failures back via
-  // `BuildToSpecVerifyContext.preExecutedFlowFailures` — not implemented
-  // in v1).
+  // ── feat-025 Phase 3: execute synthesized flow specs ─────────────────────
+  // Call the runner only when synthesis emitted at least one spec AND
+  // executeFlows isn't explicitly disabled. The runner shells out to
+  // `pnpm -C apps/web exec playwright test e2e/synthesized/`; it gracefully
+  // degrades to `{ ok:false, reason:"playwright-not-installed" }` when the
+  // project hasn't installed the runtime — we propagate that as a warning
+  // (not a failure) so the verify stage stays soft-gated for v1.
+  const flowsPassed: string[] = [];
+  const flowsFailed: FlowFailure[] = [];
+  if (ctx.executeFlows !== false && generatedFiles.length > 0) {
+    let runResult: RunFlowsResult | null = null;
+    try {
+      const runFlows: NonNullable<BuildToSpecVerifyContext["runFlows"]> =
+        ctx.runFlows ??
+        (async ({ projectDir: pd, factoryRoot: fr }) => {
+          const specifier = `../../scripts/run-synthesized-flows.mjs`;
+          const mod = (await import(specifier)) as unknown as {
+            runSynthesizedFlows: (args: {
+              projectDir: string;
+            }) => Promise<RunFlowsResult>;
+          };
+          // factoryRoot is unused by the runner (it doesn't shell to other
+          // factory scripts) but we accept it for symmetry with reach/synth.
+          void fr;
+          return mod.runSynthesizedFlows({ projectDir: pd });
+        });
+      runResult = await runFlows({ projectDir, factoryRoot });
+    } catch (err) {
+      warnings.push(`run-synthesized-flows threw: ${(err as Error).message}`);
+    }
+    if (runResult) {
+      if (!runResult.ok && runResult.reason) {
+        // Soft-gate: surface as warning, don't fail the verify stage.
+        warnings.push(
+          `flow-execution: ${runResult.reason}${runResult.remediation ? ` (${runResult.remediation})` : ""}`,
+        );
+      }
+      for (const w of runResult.warnings ?? []) {
+        warnings.push(`flow-execution: ${w}`);
+      }
+      flowsPassed.push(...runResult.flows.passed);
+      flowsFailed.push(...runResult.flows.failed);
+    }
+  }
+
   const flows = {
-    passed: [] as string[],
-    failed: [] as FlowFailure[],
+    passed: flowsPassed,
+    failed: flowsFailed,
     generated: generatedFiles,
   };
 
-  // Auto-file bug plans
+  // ── feat-022 + feat-025 Phase 4: auto-file bug plans ─────────────────────
+  // For each flow failure, correlate with reachability orphans by
+  // owningFeature (when known): emit ONE consolidated bug plan per (flow,
+  // owning-feature) tuple — the bug-plan template renders both contexts
+  // together so the builder fixes the wiring + the navigation in one pass.
   const bugPlansFiled: string[] = [];
   if (ctx.autoFileBugPlans !== false) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fileBugPlan: NonNullable<BuildToSpecVerifyContext["fileBugPlan"]> =
       ctx.fileBugPlan ??
       (async ({ projectDir: pd, violation, relatedOrphan }) => {
-        // Dynamic import of the .mjs helper — TS doesn't ship a .d.ts for
-        // it. Resolve through a string-template specifier so the compiler
-        // treats it as a runtime-only path; cast through unknown to the
-        // expected shape.
         const specifier = `../../scripts/file-bug-plan.mjs`;
         const mod = (await import(specifier)) as unknown as {
           fileBugPlan: (args: {
@@ -194,7 +269,47 @@ export async function runBuildToSpecVerify(
         );
       });
 
+    // Track orphans already consumed by a consolidated flow-failure plan
+    // so we don't double-file (orphan stand-alone plan + flow plan that
+    // mentions the same orphan).
+    const consumedOrphanPaths = new Set<string>();
+
+    // 1. flow-failure plans (consolidated with related orphan when matched)
+    for (const failure of flowsFailed) {
+      try {
+        const relatedOrphan = correlateFlowFailureToOrphan(
+          failure,
+          orphanComponents,
+        );
+        if (relatedOrphan) consumedOrphanPaths.add(relatedOrphan.path);
+        const args = relatedOrphan
+          ? {
+              projectDir,
+              violation: {
+                ...failure,
+                kind: "flow-failure" as const,
+              },
+              relatedOrphan,
+            }
+          : {
+              projectDir,
+              violation: {
+                ...failure,
+                kind: "flow-failure" as const,
+              },
+            };
+        const { planId } = await fileBugPlan(args);
+        bugPlansFiled.push(planId);
+      } catch (err) {
+        warnings.push(
+          `file-bug-plan failed for flow ${failure.flowId}: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    // 2. stand-alone orphan-component plans (skip any consumed above)
     for (const orphan of orphanComponents) {
+      if (consumedOrphanPaths.has(orphan.path)) continue;
       try {
         const { planId } = await fileBugPlan({
           projectDir,
@@ -245,4 +360,49 @@ export async function runBuildToSpecVerify(
   // Validate before returning — guard against drift between this code +
   // the contract.
   return BuildToSpecVerifyOutput.parse(output);
+}
+
+/**
+ * feat-025 Phase 4 — correlate a flow failure to an orphan component.
+ *
+ * Heuristic: an orphan component is "related" to a flow failure when the
+ * flow's `expectedScreenId` (the screen the click should have landed on)
+ * appears in the orphan's path, OR the orphan's exportNames contain a
+ * component name that resembles the screen id (kebab → PascalCase).
+ *
+ * Examples:
+ *   - flow expects "card-modal" + orphan path .../CardDetailModal.tsx
+ *     → MATCH (path contains "modal" + screen contains "modal")
+ *   - flow expects "settings" + orphan exports ["SettingsPanel"]
+ *     → MATCH (export name contains "settings", case-insensitive)
+ *
+ * Returns the FIRST matching orphan or undefined. We deliberately don't
+ * file multiple plans for one flow when several orphans loosely match —
+ * the bug plan template handles only one related orphan, and
+ * builder-feedback-loop tuning is cheaper with one plan per flow.
+ */
+function correlateFlowFailureToOrphan(
+  failure: FlowFailure,
+  orphans: readonly OrphanComponent[],
+): OrphanComponent | undefined {
+  const screenId = failure.expectedScreenId.toLowerCase();
+  const screenSlug = screenId.replace(/-/g, "");
+  for (const orphan of orphans) {
+    const pathLower = orphan.path.toLowerCase();
+    if (pathLower.includes(screenSlug) || pathLower.includes(screenId)) {
+      return orphan;
+    }
+    for (const name of orphan.exportNames ?? []) {
+      const nameLower = name.toLowerCase();
+      if (nameLower.includes(screenSlug) || nameLower.includes(screenId)) {
+        return orphan;
+      }
+      // Also match individual screen-id tokens against PascalCase parts
+      const tokens = screenId.split("-").filter((t) => t.length >= 4);
+      if (tokens.some((t) => nameLower.includes(t))) {
+        return orphan;
+      }
+    }
+  }
+  return undefined;
 }
