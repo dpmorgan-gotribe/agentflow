@@ -81,6 +81,7 @@ function buildFeature(overrides: Partial<Feature> = {}): Feature {
     priority: "P1",
     depends_on: [],
     skip: [],
+    affects_files: [],
     agent_sequence: ["backend-builder", "tester", "reviewer"],
     tasks: [
       {

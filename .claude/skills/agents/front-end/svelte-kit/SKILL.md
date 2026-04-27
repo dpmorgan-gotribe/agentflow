@@ -48,6 +48,30 @@ apps/web/
 └── package.json
 ```
 
+### 1b. Feature-sliced state convention (bug-015 Phase 3)
+
+**Cross-component shared state MUST be feature-sliced.** Each feature owns ONE store file at `apps/web/src/lib/stores/{feature-slug}.svelte.ts` (rune-based) or `apps/web/src/lib/stores/{feature-slug}.ts` (writable-based). A thin barrel at `apps/web/src/lib/stores/index.ts` re-exports.
+
+```
+apps/web/src/lib/stores/
+├── index.ts                  # re-exports — thin composition only
+├── board.svelte.ts           # feat-board-core owns this file
+├── settings.svelte.ts        # feat-settings-data owns this file
+├── theme.svelte.ts           # feat-theme owns this file
+└── filter.svelte.ts          # feat-filter owns this file
+```
+
+**Why**: parallel-feature builders writing to the SAME store file produce merge conflicts at close-feature time (kanban-webapp-08 burned $20+ on this). Feature slices = each builder touches only its own file = no contention.
+
+**Rules:**
+
+- A slice file is owned by exactly ONE feature. PM enforces via `feature.affects_files: ["apps/web/src/lib/stores/{feature-slug}.svelte.ts"]`.
+- `stores/index.ts` is a SHARED touch-point. Only modified during architect scaffold OR a structural change request. Builders NEVER add new state to `index.ts`.
+- Cross-slice composition via re-exported derived runes (`$derived(boardStore.active && filterStore.search)`).
+- For tiny single-screen apps with no cross-feature state, a single `stores/app.svelte.ts` is fine. The slice convention kicks in the moment a SECOND feature needs shared state.
+
+This convention is also enforced by the architect agent at scaffold time — see `.claude/agents/architect.md` §State module structure.
+
 ## 2. Idioms
 
 - **Svelte 5 runes only.** `$state()`, `$derived()`, `$effect()` — no `let`-based reactivity, no `writable()` stores unless wrapping external reactive sources. Stores are fine for cross-component shared state, but rune-based `$state()` on a module-level `const` is preferred for simple cases.

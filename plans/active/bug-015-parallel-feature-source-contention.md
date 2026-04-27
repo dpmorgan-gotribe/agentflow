@@ -1,7 +1,9 @@
 ---
 id: bug-015-parallel-feature-source-contention
 type: bug
-status: draft
+status: in-progress
+approved-at: 2026-04-27
+approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-04-27
 updated: 2026-04-27
@@ -205,3 +207,34 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+### Attempt 1 — 2026-04-27 — claude-opus-4-7 — Phase 1 (validated kanban-webapp-09)
+
+§Merge-conflict resolution / §General source-file conflicts block added to web/backend/mobile-frontend builders + reviewer prompts. Validated live on kanban-webapp-09 board-core's kanban-store.ts conflict — agent successfully text-merged across attempts (with cap=3). 4/8 of kanban-09's wave hit close-feature, all merged cleanly.
+
+### Attempt 2 — 2026-04-27 — claude-opus-4-7 — Phase 2 + 3 implementation
+
+**Phase 2 — PM file-affinity heuristic:**
+
+- Added `affects_files: z.array(z.string()).default([])` to `FeatureSchema` in `packages/orchestrator-contracts/src/tasks.ts`
+- Added §4b "File-affinity check" to `.claude/skills/pm/SKILL.md` (between cross-field invariants and write-validate steps) with kanban-webapp example showing auto-serialization on shared `store/index.ts`
+- Added step 7b to `.claude/agents/project-manager.md` referencing the new SKILL section
+- Updated test fixture `buildFeature()` in `orchestrator/tests/feature-graph.test.ts` to populate `affects_files: []`
+- 271/271 tests passing
+
+**Phase 3 — Architect feature-sliced module structure:**
+
+- Added §1b "Feature-sliced state convention" to both stack skills:
+  - `.claude/skills/agents/front-end/react-next/SKILL.md` (Zustand example with `apps/web/src/store/{slug}.ts` per feature)
+  - `.claude/skills/agents/front-end/svelte-kit/SKILL.md` (rune-based equivalent in `apps/web/src/lib/stores/{slug}.svelte.ts`)
+- Added §State module structure section to `.claude/agents/architect.md` mandating scaffold of empty slice files at architect-time
+- Added self-verify item #12 enforcing the slice scaffold check
+
+**Propagation:**
+
+- 4 pre-builds × 2 agents (project-manager + architect) = 8 files synced
+- 4 pre-builds × 2 stack skills (react-next + svelte-kit) = 8 files synced
+- 10 live projects × 2 stack skills = 20 files synced
+- 4 pre-builds verified to contain bug-015 Phase 2 + Phase 3 markers
+
+**Outcome**: Phase 1 validated live, Phase 2 + 3 shipped to factory + all projects. Combined: parallel-feature merges that touch the same shared file should now be impossible by construction (Phase 3 prevents the contention) AND if they slip through (legacy projects without scaffolded slices), PM serializes them at task-graph time (Phase 2), AND if they STILL slip through, agents have the source-merge recipe (Phase 1) with cap=3 retries. Three layers of defense.

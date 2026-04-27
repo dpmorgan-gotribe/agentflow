@@ -155,6 +155,45 @@ Before writing:
 4. For each integration in architecture.yaml with `requiredNow: true`, confirm at least one `P0` task references it via `integration_ref`. If not, bump the corresponding task to P0 or emit a warning.
 5. **Screens ownership (feat-012)**. Non-frontend tasks (`backend-builder` / `tester` / `reviewer` / `security` / `devops`) MUST have `screens: []`. Zod superRefine rejects otherwise at validation time; catch earlier by refusing to populate the field. Frontend tasks on a non-skipped surface SHOULD have ≥1 screen entry; zero-screen frontend tasks emit a warning (see step 2b).
 
+### 4b. File-affinity check (bug-015 Phase 2)
+
+After step 4 invariants pass, populate `feature.affects_files[]` and serialize features that share files. **This pushes parallel-feature merge conflicts back to the PM stage where they're a one-line dependency edit, instead of letting them surface at runtime in close-feature where they cost $5+ per conflict (per kanban-webapp-08 incident).**
+
+Algorithm, per feature:
+
+1. **Author `affects_files[]`** — a glob list of files this feature is expected to mutate. Derive conservatively from task summaries + screens. For a `feat-board-core` with tasks "render-empty-no-board", "dnd-kit-cards-and-columns", "inline-card-edit", expected globs include:
+   - `apps/web/src/components/board/**` (component scope)
+   - `apps/web/src/store/board.ts` OR `apps/web/src/store/index.ts` (state scope — pick whichever the architect chose; see Phase 3 below)
+   - `apps/web/app/page.tsx` (route scope, if the home route changes)
+
+   When in doubt, list MORE globs. False positives (over-serializing) cost ~5min of wall-clock per feature; false negatives (under-serializing) cost $5+ per merge conflict.
+
+2. **Detect overlap pairs**. After all features have `affects_files[]`, compute pairwise glob-overlap using minimatch semantics. Two features overlap if any glob in feature A matches a path that any glob in feature B would also match (literal path comparison after expansion is fine for the conservative case).
+
+3. **Auto-add `depends_on`** for overlapping features that aren't already linked:
+   - If A and B overlap AND neither `A in B.depends_on` nor `B in A.depends_on`: add `B → depends_on: [..., A]` (sequence the higher-numbered feature on the lower-numbered one — stable + arbitrary)
+   - Emit `tasks.yaml.warnings[]`: `file-affinity-serialization: feat-A and feat-B both touch {path-glob} — auto-added feat-B depends_on feat-A`
+
+4. **Skip the auto-serialization** for features with the SAME `affects_files[]` glob if both are already in a wave that the user explicitly approved as parallel-safe (e.g., both touch `apps/web/components/{specific-feature}/**` where the paths are disjoint despite the parent glob). Heuristic: if no SHARED leaf path exists despite the glob match, no overlap. (Most common false-positive source.)
+
+**Example — kanban-webapp**:
+
+```yaml
+- id: feat-board-core
+  affects_files:
+    - apps/web/src/store/index.ts # ← shared with settings-data
+    - apps/web/src/components/board/**
+    - apps/web/app/page.tsx
+- id: feat-settings-data
+  affects_files:
+    - apps/web/src/store/index.ts # ← shared with board-core
+    - apps/web/src/components/settings/**
+    - apps/web/app/settings/page.tsx
+  depends_on: [feat-bootstrap, feat-board-core] # ← auto-added because of store/index.ts
+```
+
+**Limitation**: PM doesn't know the EXACT files agents will touch — it works from task summaries. The heuristic is conservative (over-serializes when uncertain). Phase 3 (architect feature-sliced module structure) is the long-term fix that makes this check a no-op for state modules.
+
 ### 5. Write + validate
 
 - Serialize with js-yaml (`noRefs: true, lineWidth: 120`) to `docs/tasks.yaml`.

@@ -52,6 +52,7 @@ Same agent definition; two invocation surfaces. The orchestrator (task 035) owns
 5. Set `task.depends_on[]` within a feature for intra-feature ordering (backend endpoint before frontend form before tests).
 6. Assign priorities (see principle #4).
 7. Estimate `estimated_screens` on frontend tasks using `docs/screens-manifest.json` as the ground truth (or scope-estimate per analysis flows).
+   7b. **bug-015 Phase 2: file-affinity check.** Author `feature.affects_files[]` (glob list of files the feature is expected to mutate). After all features have it populated, compute pairwise overlap. For any overlap pair NOT already linked via `depends_on`, auto-add `depends_on` to serialize them and emit `tasks.yaml.warnings[]: file-affinity-serialization`. See SKILL.md step 4b for the exact algorithm + the kanban-webapp example. Conservative bias: when in doubt, list more globs (under-listing costs $5+ per runtime conflict).
 8. Write `docs/tasks.yaml` matching `schemas/tasks.schema.json` (v2). Validate before returning; fail → retry up to 3x with validation errors as context.
 9. Emit warnings for: `features_count=0`, brief §11 entries with no matching feature, integrations with `requiredNow: true` but no task in any feature with `P0` priority.
 10. Return `PmTasksOutput` JSON per `@repo/orchestrator-contracts`.

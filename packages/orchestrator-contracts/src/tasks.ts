@@ -110,6 +110,13 @@ export const FeatureSchema = z.object({
   tasks: z.array(TaskSchema).min(1),
   summary: z.string().max(200).optional(),
   brief_reference: z.string().optional(),
+  /**
+   * bug-015 Phase 2: glob list of files this feature is expected to mutate.
+   * PM authors at task-graph emission time. Orchestrator uses overlap
+   * detection to serialize features that share files (auto-add depends_on).
+   * Conservative — when in doubt, list more globs.
+   */
+  affects_files: z.array(z.string()).default([]),
 });
 export type Feature = z.infer<typeof FeatureSchema>;
 

@@ -49,6 +49,39 @@ apps/web/
 └── .env.local                    # never committed; user-authored at gate 5 from .env.example
 ```
 
+### 1b. Feature-sliced state convention (bug-015 Phase 3)
+
+**Client-side state (Zustand / Jotai / Redux / Valtio) MUST be feature-sliced.** Each feature owns ONE slice file at `apps/web/src/store/{feature-slug}.ts`. A thin barrel at `apps/web/src/store/index.ts` re-exports + composes slices into the public hook.
+
+```
+apps/web/src/store/
+├── index.ts                  # re-exports hook + selectors; thin composition only
+├── board.ts                  # feat-board-core owns this file
+├── settings.ts               # feat-settings-data owns this file
+├── theme.ts                  # feat-theme owns this file
+├── filter.ts                 # feat-filter owns this file
+└── multiple-boards.ts        # feat-multiple-boards owns this file
+```
+
+**Each slice file** exports:
+
+- A `create*Slice<T>(set, get)` factory (Zustand pattern) OR equivalent for the chosen store lib
+- Typed selectors (`selectBoardById`, `selectFilteredCards`, etc.) — pure functions on the slice's state shape
+- Action creators / reducers as needed
+
+**`store/index.ts`** is the ONLY file that imports from each slice. Composes them into the root store via the lib's combiner pattern (Zustand: spread; Redux: combineReducers; etc.). Re-exports the hook + selectors. Never owns business logic — pure plumbing.
+
+**Why this matters**: when feat-board-core and feat-settings-data both build in parallel worktrees, each touches ONLY its own slice file. No shared file → no merge conflict at close-feature time. (Pre-bug-015, both features mutated `store/index.ts`, causing the kanban-webapp-08 emergency-abort.)
+
+**Rules:**
+
+- A slice file is owned by exactly ONE feature. PM enforces via `feature.affects_files: ["apps/web/src/store/{feature-slug}.ts"]`.
+- `store/index.ts` is a SHARED touch-point. Only modified during the architect's initial scaffold OR via a `kit-change-request`-style structural change. Builders must NEVER add new state to `index.ts` directly — emit a new slice file instead.
+- Cross-slice reads are fine via composed selectors at the index level (e.g. `selectActiveBoardWithFilter` joins board + filter slices). Cross-slice WRITES go through explicit action creators that the slice owns.
+- For tiny apps with no shared mutable state (single-screen toy projects), a single `store/index.ts` is fine. The slice convention kicks in the moment a SECOND feature needs to add state.
+
+This convention is also enforced by the architect agent at scaffold time — see `.claude/agents/architect.md` §State module structure.
+
 ## 2. Idioms
 
 - **Server components by default.** Add `"use client"` only when a component needs interactivity (event handlers, state, browser APIs). Data fetching happens in server components via direct function calls or `fetch()`; client components receive data via props or tRPC hooks.

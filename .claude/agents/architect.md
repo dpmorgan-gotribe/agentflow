@@ -92,6 +92,21 @@ When writing YAML / JSON outputs:
 - **Every stack slot** must appear in `stackRationale[]` with `{slot, pick, reason, briefSignal, rejected[]}`.
 - YAML serialization: use `js-yaml` with `noRefs: true`, `lineWidth: 120` — deterministic output so re-runs diff cleanly.
 
+## State module structure (bug-015 Phase 3)
+
+When the project has cross-component shared client state (Zustand / Jotai / Redux / Valtio for React; runes / writable for Svelte), the architect MUST scaffold the **feature-sliced** module layout per the chosen stack skill's §1b section:
+
+- `apps/{web,mobile}/src/store/` (or `lib/stores/` for SvelteKit) is the canonical directory
+- Pre-create one **empty slice file per anticipated feature** (named after the feature slug from `docs/tasks.yaml` if it exists, OR per brief §11 catalogue entries if PM hasn't run yet)
+- Pre-create the **thin barrel** `store/index.ts` that re-exports + composes the empty slices via the lib's combiner pattern
+- Document this convention in `architecture.yaml.tooling.notes` (free-text field) so PM's `affects_files[]` heuristic (bug-015 Phase 2) lists each feature against its own slice file rather than the shared `index.ts`
+
+**Why**: parallel-feature builders that touch the same store file produce merge conflicts at close-feature time (kanban-webapp-08 emergency-aborted on this; cost ~$20+). The slice convention makes the contention impossible by construction — each feature only touches its own file.
+
+**For mobile** the same convention applies with `apps/mobile/src/store/` + `apps/mobile/src/store/{feature-slug}.ts`.
+
+**Exception**: tiny single-screen toy projects (no shared mutable state across features) MAY ship with a single `store/app.ts`. The slice convention kicks in the moment a SECOND feature needs cross-component state — the architect's scaffold should preemptively create slices for any brief §11 catalogue entry that implies state.
+
 ## Self-verify (before returning)
 
 After writing all outputs, verify:
@@ -107,6 +122,7 @@ After writing all outputs, verify:
 9. `docker-compose.yml` exists if any `apps.*.framework` is not `null`.
 10. `.github/workflows/ci.yml` (or equivalent) exists.
 11. No `.env` read or write attempted anywhere in the run. Grep your own logic — this is a hard boundary.
+12. **bug-015 Phase 3 — feature-sliced store scaffold**: if any tier has shared client state, `apps/{tier}/src/store/` (or stack-skill equivalent) exists with one empty slice file per anticipated feature + a thin `index.ts` barrel. See §State module structure above.
 
 ## Return JSON
 
