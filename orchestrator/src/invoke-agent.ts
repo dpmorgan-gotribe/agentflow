@@ -239,6 +239,106 @@ async function runGitOp(
   }
 }
 
+/**
+ * bug-016: shared pre-flight snapshot helper used by `runCheckoutFeature`
+ * (bug-009) + `runCloseFeature` (bug-008). Performs the exact same dance both
+ * callers used inline before:
+ *   1. `git status --porcelain` on the project root
+ *   2. if dirty: `git add -A` → `git commit -F <tempfile>` with `commitMessage`
+ *
+ * Race-loss handling (bug-016): with `--max-concurrent>=2` two callers can
+ * observe identical "dirty" state between status (T1) and commit (T3). The
+ * race winner commits successfully; the race loser's commit fails with
+ * "nothing to commit, working tree clean". Catching that specific failure
+ * + re-checking status lets us distinguish:
+ *   - race-loss-clean → working tree is now clean (race winner cleaned it
+ *     for us) → benign; caller should proceed as if pre-flight succeeded.
+ *   - real failure → working tree still dirty after the failed commit, OR
+ *     the failure does not match the race patterns at all → caller surfaces
+ *     a hard failure as before.
+ *
+ * Returns a discriminated union the caller switches on. Patterns are matched
+ * against `err.stderr` case-insensitively (Windows + Linux + macOS git
+ * stderr text differs slightly; case-insensitive regex covers the variance).
+ */
+type PreFlightSnapshotResult =
+  | { status: "ok" }
+  | { status: "race-loss-clean" }
+  | { status: "fail"; errorMessage: string };
+
+async function preFlightSnapshot(opts: {
+  projectRoot: string;
+  execGit: ExecGitFn;
+  callerLabel: string;
+  featureId: string;
+  commitMessage: string;
+  dirtyWarn: string;
+}): Promise<PreFlightSnapshotResult> {
+  const { projectRoot, execGit, callerLabel, featureId, commitMessage, dirtyWarn } =
+    opts;
+  try {
+    const status = await execGit("git status --porcelain", projectRoot);
+    if (status.stdout.trim() === "") {
+      return { status: "ok" };
+    }
+    // eslint-disable-next-line no-console
+    console.warn(dirtyWarn);
+    await execGit("git add -A", projectRoot);
+    // bug-005a tempfile pattern — cross-platform safe (no shell quoting).
+    const snapTmp = mkdtempSync(join(tmpdir(), "agentflow-snapshot-"));
+    const snapMsg = join(snapTmp, "MSG");
+    try {
+      writeFileSync(snapMsg, commitMessage, "utf8");
+      await execGit(`git commit -F ${shellQuote(snapMsg)}`, projectRoot);
+    } finally {
+      rmSync(snapTmp, { recursive: true, force: true });
+    }
+    return { status: "ok" };
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    const stderr = (err as { stderr?: string })?.stderr ?? "";
+
+    // bug-016: distinguish race-loss ("nothing to commit") from real
+    // failures. Concurrent callers against shared projectRoot routinely
+    // race here. Case-insensitive — Windows git stderr capitalisation can
+    // differ slightly from Linux.
+    const isNothingToCommit =
+      /nothing to commit/i.test(stderr) ||
+      /working tree clean/i.test(stderr) ||
+      /no changes added to commit/i.test(stderr);
+
+    if (!isNothingToCommit) {
+      return { status: "fail", errorMessage };
+    }
+
+    // Re-check: if the working tree is now clean, the race winner committed
+    // for us. Proceed as if pre-flight succeeded.
+    let recheckStdout = "";
+    try {
+      const recheck = await execGit("git status --porcelain", projectRoot);
+      recheckStdout = recheck.stdout;
+    } catch {
+      // If we can't even re-check status, fall through to fail with the
+      // original error message.
+      return { status: "fail", errorMessage };
+    }
+
+    if (recheckStdout.trim() === "") {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[${callerLabel}] feature ${featureId}: pre-merge snapshot ` +
+          `race-lost to a concurrent close-feature; working tree now clean — ` +
+          `proceeding with merge.`,
+      );
+      return { status: "race-loss-clean" };
+    }
+
+    // Status STILL dirty after the failed commit — this isn't just a race;
+    // something else is going on. Surface as a real failure.
+    return { status: "fail", errorMessage };
+  }
+}
+
 async function runCheckoutFeature(
   gitOp: Extract<GitOpInput, { op: "checkout-feature" }>,
   projectRoot: string,
@@ -278,36 +378,26 @@ async function runCheckoutFeature(
   // Idempotent: skipped if status is clean. First feature in a Mode B run
   // typically does the heavy lifting; subsequent features find the project
   // root already-clean and skip entirely.
-  try {
-    const status = await execGit("git status --porcelain", projectRoot);
-    if (status.stdout.trim() !== "") {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[runCheckoutFeature] feature ${gitOp.featureId}: project root has dirty/untracked state — auto-committing snapshot before worktree creation.`,
-      );
-      await execGit("git add -A", projectRoot);
-      const snapTmp = mkdtempSync(join(tmpdir(), "agentflow-snapshot-"));
-      const snapMsg = join(snapTmp, "MSG");
-      try {
-        writeFileSync(
-          snapMsg,
-          `factory: project bootstrap snapshot before checkout-feature for ${gitOp.featureId}\n\nAuto-committed by orchestrator so the worktree branches from a state inclusive of pre-build Mode A artifacts (kit, docs, configs). Without this, agents see a blank worktree, recreate kit files independently, and merges hit AA (add/add) conflicts at close-feature time.`,
-          "utf8",
-        );
-        await execGit(`git commit -F ${shellQuote(snapMsg)}`, projectRoot);
-      } finally {
-        rmSync(snapTmp, { recursive: true, force: true });
-      }
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+  //
+  // bug-016: handles concurrent-checkout-feature races via the shared
+  // preFlightSnapshot helper — see its docs for the race-loss-clean path.
+  const preflight = await preFlightSnapshot({
+    projectRoot,
+    execGit,
+    callerLabel: "runCheckoutFeature",
+    featureId: gitOp.featureId,
+    commitMessage: `factory: project bootstrap snapshot before checkout-feature for ${gitOp.featureId}\n\nAuto-committed by orchestrator so the worktree branches from a state inclusive of pre-build Mode A artifacts (kit, docs, configs). Without this, agents see a blank worktree, recreate kit files independently, and merges hit AA (add/add) conflicts at close-feature time.`,
+    dirtyWarn: `[runCheckoutFeature] feature ${gitOp.featureId}: project root has dirty/untracked state — auto-committing snapshot before worktree creation.`,
+  });
+  if (preflight.status === "fail") {
     return {
       op: "checkout-feature",
       success: false,
       reason: "worktree-seed-failed",
-      detail: `bug-009 pre-worktree snapshot failed: ${msg}`,
+      detail: `bug-009 pre-worktree snapshot failed: ${preflight.errorMessage}`,
     };
   }
+  // status === "ok" or "race-loss-clean" → both proceed with worktree add.
 
   try {
     await execGit(
@@ -609,53 +699,35 @@ async function runCloseFeature(
   // worktree is on feat/X, not the project root). Surfaces as a real
   // commit on the default branch with a clear "factory: pre-merge snapshot"
   // message so the operator can see/revert/squash it later.
-  try {
-    const preflightStatus = await execGit(
-      "git status --porcelain",
-      projectRoot,
-    );
-    if (preflightStatus.stdout.trim() !== "") {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[runCloseFeature] feature ${gitOp.featureId}: project root has dirty/untracked state — auto-committing pre-merge snapshot to ${defaultBranch}.`,
-      );
-      await execGit("git add -A", projectRoot);
-      // bug-005a tempfile pattern — cross-platform safe (no shell quoting).
-      const snapTmp = mkdtempSync(join(tmpdir(), "agentflow-snapshot-"));
-      const snapMsg = join(snapTmp, "MSG");
-      try {
-        writeFileSync(
-          snapMsg,
-          `factory: pre-merge snapshot before close-feature for ${gitOp.featureId}\n\nAuto-committed by orchestrator because project root had dirty/untracked state when close-feature ran. Files included here would otherwise have caused 'git merge' to abort with "your local changes would be overwritten by merge".`,
-          "utf8",
-        );
-        await execGit(`git commit -F ${shellQuote(snapMsg)}`, projectRoot);
-      } finally {
-        rmSync(snapTmp, { recursive: true, force: true });
-      }
-    }
-  } catch (err) {
-    // bug-008: if the snapshot commit itself fails (e.g., nothing to commit
-    // after add but status was non-empty due to gitignore weirdness, OR git
-    // refuses for another reason), surface as a clean close-feature failure
-    // instead of letting the downstream merge fail confusingly.
-    const msg = err instanceof Error ? err.message : String(err);
+  //
+  // bug-016: handles concurrent-close-feature races via the shared
+  // preFlightSnapshot helper — see its docs for the race-loss-clean path.
+  const preflight = await preFlightSnapshot({
+    projectRoot,
+    execGit,
+    callerLabel: "runCloseFeature",
+    featureId: gitOp.featureId,
+    commitMessage: `factory: pre-merge snapshot before close-feature for ${gitOp.featureId}\n\nAuto-committed by orchestrator because project root had dirty/untracked state when close-feature ran. Files included here would otherwise have caused 'git merge' to abort with "your local changes would be overwritten by merge".`,
+    dirtyWarn: `[runCloseFeature] feature ${gitOp.featureId}: project root has dirty/untracked state — auto-committing pre-merge snapshot to ${defaultBranch}.`,
+  });
+  if (preflight.status === "fail") {
     // eslint-disable-next-line no-console
     console.warn(
-      `[runCloseFeature] feature ${gitOp.featureId}: pre-merge snapshot failed: ${msg}`,
+      `[runCloseFeature] feature ${gitOp.featureId}: pre-merge snapshot failed: ${preflight.errorMessage}`,
     );
     return {
       op: "close-feature",
       success: false,
       conflict: true,
       conflictingFiles: [
-        `<pre-merge-snapshot-failed>: ${msg}`,
+        `<pre-merge-snapshot-failed>: ${preflight.errorMessage}`,
         `Hint: project root may have files that resist 'git add -A && git commit'. Inspect 'git status --porcelain' and resolve manually.`,
       ],
       lastWritingAgent: "unknown",
       worktreePath,
     };
   }
+  // status === "ok" or "race-loss-clean" → both proceed with the merge below.
 
   // Optional: fetch origin (ignore failure for local-only repos).
   try {

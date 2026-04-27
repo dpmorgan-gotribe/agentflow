@@ -630,6 +630,152 @@ describe("runCheckoutFeature (bug-009 pre-worktree snapshot)", () => {
   });
 });
 
+// ─── bug-016 — checkout-feature pre-flight snapshot race handling ──────
+//
+// SAME race that bug-016 fixes in close-feature exists in checkout-feature
+// (bug-009 introduced the same pre-flight pattern there). With
+// --max-concurrent>=2 multiple checkout-feature calls fire near-simul-
+// taneously against the shared project root → race-loser hits "nothing to
+// commit, working tree clean". Pre-bug-016: surfaced as
+// `worktree-seed-failed`. Post-bug-016: race-loss-clean falls through to
+// `git worktree add`; non-race failures preserve the original path.
+describe("runCheckoutFeature (bug-016 pre-flight snapshot race)", () => {
+  it("race-loss with clean working tree → falls through to worktree add", async () => {
+    let statusCallCount = 0;
+    const calls: string[] = [];
+    const execGit: ExecGitFn = async (cmd) => {
+      calls.push(cmd);
+      if (/git status --porcelain/.test(cmd)) {
+        statusCallCount++;
+        // T1: dirty (we observed dirty state before the race winner committed)
+        // T_recheck: CLEAN (race winner committed for us)
+        if (statusCallCount === 1)
+          return { stdout: " M brief.md\n", stderr: "", code: 0 };
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      if (/git add -A/.test(cmd)) return { stdout: "", stderr: "", code: 0 };
+      if (/git commit -F/.test(cmd))
+        throw Object.assign(new Error("nothing to commit"), {
+          stderr: "nothing to commit, working tree clean",
+          code: 1,
+        });
+      if (/git worktree add/.test(cmd))
+        return { stdout: "Preparing worktree\n", stderr: "", code: 0 };
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "checkout-feature",
+        worktree: "feat-auth",
+        branch: "feat/auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "checkout-feature",
+      success: true,
+    });
+    // Verify worktree add actually ran (race-loss didn't short-circuit it).
+    expect(calls.some((c) => /git worktree add/.test(c))).toBe(true);
+  });
+
+  it("race-loss with still-dirty working tree → returns worktree-seed-failed", async () => {
+    // Race pattern matches BUT re-check shows tree is still dirty → not a
+    // benign race; surface the original failure path.
+    const execGit: ExecGitFn = async (cmd) => {
+      if (/git status --porcelain/.test(cmd))
+        return { stdout: " M brief.md\n", stderr: "", code: 0 };
+      if (/git add -A/.test(cmd)) return { stdout: "", stderr: "", code: 0 };
+      if (/git commit -F/.test(cmd))
+        throw Object.assign(new Error("nothing to commit"), {
+          stderr: "nothing to commit, working tree clean",
+          code: 1,
+        });
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "checkout-feature",
+        worktree: "feat-auth",
+        branch: "feat/auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "checkout-feature",
+      success: false,
+      reason: "worktree-seed-failed",
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((result.gitAgentOutput as any).detail).toContain(
+      "bug-009 pre-worktree snapshot failed",
+    );
+  });
+
+  it("real commit failure (non-race) → returns worktree-seed-failed", async () => {
+    // Commit throws for a non-race reason (e.g. GPG signing). Helper does
+    // NOT match race patterns → original failure path fires immediately.
+    const execGit: ExecGitFn = async (cmd) => {
+      if (/git status --porcelain/.test(cmd))
+        return { stdout: " M brief.md\n", stderr: "", code: 0 };
+      if (/git add -A/.test(cmd)) return { stdout: "", stderr: "", code: 0 };
+      if (/git commit -F/.test(cmd))
+        throw Object.assign(new Error("GPG signing failed"), {
+          stderr: "error: gpg failed to sign the data\nfatal: failed to write commit object",
+          code: 1,
+        });
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "checkout-feature",
+        worktree: "feat-auth",
+        branch: "feat/auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "checkout-feature",
+      success: false,
+      reason: "worktree-seed-failed",
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const detail = (result.gitAgentOutput as any).detail as string;
+    expect(detail).toContain("bug-009 pre-worktree snapshot failed");
+    expect(detail).toContain("GPG signing failed");
+  });
+});
+
 describe("invokeAgent — checkout-feature seeds worktree (bug-002)", () => {
   it("copies all 4 hook scripts into the worktree", async () => {
     const budget = mkBudget();
@@ -2677,6 +2823,181 @@ describe("runCloseFeature (bug-008 pre-flight auto-commit)", () => {
     const cf = (result.gitAgentOutput as any).conflictingFiles as string[];
     expect(cf[0]).toContain("pre-merge-snapshot-failed");
     expect(cf.some((s) => s.includes("Hint:"))).toBe(true);
+  });
+});
+
+// ─── bug-016 — close-feature pre-flight snapshot race handling ─────────
+//
+// With --max-concurrent>=2 two close-features can race against the SAME
+// project root: both observe identical "dirty" state at T1; race winner
+// commits at T3; race loser hits "nothing to commit, working tree clean"
+// at T3 because the winner cleaned the tree first.
+//
+// Pre-bug-016 behaviour: the loser surfaced as `pre-merge-snapshot-failed`,
+// the orchestrator misclassified as a merge conflict, and dispatched a
+// (wasted) resolve-conflict-handoff agent. Post-bug-016: the loser detects
+// the race-loss, re-checks status, sees a clean tree, logs a different
+// warning, and FALLS THROUGH to the merge step. Real failures (commit
+// throws non-race error, OR re-check shows still-dirty tree) preserve the
+// original failure-return path.
+describe("runCloseFeature (bug-016 pre-flight snapshot race)", () => {
+  it("race-loss with clean working tree → falls through to merge", async () => {
+    let statusCallCount = 0;
+    const calls: string[] = [];
+    const execGit: ExecGitFn = async (cmd) => {
+      calls.push(cmd);
+      if (/git rev-parse main/.test(cmd))
+        return { stdout: "abc1234\n", stderr: "", code: 0 };
+      if (/git status --porcelain/.test(cmd)) {
+        statusCallCount++;
+        // T1 (first call): dirty (we observed dirty state)
+        // T_recheck (second call): CLEAN (race winner committed for us)
+        if (statusCallCount === 1)
+          return { stdout: " M brief.md\n", stderr: "", code: 0 };
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      if (/git add -A/.test(cmd)) return { stdout: "", stderr: "", code: 0 };
+      if (/git commit -F/.test(cmd))
+        // Race-loser: commit fails because race winner already cleaned tree
+        throw Object.assign(new Error("nothing to commit"), {
+          stderr: "nothing to commit, working tree clean",
+          code: 1,
+        });
+      if (/git fetch origin main/.test(cmd))
+        return { stdout: "", stderr: "", code: 0 };
+      if (/git rev-parse "?feat\/auth"?/.test(cmd))
+        return { stdout: "deadbeef\n", stderr: "", code: 0 };
+      if (/git checkout main/.test(cmd))
+        return { stdout: "", stderr: "", code: 0 };
+      if (/git merge --no-ff/.test(cmd))
+        return {
+          stdout: "Merge made by the 'ort' strategy.\n",
+          stderr: "",
+          code: 0,
+        };
+      if (/git rev-parse HEAD/.test(cmd))
+        return {
+          stdout: "abc1234def5678901234567890abcdef12345678\n",
+          stderr: "",
+          code: 0,
+        };
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    // Critical: race-loss-clean falls through to merge → success.
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: true,
+    });
+    // Verify the merge actually ran (race-loss didn't short-circuit it).
+    expect(calls.some((c) => /git merge --no-ff/.test(c))).toBe(true);
+  });
+
+  it("race-loss with still-dirty working tree → returns failure", async () => {
+    // Race pattern matches BUT re-check shows tree is still dirty → not a
+    // benign race; surface the original failure path.
+    const execGit: ExecGitFn = async (cmd) => {
+      if (/git rev-parse main/.test(cmd))
+        return { stdout: "abc1234\n", stderr: "", code: 0 };
+      if (/git status --porcelain/.test(cmd))
+        // Both T1 and re-check return the SAME dirty state → not a race;
+        // something else is wrong (e.g. files added then immediately
+        // re-modified, or a gitignore weirdness).
+        return { stdout: " M brief.md\n", stderr: "", code: 0 };
+      if (/git add -A/.test(cmd)) return { stdout: "", stderr: "", code: 0 };
+      if (/git commit -F/.test(cmd))
+        throw Object.assign(new Error("nothing to commit"), {
+          stderr: "nothing to commit, working tree clean",
+          code: 1,
+        });
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: false,
+      conflict: true,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cf = (result.gitAgentOutput as any).conflictingFiles as string[];
+    expect(cf[0]).toContain("pre-merge-snapshot-failed");
+  });
+
+  it("real commit failure (non-race) → returns failure", async () => {
+    // Commit throws for a non-race reason (e.g. GPG signing failed). Helper
+    // does NOT match the race patterns → original failure path fires
+    // immediately (no re-check needed).
+    const execGit: ExecGitFn = async (cmd) => {
+      if (/git rev-parse main/.test(cmd))
+        return { stdout: "abc1234\n", stderr: "", code: 0 };
+      if (/git status --porcelain/.test(cmd))
+        return { stdout: " M brief.md\n", stderr: "", code: 0 };
+      if (/git add -A/.test(cmd)) return { stdout: "", stderr: "", code: 0 };
+      if (/git commit -F/.test(cmd))
+        throw Object.assign(new Error("GPG signing failed"), {
+          stderr: "error: gpg failed to sign the data\nfatal: failed to write commit object",
+          code: 1,
+        });
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: false,
+      conflict: true,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cf = (result.gitAgentOutput as any).conflictingFiles as string[];
+    expect(cf[0]).toContain("pre-merge-snapshot-failed");
+    expect(cf[0]).toContain("GPG signing failed");
   });
 });
 

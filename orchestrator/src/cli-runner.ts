@@ -289,6 +289,13 @@ export async function runCli(
       retryCounters,
       invokeAgent,
       authProvider: providerConfig.provider,
+      // bug-017: forward factoryRoot so build-to-spec-verify can locate
+      // scripts/audit-app-reachability.mjs etc. Without this, the verify
+      // wrapper falls back to process.cwd() which under
+      // `pnpm --filter orchestrator start` is the orchestrator package dir,
+      // not the factory root — spawn fails silently, status flips to
+      // "completed-with-integration-failures", warnings go unsurfaced.
+      factoryRoot,
       ...(opts.autoMergeAfterReviewer ? { autoMergeAfterReviewer: true } : {}),
       ...(opts.maxConcurrent
         ? { maxConcurrentFeatures: opts.maxConcurrent }
@@ -307,8 +314,41 @@ export async function runCli(
         messages.push(`  ✗ ${id} — ${reason}`);
       }
     }
+    // bug-017: surface build-to-spec-verify outcome (was silently swallowed)
+    if (result.verify) {
+      messages.push("");
+      messages.push(`Build-to-spec verify:`);
+      const v = result.verify;
+      const orphans = v.reachability?.orphanComponents?.length ?? 0;
+      const orphanRoutes = v.reachability?.orphanRoutes?.length ?? 0;
+      const flowsPassed = v.flows?.passed?.length ?? 0;
+      const flowsFailed = v.flows?.failed?.length ?? 0;
+      messages.push(
+        `  reachability:    ${orphans} orphan component(s), ${orphanRoutes} orphan route(s)`,
+      );
+      messages.push(
+        `  flows:           ${flowsPassed} passed, ${flowsFailed} failed`,
+      );
+      if (v.bugPlansFiled?.length) {
+        messages.push(`  bug plans filed: ${v.bugPlansFiled.join(", ")}`);
+      }
+      if (v.warnings?.length) {
+        messages.push("  warnings:");
+        for (const w of v.warnings) messages.push(`    - ${w}`);
+      }
+    }
+    if (result.status && result.status !== "completed") {
+      messages.push("");
+      messages.push(`Run status: ${result.status}`);
+    }
     return {
-      exitCode: result.failed.length > 0 ? 1 : 0,
+      // bug-017: integration-failures should fail the run too, not just
+      // feature-level failures.
+      exitCode:
+        result.failed.length > 0 ||
+        result.status === "completed-with-integration-failures"
+          ? 1
+          : 0,
       messages,
     };
   }
