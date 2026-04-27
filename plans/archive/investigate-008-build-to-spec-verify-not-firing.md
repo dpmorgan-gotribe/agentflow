@@ -1,10 +1,11 @@
 ---
 id: investigate-008-build-to-spec-verify-not-firing
 type: investigation
-status: draft
+status: completed
 author-agent: claude-opus-4-7
 created: 2026-04-27
 updated: 2026-04-27
+completed-at: 2026-04-27
 parent-plan: feat-022-build-to-spec-verification
 supersedes: null
 superseded-by: null
@@ -38,19 +39,23 @@ feat-022 wired `runBuildToSpecVerify` into `runFeatureGraph` (per the implementa
 ## Investigation Steps
 
 ### Step 1 — Read the wiring (10 min)
+
 - `orchestrator/src/feature-graph.ts`: find `runBuildToSpecVerify` call site. Note the gating condition + which code path leads to it.
 - `orchestrator/src/cli-runner.ts`: find where `FeatureGraphContext` is constructed for a live run. Check if `skipBuildToSpecVerify` is set explicitly to `false` or relies on the type-level default.
 - `orchestrator/src/cli.ts`: confirm the resume-feature-graph entry point eventually reaches `runFeatureGraph` (vs. some short-circuit).
 
 ### Step 2 — Check the kanban-10 output for evidence (5 min)
+
 - `tasks/bam0prdo4.output` — the resume run's stdout. Grep for `build-to-spec`, `verify`, `BuildToSpec`, `reachability`, `flow-`. If zero matches → the hook never fired (vs. fired-and-noop'd-silently).
 - Compare against feat-022's tests in `orchestrator/tests/feature-graph.test.ts` — what `console.log` lines does the verify path emit? Should appear in stdout.
 
 ### Step 3 — Trace the gating condition (10 min)
+
 - If the hook IS in `feature-graph.ts` but gated on a flag, identify the flag's default + where it's set per-context.
 - If the hook fires conditionally on `allFeaturesMerged`, check whether the resume's success criterion ("Features completed: 6") aligns with the trigger's expected shape.
 
 ### Step 4 — Recommend (5 min)
+
 - ONE-line fix if it's a flag default
 - A more involved fix if the gating logic is structural (e.g., trigger on the `runFeatureGraph` exit path that returns success, not buried in an inner conditional)
 - Document any tests that would have caught this (and didn't, since current tests stub verify with `skipBuildToSpecVerify: true`)
@@ -67,7 +72,7 @@ The user's evidence ("zero `[build-to-spec-verify]` log lines in stdout") is a *
 
 ```ts
 if (failed.size > 0) {
-  status = "incomplete";                        // skip verify
+  status = "incomplete"; // skip verify
 } else if (!ctx.skipBuildToSpecVerify && completed.size > 0) {
   // ← run verify here
 }
@@ -100,6 +105,7 @@ messages.push(`Total cost:         $${result.totalCostUsd.toFixed(2)}`);
 ### Test gap (Step 3)
 
 `orchestrator/tests/feature-graph.test.ts:81` has the test-default `skipBuildToSpecVerify: overrides.skipBuildToSpecVerify ?? true` — so the existing tests that DO exercise verify (lines 1248, 1292, 1343, 1421, 1463) all stub `runBuildToSpecVerify` directly. **No test exercises the real `cli-runner.ts → runFeatureGraph → defaultRunBuildToSpecVerify` wiring**. The CLI-level integration test would have caught both bugs:
+
 - The missing `factoryRoot` thread-through (verify scripts not found)
 - The missing `result.status` / `result.verify` surfacing (operator sees no signal)
 
@@ -117,7 +123,7 @@ const graphCtx: Parameters<typeof runFeatureGraph>[1] = {
   retryCounters,
   invokeAgent,
   authProvider: providerConfig.provider,
-  factoryRoot,                                      // ← add this line
+  factoryRoot, // ← add this line
   ...(opts.autoMergeAfterReviewer ? { autoMergeAfterReviewer: true } : {}),
   ...(opts.maxConcurrent ? { maxConcurrentFeatures: opts.maxConcurrent } : {}),
 };
@@ -147,6 +153,7 @@ And consider treating `completed-with-integration-failures` as exitCode 1 (or at
 ### Test gap fix
 
 Add a CLI-level integration test in `orchestrator/tests/cli-runner.test.ts` that:
+
 1. Sets up a fake project with a tasks.yaml having one already-completed feature.
 2. Runs `runCli({ resumeFeatureGraph: true, ... }, factoryRoot)` with the real `runFeatureGraph` (only `invokeAgentOverride` stubbed) and a fake `factoryRoot` containing dummy `scripts/audit-app-reachability.mjs` + `scripts/synthesize-flow-e2e.mjs` that emit valid JSON.
 3. Asserts `result.messages` includes a `Verify ok:` or `Status:` line.

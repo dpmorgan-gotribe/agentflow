@@ -1,12 +1,13 @@
 ---
 id: feat-025-flow-spec-execution
 type: feature
-status: in-progress
+status: completed
 approved-at: 2026-04-27
 approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-04-27
 updated: 2026-04-27
+completed-at: 2026-04-27
 parent-plan: feat-022-build-to-spec-verification
 supersedes: null
 superseded-by: null

@@ -1,12 +1,13 @@
 ---
 id: bug-016-pre-flight-snapshot-race
 type: bug
-status: in-progress
+status: completed
 approved-at: 2026-04-27
 approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-04-27
 updated: 2026-04-27
+completed-at: 2026-04-27
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -61,11 +62,12 @@ In `orchestrator/src/invoke-agent.ts::runCloseFeature` lines 612-636:
 
 ```ts
 const preflightStatus = await execGit("git status --porcelain", projectRoot);
-if (preflightStatus.stdout.trim() !== "") {        // ← time-of-check (T1)
+if (preflightStatus.stdout.trim() !== "") {
+  // ← time-of-check (T1)
   console.warn("project root has dirty/untracked state...");
-  await execGit("git add -A", projectRoot);        // T2
+  await execGit("git add -A", projectRoot); // T2
   // ...write tempfile...
-  await execGit(`git commit -F ${shellQuote(snapMsg)}`, projectRoot);  // ← time-of-use (T3)
+  await execGit(`git commit -F ${shellQuote(snapMsg)}`, projectRoot); // ← time-of-use (T3)
 }
 ```
 
@@ -130,11 +132,17 @@ const LOCK_PATH = join(projectRoot, ".claude", "state", "close-feature.lock");
 
 async function withCloseFeatureLock<T>(fn: () => Promise<T>): Promise<T> {
   const fd = await acquireLock(LOCK_PATH, { timeoutMs: 30_000 });
-  try { return await fn(); } finally { releaseLock(fd); }
+  try {
+    return await fn();
+  } finally {
+    releaseLock(fd);
+  }
 }
 
 // in runCloseFeature:
-return withCloseFeatureLock(async () => { /* existing body */ });
+return withCloseFeatureLock(async () => {
+  /* existing body */
+});
 ```
 
 Use `proper-lockfile` or hand-roll with `fs.openSync(O_EXCL)` + retry. Cross-platform (Windows + Linux + macOS) safe.

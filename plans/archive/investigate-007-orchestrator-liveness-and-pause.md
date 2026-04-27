@@ -60,15 +60,15 @@ Grep for: `AbortController`, `signal:`, `timeout`, `setTimeout`, `progress`, `he
 
 Enumerate plausible stall-detection mechanisms with rough effort/coverage:
 
-| Option | What it catches | False-positive risk | Effort |
-|---|---|---|---|
-| Per-invocation `AbortController` with N-min hard timeout | All silent hangs | Long-running legitimate agent calls would abort | Low |
-| Heartbeat: orchestrator polls worktree mtime every M sec; if no change for K min → flag | Silent hangs that don't write files | Misses agents that ARE writing but not committing | Low |
-| Watch SDK message stream for ≥1 message every N sec | Hangs at the SDK layer | Misses pre-stream auth hangs | Medium |
-| Request a "progress" SDK feature from Anthropic (feature request) | Comprehensive | None — but slow + external | High |
-| Active health-check: orchestrator pings the agent process every M sec; if unresponsive → flag | Process-level hangs | None | Medium |
-| Wall-clock budget per-agent-task (e.g. web-frontend-builder = max 30 min, then surface warning) | All hangs | Slow tasks legitimately exceed | Low-Medium |
-| **Hybrid** (worktree mtime + per-agent wall budget + AbortController) | Most cases | Low | Medium |
+| Option                                                                                          | What it catches                     | False-positive risk                               | Effort     |
+| ----------------------------------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------- | ---------- |
+| Per-invocation `AbortController` with N-min hard timeout                                        | All silent hangs                    | Long-running legitimate agent calls would abort   | Low        |
+| Heartbeat: orchestrator polls worktree mtime every M sec; if no change for K min → flag         | Silent hangs that don't write files | Misses agents that ARE writing but not committing | Low        |
+| Watch SDK message stream for ≥1 message every N sec                                             | Hangs at the SDK layer              | Misses pre-stream auth hangs                      | Medium     |
+| Request a "progress" SDK feature from Anthropic (feature request)                               | Comprehensive                       | None — but slow + external                        | High       |
+| Active health-check: orchestrator pings the agent process every M sec; if unresponsive → flag   | Process-level hangs                 | None                                              | Medium     |
+| Wall-clock budget per-agent-task (e.g. web-frontend-builder = max 30 min, then surface warning) | All hangs                           | Slow tasks legitimately exceed                    | Low-Medium |
+| **Hybrid** (worktree mtime + per-agent wall budget + AbortController)                           | Most cases                          | Low                                               | Medium     |
 
 Cross-reference with the SDK's actual capabilities (Step 1 findings).
 
@@ -121,6 +121,7 @@ Enumerate triggers beyond the user-initiated case + the Claude Max limit:
 ### Step 5 — Recommend (10 min)
 
 Pick:
+
 - ONE liveness-probe mechanism for v1 (deterministic + cheap)
 - ONE state-file format for `paused-state.json`
 - ONE skill-pair design for `/pause-build` + `/resume-build`
@@ -177,18 +178,18 @@ From `node_modules/.../@anthropic-ai/claude-agent-sdk/sdk.d.ts`:
   (line 2174) — surfaces when the SDK is silently retrying upstream
   errors. We could log these instead of mistaking them for stalls.
 - **`SDKRateLimitEvent`** with `rate_limit_info: { status, resetsAt,
-  rateLimitType: 'five_hour' | 'seven_day' | … }` (line 2910) — the
+rateLimitType: 'five_hour' | 'seven_day' | … }` (line 2910) — the
   Claude Max 5-hour limit emits this BEFORE rejection, with a structured
   `resetsAt` epoch. Foundation for an automated `/pause-build` trigger.
 - **`Query.interrupt()`** (line 1882) — async cancel that's cleaner than
   AbortController (drains in-flight tools); only available in streaming
   input mode.
 - **`SDKResultError.subtype = 'error_max_budget_usd' | 'error_max_turns'
-  | …`** + **`TerminalReason = 'blocking_limit' | 'rapid_refill_breaker'
-  | …`** (line 5005) — typed reasons we can pattern-match for pause vs.
+| …`** + **`TerminalReason = 'blocking_limit' | 'rapid_refill_breaker'
+| …`** (line 5005) — typed reasons we can pattern-match for pause vs.
   fail-fast routing.
-- **`Options.loadTimeoutMs`** (line 1301, default 60_000) — only covers
-  the *spawn* window. Doesn't help post-spawn.
+- **`Options.loadTimeoutMs`** (line 1301, default 60*000) — only covers
+  the \_spawn* window. Doesn't help post-spawn.
 
 There is NO documented `query()`-level wall-clock timeout. We have to
 build it ourselves with `abortController` + `setTimeout`.
@@ -220,17 +221,17 @@ sibling in the same `.claude/state/<run-id>/` directory.
 
 ### F4 — Liveness-probe option survey
 
-| # | Option | Catches | False positive | Effort | Verdict |
-|---|---|---|---|---|---|
-| 1 | `Options.abortController` + per-agent wall timeout (e.g. web-frontend-builder = 25 min) | All stalls, hard cap | Slow legit calls | Low (~30 LOC in `runLlmAgent` + `buildAgentOptions`) | **PRIMARY** |
-| 2 | Watch `SDKKeepAliveMessage` interval; flag if > 90 s gap | SDK pipe wedged | Almost zero (SDK's own heartbeat) | Low (~10 LOC) | **SECONDARY — combine with #1** |
-| 3 | Watch worktree mtime every 60 s; flag if no change for 10 min during build-agent | Builder writing pause | Misses pure-thinking phases (initial planning) | Low | Tertiary; keep as warning, not abort |
-| 4 | `includePartialMessages: true` + per-message-gap timeout | SDK silent during turn | None — partial messages stream every few seconds | Medium (must filter all the new events; some perf overhead) | Defer to v2 |
-| 5 | Wall-clock budget per agent type (config in `.claude/models.yaml`) | Same as #1 | Same as #1 | Low | Subsumed by #1 |
-| 6 | OS process probe (e.g. `/proc/PID/status` Sleeping vs Running) | Process-level wedge | Cross-platform pain (Windows) | High | Reject |
-| 7 | Hybrid (#1 + #2 + #3 surface-warning) | Most cases | Low | Medium | **RECOMMENDED bundle** |
-| 8 (new) | Surface `SDKAPIRetryMessage` to operator log when `attempt > 1` | Distinguishes "SDK is retrying upstream" from "process hung" | None | Trivial (~5 LOC) | Add as observability win |
-| 9 (new) | Subscribe to `SDKRateLimitEvent` and route `status: "allowed_warning"` to a soft-pause prompt; `status: "rejected"` to hard pause until `resetsAt` | Claude Max limits BEFORE the failure | None — typed event | Low | **DEDICATED PAUSE TRIGGER** |
+| #       | Option                                                                                                                                             | Catches                                                      | False positive                                   | Effort                                                      | Verdict                              |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------ | ----------------------------------------------------------- | ------------------------------------ |
+| 1       | `Options.abortController` + per-agent wall timeout (e.g. web-frontend-builder = 25 min)                                                            | All stalls, hard cap                                         | Slow legit calls                                 | Low (~30 LOC in `runLlmAgent` + `buildAgentOptions`)        | **PRIMARY**                          |
+| 2       | Watch `SDKKeepAliveMessage` interval; flag if > 90 s gap                                                                                           | SDK pipe wedged                                              | Almost zero (SDK's own heartbeat)                | Low (~10 LOC)                                               | **SECONDARY — combine with #1**      |
+| 3       | Watch worktree mtime every 60 s; flag if no change for 10 min during build-agent                                                                   | Builder writing pause                                        | Misses pure-thinking phases (initial planning)   | Low                                                         | Tertiary; keep as warning, not abort |
+| 4       | `includePartialMessages: true` + per-message-gap timeout                                                                                           | SDK silent during turn                                       | None — partial messages stream every few seconds | Medium (must filter all the new events; some perf overhead) | Defer to v2                          |
+| 5       | Wall-clock budget per agent type (config in `.claude/models.yaml`)                                                                                 | Same as #1                                                   | Same as #1                                       | Low                                                         | Subsumed by #1                       |
+| 6       | OS process probe (e.g. `/proc/PID/status` Sleeping vs Running)                                                                                     | Process-level wedge                                          | Cross-platform pain (Windows)                    | High                                                        | Reject                               |
+| 7       | Hybrid (#1 + #2 + #3 surface-warning)                                                                                                              | Most cases                                                   | Low                                              | Medium                                                      | **RECOMMENDED bundle**               |
+| 8 (new) | Surface `SDKAPIRetryMessage` to operator log when `attempt > 1`                                                                                    | Distinguishes "SDK is retrying upstream" from "process hung" | None                                             | Trivial (~5 LOC)                                            | Add as observability win             |
+| 9 (new) | Subscribe to `SDKRateLimitEvent` and route `status: "allowed_warning"` to a soft-pause prompt; `status: "rejected"` to hard pause until `resetsAt` | Claude Max limits BEFORE the failure                         | None — typed event                               | Low                                                         | **DEDICATED PAUSE TRIGGER**          |
 
 ### F5 — `/pause-build` + `/resume-build` design validation
 
@@ -264,30 +265,30 @@ a pause is in effect; absence = running.
 
 **Trigger entry point integration**:
 
-| Trigger | Detection site | Auto vs. ask |
-|---|---|---|
-| User `/pause-build <project>` | New skill writes a pause-request sentinel; `runFeature`'s outer loop polls between agents | Auto (immediate) |
-| SIGINT (Ctrl+C) | New `process.on("SIGINT")` in `cli.ts` | Auto (immediate, drains in-flight up to 60 s) |
-| Claude Max 5-hour limit | `runLlmAgent`'s message loop watches for `SDKRateLimitEvent` with `status: 'rejected'` or `'allowed_warning'` + `rateLimitType: 'five_hour'` | Auto + log `resetsAt` epoch |
-| Per-agent wall-timeout fired | `AbortController.abort()` in `runLlmAgent`; classify as stall | Auto |
-| Disk < 1 GB free | New periodic check in `runFeatureGraph` outer loop | Auto |
-| 3 consecutive feature failures | Count in `runFeatureGraph` | Ask (warning) |
+| Trigger                        | Detection site                                                                                                                               | Auto vs. ask                                  |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| User `/pause-build <project>`  | New skill writes a pause-request sentinel; `runFeature`'s outer loop polls between agents                                                    | Auto (immediate)                              |
+| SIGINT (Ctrl+C)                | New `process.on("SIGINT")` in `cli.ts`                                                                                                       | Auto (immediate, drains in-flight up to 60 s) |
+| Claude Max 5-hour limit        | `runLlmAgent`'s message loop watches for `SDKRateLimitEvent` with `status: 'rejected'` or `'allowed_warning'` + `rateLimitType: 'five_hour'` | Auto + log `resetsAt` epoch                   |
+| Per-agent wall-timeout fired   | `AbortController.abort()` in `runLlmAgent`; classify as stall                                                                                | Auto                                          |
+| Disk < 1 GB free               | New periodic check in `runFeatureGraph` outer loop                                                                                           | Auto                                          |
+| 3 consecutive feature failures | Count in `runFeatureGraph`                                                                                                                   | Ask (warning)                                 |
 
 ### F6 — Other pause-trigger triage
 
-| # | Trigger | Detect HOW | Auto / Ask | Effort | v1? |
-|---|---|---|---|---|---|
-| 1 | Subscription limit (`SDKRateLimitEvent`) | SDK message in loop | Auto | Low | **YES** |
-| 2 | HTTP 429 rate limit | `SDKAssistantMessageError = 'rate_limit'` | Auto | Low | YES (subset of #1) |
-| 3 | Network down > 2 min | Heartbeat gap from `SDKKeepAliveMessage` | Auto | Low | **YES** |
-| 4 | Auth token expired | `SDKAssistantMessageError = 'authentication_failed'` | Auto | Low | **YES** |
-| 5 | Low disk (< 1 GB) | `statvfs` poll every 60 s | Auto | Medium (Win compat) | Defer |
-| 6 | High error rate (3 features fail in a row) | Counter in `runFeatureGraph` | Ask | Low | Defer |
-| 7 | SIGINT (Ctrl+C) | `process.on("SIGINT")` | Auto | Low | **YES** |
-| 8 | Master SHA drifts mid-run | git rev-parse poll between features | Ask | Low | Defer (rare) |
-| 9 | Loop-detection hook fires | `.claude/hooks/detect-loop.mjs` exit code | Ask | Medium | Defer |
-| 10 | User-invoked `/pause-build` | Sentinel-file polling between agents | Auto | Low | **YES** |
-| 11 | Per-agent wall-timeout | `AbortController` from F4-#1 | Auto | Low | **YES** |
+| #   | Trigger                                    | Detect HOW                                           | Auto / Ask | Effort              | v1?                |
+| --- | ------------------------------------------ | ---------------------------------------------------- | ---------- | ------------------- | ------------------ |
+| 1   | Subscription limit (`SDKRateLimitEvent`)   | SDK message in loop                                  | Auto       | Low                 | **YES**            |
+| 2   | HTTP 429 rate limit                        | `SDKAssistantMessageError = 'rate_limit'`            | Auto       | Low                 | YES (subset of #1) |
+| 3   | Network down > 2 min                       | Heartbeat gap from `SDKKeepAliveMessage`             | Auto       | Low                 | **YES**            |
+| 4   | Auth token expired                         | `SDKAssistantMessageError = 'authentication_failed'` | Auto       | Low                 | **YES**            |
+| 5   | Low disk (< 1 GB)                          | `statvfs` poll every 60 s                            | Auto       | Medium (Win compat) | Defer              |
+| 6   | High error rate (3 features fail in a row) | Counter in `runFeatureGraph`                         | Ask        | Low                 | Defer              |
+| 7   | SIGINT (Ctrl+C)                            | `process.on("SIGINT")`                               | Auto       | Low                 | **YES**            |
+| 8   | Master SHA drifts mid-run                  | git rev-parse poll between features                  | Ask        | Low                 | Defer (rare)       |
+| 9   | Loop-detection hook fires                  | `.claude/hooks/detect-loop.mjs` exit code            | Ask        | Medium              | Defer              |
+| 10  | User-invoked `/pause-build`                | Sentinel-file polling between agents                 | Auto       | Low                 | **YES**            |
+| 11  | Per-agent wall-timeout                     | `AbortController` from F4-#1                         | Auto       | Low                 | **YES**            |
 
 **v1 trigger set: #1, #4, #7, #10, #11.** Network gap (#3) and disk
 (#5) are next-priority but defer to keep v1 surface area tight.
@@ -337,21 +338,22 @@ once a Mode B run starts:
   "version": "1.0",
   "pipelineRunId": "f7c852fb-…",
   "lastUpdatedAt": "2026-04-27T11:42:03.123Z",
-  "masterCommitSha": "f135b02…",                  // master HEAD when run started
-  "completed": ["feat-shell", "feat-board"],     // merged to master
-  "failed": [],                                   // hit retry cap
-  "aborted": [],                                  // dependency-failed cascade
-  "inFlight": [                                   // alive worktrees at snapshot
+  "masterCommitSha": "f135b02…", // master HEAD when run started
+  "completed": ["feat-shell", "feat-board"], // merged to master
+  "failed": [], // hit retry cap
+  "aborted": [], // dependency-failed cascade
+  "inFlight": [
+    // alive worktrees at snapshot
     {
       "featureId": "feat-filters",
       "worktree": ".claude/worktrees/feat-filters",
       "branch": "feat/filters",
-      "lastAgent": "web-frontend-builder",        // who was dispatched
-      "nextAgent": "tester",                       // who's next in agent_sequence
+      "lastAgent": "web-frontend-builder", // who was dispatched
+      "nextAgent": "tester", // who's next in agent_sequence
       "lastProgressAt": "2026-04-27T10:55:01.000Z", // last SDK message ts
-      "dispatchedAt": "2026-04-27T10:50:00.000Z"
-    }
-  ]
+      "dispatchedAt": "2026-04-27T10:50:00.000Z",
+    },
+  ],
 }
 ```
 
@@ -364,9 +366,9 @@ running:
   "pausedAt": "2026-04-27T11:42:05.000Z",
   "reason": "claude-max-five-hour-limit", // |"user-request"|"sigint"|"stall-timeout"|"auth-failed"
   "reasonDetail": "SDKRateLimitEvent rateLimitType=five_hour resetsAt=…",
-  "resetsAt": "2026-04-27T16:30:00.000Z",  // optional — for rate-limit pauses
+  "resetsAt": "2026-04-27T16:30:00.000Z", // optional — for rate-limit pauses
   "authProvider": "claude-max-subscription", // detect mid-pause provider switch
-  "drainedInFlight": true                   // false if pause was hard (SIGINT 2x)
+  "drainedInFlight": true, // false if pause was hard (SIGINT 2x)
 }
 ```
 
@@ -393,7 +395,7 @@ network-gap, disk-space, error-rate, and loop-detection triggers to v2.
   errors. Reads `feature-graph-progress.json`, runs the F5 in-flight
   recovery decision tree, deletes `paused.json`, and dispatches
   `pnpm --filter orchestrator run mode-b --resume-feature-graph
-  --pipeline-run-id <id>` (extending the existing flag). Exit 0 on
+--pipeline-run-id <id>` (extending the existing flag). Exit 0 on
   success, 1 on missing pause file, 2 on resume-recovery failure
   (worktree state ambiguous → operator must decide).
 
@@ -417,7 +419,7 @@ network-gap, disk-space, error-rate, and loop-detection triggers to v2.
    `runFeatureGraph`, and `SDKRateLimitEvent` /
    `SDKAssistantMessageError = 'authentication_failed'` handlers in
    `runLlmAgent`. All paths funnel through a single `pauseRun(reason,
-   detail)` helper that writes `paused.json` and drains. Cost: medium.
+detail)` helper that writes `paused.json` and drains. Cost: medium.
 4. **Phase D — `/pause-build` + `/resume-build` skills.** Author both
    skills following `delete-project`'s preview-by-default pattern;
    resume implements the F5 in-flight recovery tree. Cost: low.

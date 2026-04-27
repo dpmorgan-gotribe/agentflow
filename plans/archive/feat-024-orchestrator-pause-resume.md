@@ -93,12 +93,14 @@ Tests: 12-15 in `orchestrator/tests/state-persistence.test.ts` covering each sta
 ### Phase B — Liveness probe (~80 LOC + stub-SDK harness)
 
 Extend `ModelConfig` schema (`packages/orchestrator-contracts/src/model-config.ts`) with optional `stallTimeoutMs?: number`. Defaults in factory `~/.claude/models.yaml`:
-- backend-builder, web-frontend-builder, mobile-frontend-builder: 25 * 60 * 1000
-- tester: 20 * 60 * 1000
-- reviewer, security: 10 * 60 * 1000
+
+- backend-builder, web-frontend-builder, mobile-frontend-builder: 25 _ 60 _ 1000
+- tester: 20 _ 60 _ 1000
+- reviewer, security: 10 _ 60 _ 1000
 - git-agent: never (explicit `null`)
 
 In `orchestrator/src/invoke-agent.ts::runLlmAgent`:
+
 - Instantiate `AbortController` per invocation
 - Pass `abortController` to `query()` options
 - Wrap the for-await loop with two timers:
@@ -135,13 +137,14 @@ async function pauseRun(
   ctx: FeatureGraphContext,
   reason: PauseReason,
   detail: string,
-  options: { drained: boolean; resetsAt?: Date }
-): Promise<void>
+  options: { drained: boolean; resetsAt?: Date },
+): Promise<void>;
 ```
 
 Helper writes `paused.json` to `<projectRoot>/.claude/state/<runId>/`, flushes `feature-graph-progress.json`, then exits 0 (or throws a sentinel that cli.ts catches for clean exit).
 
 Trigger sources:
+
 - **`runFeatureGraph` between agent invocations**: poll for `paused.json` sentinel; if present, drain in-flight up to 60s, then `pauseRun(reason: "user-request")`
 - **`cli.ts` SIGINT handler**: `process.on("SIGINT", () => pauseRun(ctx, "sigint", "operator interrupt", { drained: true }))`. Second SIGINT within 5s → hard exit (`drained: false`)
 - **`runLlmAgent` SDK message inspection**:
@@ -158,6 +161,7 @@ Tests: 10-12 covering each trigger path + the drain + the pid file lifecycle.
 Mirror `delete-project`'s preview-by-default pattern.
 
 **`.claude/skills/pause-build/SKILL.md`**:
+
 - Args: `<project>` (required), `[--hard]` (optional)
 - Resolves run-id from `<project>/.claude/state/` (most-recent counters.json)
 - Writes `<run-id>/paused.json` (preview shows what will happen)
@@ -166,6 +170,7 @@ Mirror `delete-project`'s preview-by-default pattern.
 - Exit 0 success / 1 no run-id / 2 already paused
 
 **`.claude/skills/resume-build/SKILL.md`**:
+
 - Args: `<project>` (required)
 - Reads `<run-id>/paused.json` — error if missing
 - Reads `<run-id>/feature-graph-progress.json` — error if missing or schema-invalid
@@ -220,6 +225,7 @@ RETRY POLICY:
 End-to-end implementation of Phases A-D (Phase E intentionally deferred — empirical post-ship tuning).
 
 **Phase A — Checkpoint plumbing**:
+
 - Added `FeatureGraphProgressSchema` + `InFlightFeatureSchema` in `packages/orchestrator-contracts/src/feature-graph-progress.ts`.
 - Added `writeFeatureGraphProgress()` / `readFeatureGraphProgress()` / `featureGraphProgressPath()` to `orchestrator/src/state-persistence.ts` (atomic tempfile+rename, schema validation on both read + write).
 - Added `ProgressTracker` interface + `createProgressTracker()` (real disk-backed, flushes on every state transition) + `noopProgressTracker()` (test default) to `orchestrator/src/feature-graph.ts`.
@@ -227,6 +233,7 @@ End-to-end implementation of Phases A-D (Phase E intentionally deferred — empi
 - Tests: 9 in `state-persistence.test.ts` + 14 in new `feature-graph-progress.test.ts` + 7 in `packages/orchestrator-contracts/tests/feature-graph-progress.test.ts`.
 
 **Phase B — Liveness probe**:
+
 - Extended `ModelConfig` (in `orchestrator/src/model-config.ts`) with `stallTimeoutMs: number | null` + factory defaults map (`DEFAULT_STALL_TIMEOUT_BY_AGENT`).
 - Resolution precedence: per-agent project YAML > per-agent global YAML > top-level `stallTimeoutMs.<agent>` map (project > global) > built-in defaults > null. Added top-level `stallTimeoutMode` ("lenient" | "strict") read via new `readStallTimeoutMode()` helper.
 - Documented defaults in factory `.claude/models.yaml` (left `~/.claude/models.yaml` untouched per the boundary rule).
@@ -235,6 +242,7 @@ End-to-end implementation of Phases A-D (Phase E intentionally deferred — empi
 - Tests: 8 in new `invoke-agent-liveness.test.ts` (vitest fake timers + scripted SDK stub that yields keepalives + result-or-not) + 10 stallTimeoutMs precedence tests in `model-config.test.ts`.
 
 **Phase C — Pause triggers**:
+
 - Added `PausedStateSchema` + `PauseReason` in `packages/orchestrator-contracts/src/paused-state.ts`.
 - New module `orchestrator/src/pause.ts`: `pauseRun()` (the funnel — writes paused.json atomically, flushes the tracker, throws `PauseSignal`), `writePausedStateSync()` (used by `/pause-build` skill + cli.ts SIGINT handler), `writeOrchestratorPid()`, `pausedStatePath()`, `orchestratorPidPath()`.
 - Wired `runFeatureGraph` to poll for the paused.json sentinel before each agent dispatch via `existsSync` (microsecond cost). Promise.race rewritten so PauseSignal propagates out (drains other in-flight features then re-throws).
@@ -244,6 +252,7 @@ End-to-end implementation of Phases A-D (Phase E intentionally deferred — empi
 - Tests: 16 in new `pause.test.ts` (path helpers, write helpers, pid lifecycle, pauseRun throws PauseSignal, runFeatureGraph poll integration with poll-disabled negative case) + 9 in `packages/orchestrator-contracts/tests/paused-state.test.ts`.
 
 **Phase D — `/pause-build` + `/resume-build` skills**:
+
 - `.claude/skills/pause-build/SKILL.md` — preview-by-default like `/delete-project`; resolves run-id from newest `counters.json` mtime; writes paused.json sentinel atomically; with `--hard` reads orchestrator.pid + sends SIGINT via `process.kill(pid, "SIGINT")`.
 - `.claude/skills/resume-build/SKILL.md` — reads + validates paused.json + feature-graph-progress.json; sanity-checks master commit SHA drift (`--ignore-master-drift` to override); walks the F5 in-flight worktree recovery decision tree (`clean` / `dirty-builder` / `dirty-meta` / `orphaned` / `aborted`); deletes paused.json; dispatches `pnpm --filter orchestrator start generate <name> --resume-feature-graph --pipeline-run-id <id>`.
 
