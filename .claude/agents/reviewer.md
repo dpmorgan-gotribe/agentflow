@@ -144,6 +144,30 @@ If the orchestrator dispatches you (the reviewer) to resolve a merge conflict �
    - `git add <lockfile>`
 3. Stage all resolved files, then `git commit --no-edit -m "merge feat/<id>"` (the merge is mid-flight; this finalizes it).
 
+### General source-file conflicts (bug-015)
+
+For non-lockfile, non-package.json conflicts (TypeScript / TSX / source code):
+
+1. **Read both versions**: `git show :2:<path>` (master/ours) + `git show :3:<path>` (feature/theirs) + `git show :1:<path>` (merge base).
+2. **Identify what each side changed**. Common patterns + recipes:
+
+| Pattern | Recipe |
+|---|---|
+| Two slices added to a Zustand/Redux store | Combine: keep both `set/get` blocks, both selectors, both action types |
+| Two routes added to `app/page.tsx` or layout | Combine: both declarations |
+| Two test cases in same `describe` block | Concatenate the `it(...)` blocks |
+| Two imports added to the same import line | Sort + dedupe |
+| Two divergent edits to same function body | Read both — if behavior incompatible, BAIL with diagnostic (see step 5) |
+
+3. **Produce a merged version** that preserves BOTH sides' intent. Don't pick a winner — combine.
+4. **Validate the merge**:
+   - NO `<<<<<<<`/`=======`/`>>>>>>>` markers remain
+   - Run typecheck: `pnpm -C apps/<app> typecheck`
+   - Run affected tests: `pnpm -C apps/<app> test <file-glob>`
+5. **Stage + commit**: `git add <path>` then `git commit --no-edit -m "merge feat/<id>"`.
+
+If you cannot produce a safe merge after one honest attempt, DO NOT guess. Leave the file with conflict markers AND a code comment `// MERGE-BAIL bug-015: <one-line diagnosis>` at the top, then return your diagnosis in your output JSON's `summary` field.
+
 This is mechanical conflict resolution — distinct from your normal review pass. After resolving, the orchestrator retries close-feature; the merge commit's contents are what enters main. (Your normal `ReviewerOutput` JSON contract does NOT apply for merge-conflict invocations — just leave the worktree clean.)
 
 ## Downstream

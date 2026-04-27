@@ -157,6 +157,34 @@ You are being invoked to resolve a merge conflict the orchestrator could not aut
    - `git add <lockfile>`
 3. Stage all resolved files, then `git commit --no-edit -m "merge feat/<id>"` (the merge is mid-flight; this finalizes it).
 
+### General source-file conflicts (bug-015)
+
+For non-lockfile, non-package.json conflicts (TypeScript / Python / SQL migration / source code):
+
+1. **Read both versions** of each conflicted file:
+   - `git show :2:<path>` — master/ours (what landed first)
+   - `git show :3:<path>` — feature/theirs (what your branch added)
+   - `git show :1:<path>` — common merge base (what both started from)
+2. **Identify what each side changed** vs. the merge base. Most parallel-feature conflicts fall into these patterns:
+
+| Pattern | Recipe |
+|---|---|
+| Two route handlers added to same router file | Combine: keep both handlers, alphabetize / preserve original order |
+| Two schemas added to a shared `db/schema.ts` | Combine: both `pgTable(...)` declarations |
+| Two migrations targeting the same table | DANGEROUS — order matters for SQL migrations. BAIL with diagnostic |
+| Two test cases in same `describe` block | Concatenate the `it(...)` blocks |
+| Two imports added to the same import line | Sort + dedupe |
+| Two divergent edits to the same function body | Read both — if behavior is incompatible, BAIL with a diagnostic (see step 5) |
+
+3. **Produce a merged version** that preserves BOTH sides' intent. Don't pick a winner — combine.
+4. **Validate the merge**:
+   - Open the file: NO `<<<<<<<`/`=======`/`>>>>>>>` markers remain
+   - Run `pnpm -C apps/api typecheck` (or stack equivalent: `tsc --noEmit`, `mypy`, etc.) — must pass
+   - Run the affected tests: `pnpm -C apps/api test <file-glob>` (or stack equivalent) — must pass
+5. **Stage + commit**: `git add <path>` then `git commit --no-edit -m "merge feat/<id>"`.
+
+If you cannot produce a safe merge after one honest attempt (e.g., both sides redefine the same function with incompatible behavior, OR two SQL migrations target the same table), DO NOT guess. Leave the file with conflict markers AND a code comment `// MERGE-BAIL bug-015: <one-line diagnosis>` at the top, then return your best diagnosis in your output JSON's `summary` field. Close-feature will fail — the orchestrator surfaces the conflict to a human.
+
 The orchestrator will retry close-feature after you return. Leave the worktree in a state where `git status` shows no conflicts and the merge commit is staged or already committed.
 
 ## Downstream
