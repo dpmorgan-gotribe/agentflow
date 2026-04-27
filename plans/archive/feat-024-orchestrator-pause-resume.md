@@ -1,12 +1,13 @@
 ---
 id: feat-024-orchestrator-pause-resume
 type: feature
-status: in-progress
+status: completed
 approved-at: 2026-04-27
 approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-04-27
 updated: 2026-04-27
+completed-at: 2026-04-27
 parent-plan: investigate-007-orchestrator-liveness-and-pause
 supersedes: null
 superseded-by: null
