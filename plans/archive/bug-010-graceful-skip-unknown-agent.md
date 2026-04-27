@@ -1,12 +1,13 @@
 ---
 id: bug-010-graceful-skip-unknown-agent
 type: bug
-status: in-progress
+status: completed
 approved-at: 2026-04-26
 approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-04-26
 updated: 2026-04-26
+completed-at: 2026-04-27
 parent-plan: bug-009-checkout-feature-snapshot
 supersedes: null
 superseded-by: null

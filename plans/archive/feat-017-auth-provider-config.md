@@ -1,12 +1,13 @@
 ---
 id: feat-017-auth-provider-config
 type: feature
-status: in-progress
+status: completed
 approved-at: 2026-04-24
 approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-04-24
 updated: 2026-04-24
+completed-at: 2026-04-27
 parent-plan: feat-014-mvp-completion-autonomous-e2e
 supersedes: null
 superseded-by: null

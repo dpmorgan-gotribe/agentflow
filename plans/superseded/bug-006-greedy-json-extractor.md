@@ -1,15 +1,16 @@
 ---
 id: bug-006-greedy-json-extractor
 type: bug
-status: in-progress
+status: superseded
 approved-at: 2026-04-26
 approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-04-26
 updated: 2026-04-26
+superseded-at: 2026-04-27
 parent-plan: bug-005-windows-quoting-and-default-branch
 supersedes: null
-superseded-by: null
+superseded-by: bug-007-robust-output-extraction
 branch: fix/greedy-json-extractor
 affected-files:
   - orchestrator/src/invoke-agent.ts

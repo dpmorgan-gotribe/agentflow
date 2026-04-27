@@ -5,6 +5,7 @@ status: draft
 author-agent: claude-opus-4-7
 created: 2026-04-26
 updated: 2026-04-26
+completed-at: 2026-04-27
 parent-plan: bug-013-feature-context-gitignore
 supersedes: null
 superseded-by: null
@@ -69,7 +70,7 @@ Each finding below cites a real commit + worktree where the file was ADDED as ev
 
 - **`apps/web/tsconfig.tsbuildinfo`** — TypeScript `--incremental` cache. Binary-ish, regenerated on every `tsc`. ADDED in `kanban-webapp-05` commit `fe45670` (web-frontend-builder bootstrap), `kanban-webapp-06` commit `8dd3dd4`, `kanban-webapp-07` commit `a6a6703`. Already in `.gitignore` via `*.tsbuildinfo` (bug-014 partial fix). **CONFIRMED — already covered.**
 
-- **`apps/web/out/**`** — Next.js static export (`next export` output, ~30 hash-named files: `_next/static/chunks/<hash>.js`, `_next/static/css/<hash>.css`, plus generated HTML for every route). ADDED in `kanban-webapp-05` commit `e650905` (single feature added 30 files in one commit). Hash-named files differ on every build → guaranteed AA conflict if two features both run `next build`. Already in `.gitignore` via `apps/*/out/` (bug-014). **CONFIRMED — already covered.**
+- **`apps/web/out/**`** — Next.js static export (`next export`output, ~30 hash-named files:`\_next/static/chunks/<hash>.js`, `\_next/static/css/<hash>.css`, plus generated HTML for every route). ADDED in `kanban-webapp-05`commit`e650905`(single feature added 30 files in one commit). Hash-named files differ on every build → guaranteed AA conflict if two features both run`next build`. Already in `.gitignore`via`apps/\*/out/` (bug-014). **CONFIRMED — already covered.**
 
 - **`apps/web/playwright-report/index.html`** — Playwright HTML test report (~960KB monolithic file). ADDED in `kanban-webapp-05` commits `d428433` + `e09ac3e` (2 feature branches both committed it). Different timestamp/run-id per feature → AA conflict on parallel merge. Already covered via `apps/*/playwright-report/` (bug-014). **CONFIRMED — already covered.**
 
@@ -119,18 +120,18 @@ These haven't appeared in commit history but are commonly produced by the test/b
 
 ### 5. Stack-specific recommendations
 
-| Stack | Already covered | Missing — recommended |
-|---|---|---|
-| **Next.js 15** | `.next/`, `apps/*/out/`, `apps/*/playwright/.cache/` | `apps/*/next-env.d.ts`, `apps/*/.swc/`, `.swc/` |
-| **TypeScript** | `*.tsbuildinfo`, `dist/` | (none — covered) |
-| **Vitest** | (project-level `coverage/` only — factory misses it) | `coverage/` (factory + repo-health-dashboard-pre-build), `.vitest-cache/` |
-| **Playwright** | `apps/*/playwright-report/`, `apps/*/test-results/`, `apps/*/blob-report/`, `apps/*/playwright/.cache/` | (none — covered) |
-| **pnpm** | `node_modules/`, `.pnpm-store/` | `pnpm-debug.log*` |
-| **Turborepo** | `.turbo/` | (none — covered) |
-| **ESLint** | (nothing) | `.eslintcache` |
-| **Vite (transitive via Vitest)** | (nothing) | `.vite/` |
-| **General** | `.DS_Store`, `Thumbs.db` | `*.log`, `desktop.ini`, `$RECYCLE.BIN/`, `.AppleDouble` |
-| **Orchestrator runtime** | `.feature-context.json`, `.claude/state/`, `.claude/worktrees/` | (none — covered post-bug-013) |
+| Stack                            | Already covered                                                                                         | Missing — recommended                                                     |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| **Next.js 15**                   | `.next/`, `apps/*/out/`, `apps/*/playwright/.cache/`                                                    | `apps/*/next-env.d.ts`, `apps/*/.swc/`, `.swc/`                           |
+| **TypeScript**                   | `*.tsbuildinfo`, `dist/`                                                                                | (none — covered)                                                          |
+| **Vitest**                       | (project-level `coverage/` only — factory misses it)                                                    | `coverage/` (factory + repo-health-dashboard-pre-build), `.vitest-cache/` |
+| **Playwright**                   | `apps/*/playwright-report/`, `apps/*/test-results/`, `apps/*/blob-report/`, `apps/*/playwright/.cache/` | (none — covered)                                                          |
+| **pnpm**                         | `node_modules/`, `.pnpm-store/`                                                                         | `pnpm-debug.log*`                                                         |
+| **Turborepo**                    | `.turbo/`                                                                                               | (none — covered)                                                          |
+| **ESLint**                       | (nothing)                                                                                               | `.eslintcache`                                                            |
+| **Vite (transitive via Vitest)** | (nothing)                                                                                               | `.vite/`                                                                  |
+| **General**                      | `.DS_Store`, `Thumbs.db`                                                                                | `*.log`, `desktop.ini`, `$RECYCLE.BIN/`, `.AppleDouble`                   |
+| **Orchestrator runtime**         | `.feature-context.json`, `.claude/state/`, `.claude/worktrees/`                                         | (none — covered post-bug-013)                                             |
 
 ### 6. Per-project deltas
 

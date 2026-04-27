@@ -1,12 +1,13 @@
 ---
 id: bug-013-feature-context-gitignore
 type: bug
-status: in-progress
+status: completed
 approved-at: 2026-04-27
 approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-04-27
 updated: 2026-04-27
+completed-at: 2026-04-27
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -124,6 +125,7 @@ Includes BOTH live projects AND `*-pre-build` snapshots so any fresh project cop
 ### Phase 3 — Verify no orchestrator code reads `.feature-context.json` from master
 
 The schema documentation says the orchestrator consumes this for:
+
 - "Route merge conflicts back to last_writing_agent" — happens DURING close-feature; reads from worktree-internal path, not master
 - "Resume after crash (idempotent checkout-feature if lockfile matches)" — reads from `.claude/worktrees/{name}/.feature-context.json` (the lockfile path), not from master
 - "Track state transitions across agent handoffs" — happens within the live worktree

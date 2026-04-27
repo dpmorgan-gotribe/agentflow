@@ -1,12 +1,13 @@
 ---
 id: bug-003-builder-output-contract-mismatch
 type: bug
-status: in-progress
+status: completed
 approved-at: 2026-04-25
 approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-04-25
 updated: 2026-04-25
+completed-at: 2026-04-27
 parent-plan: bug-002-worktree-missing-hooks-perms
 supersedes: null
 superseded-by: null

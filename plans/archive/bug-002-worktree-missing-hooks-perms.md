@@ -1,12 +1,13 @@
 ---
 id: bug-002-worktree-missing-hooks-perms
 type: bug
-status: in-progress
+status: completed
 approved-at: 2026-04-25
 approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-04-25
 updated: 2026-04-25
+completed-at: 2026-04-27
 parent-plan: feat-014-mvp-completion-autonomous-e2e
 supersedes: null
 superseded-by: null
