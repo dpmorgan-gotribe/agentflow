@@ -124,6 +124,17 @@ function sectionHasCodeblock(briefText, section) {
   return slice.some((l) => /^\s*```/.test(l));
 }
 
+const BRIEF_CAPABILITIES_PATH = path.join(
+  PROJECT_ROOT,
+  "docs",
+  "brief-capabilities.json",
+);
+const BRIEF_CAPABILITIES_SCHEMA_PATH = path.join(
+  RESOLVED_ROOT,
+  "schemas",
+  "brief-capabilities.schema.json",
+);
+
 // --------------------------------------------------------------------------
 // Checks
 // --------------------------------------------------------------------------
@@ -270,6 +281,71 @@ async function checkCompanions() {
   return allOk;
 }
 
+/**
+ * feat-023 — when docs/brief-capabilities.json exists alongside brief.md,
+ * validate it against schemas/brief-capabilities.schema.json. The file is
+ * authored by /analyze; pre-feat-023 projects won't have it (no-op pass).
+ */
+async function checkBriefCapabilities() {
+  if (!fs.existsSync(BRIEF_CAPABILITIES_PATH)) {
+    process.stdout.write(
+      "✓ brief-capabilities.json not present (skipped — pre-feat-023 project)\n",
+    );
+    return true;
+  }
+  if (!fs.existsSync(BRIEF_CAPABILITIES_SCHEMA_PATH)) {
+    process.stderr.write(
+      `WARNING: ${BRIEF_CAPABILITIES_SCHEMA_PATH} not found; cannot validate brief-capabilities.json\n`,
+    );
+    return true;
+  }
+  const AjvModule = await loadDep("ajv/dist/2020.js");
+  const Ajv = AjvModule.default || AjvModule.Ajv2020 || AjvModule;
+  const addFormats = (await loadDep("ajv-formats")).default;
+
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(BRIEF_CAPABILITIES_PATH, "utf8"));
+  } catch (err) {
+    process.stderr.write(
+      `brief-capabilities.json: invalid JSON (${err.message})\n`,
+    );
+    return false;
+  }
+
+  const schema = JSON.parse(
+    fs.readFileSync(BRIEF_CAPABILITIES_SCHEMA_PATH, "utf8"),
+  );
+  const ajv = new Ajv({ allErrors: true, strict: false });
+  addFormats(ajv);
+  const validate = ajv.compile(schema);
+  if (!validate(data)) {
+    for (const err of validate.errors || []) {
+      process.stderr.write(
+        `brief-capabilities.json: ${err.instancePath || "/"}: ${err.message}\n`,
+      );
+    }
+    return false;
+  }
+
+  // Cross-field: capability IDs must be unique within the file.
+  const seen = new Map();
+  for (const cap of data.capabilities || []) {
+    if (seen.has(cap.id)) {
+      process.stderr.write(
+        `brief-capabilities.json: duplicate capability id '${cap.id}' (also at index ${seen.get(cap.id)})\n`,
+      );
+      return false;
+    }
+    seen.set(cap.id, seen.size);
+  }
+
+  process.stdout.write(
+    `✓ brief-capabilities.json validates (${data.capabilities.length} capabilities)\n`,
+  );
+  return true;
+}
+
 function checkStructure() {
   if (!fs.existsSync(MARKDOWNLINT_CONFIG)) {
     process.stderr.write(
@@ -316,13 +392,15 @@ if (runAll || args.has("--codeblocks"))
   checks.push(["codeblocks", checkCodeblocks]);
 if (runAll || args.has("--companions"))
   checks.push(["companions", checkCompanions]);
+if (runAll || args.has("--brief-capabilities"))
+  checks.push(["brief-capabilities", checkBriefCapabilities]);
 if (runAll || args.has("--structure"))
   checks.push(["structure", checkStructure]);
 
 if (checks.length === 0) {
   die(
     2,
-    "Usage: validate-brief.mjs [--frontmatter] [--codeblocks] [--companions] [--structure] [--all [--keep-going]]",
+    "Usage: validate-brief.mjs [--frontmatter] [--codeblocks] [--companions] [--brief-capabilities] [--structure] [--all [--keep-going]]",
   );
 }
 

@@ -151,13 +151,13 @@ For non-lockfile, non-package.json conflicts (TypeScript / TSX / source code):
 1. **Read both versions**: `git show :2:<path>` (master/ours) + `git show :3:<path>` (feature/theirs) + `git show :1:<path>` (merge base).
 2. **Identify what each side changed**. Common patterns + recipes:
 
-| Pattern | Recipe |
-|---|---|
-| Two slices added to a Zustand/Redux store | Combine: keep both `set/get` blocks, both selectors, both action types |
-| Two routes added to `app/page.tsx` or layout | Combine: both declarations |
-| Two test cases in same `describe` block | Concatenate the `it(...)` blocks |
-| Two imports added to the same import line | Sort + dedupe |
-| Two divergent edits to same function body | Read both — if behavior incompatible, BAIL with diagnostic (see step 5) |
+| Pattern                                      | Recipe                                                                  |
+| -------------------------------------------- | ----------------------------------------------------------------------- |
+| Two slices added to a Zustand/Redux store    | Combine: keep both `set/get` blocks, both selectors, both action types  |
+| Two routes added to `app/page.tsx` or layout | Combine: both declarations                                              |
+| Two test cases in same `describe` block      | Concatenate the `it(...)` blocks                                        |
+| Two imports added to the same import line    | Sort + dedupe                                                           |
+| Two divergent edits to same function body    | Read both — if behavior incompatible, BAIL with diagnostic (see step 5) |
 
 3. **Produce a merged version** that preserves BOTH sides' intent. Don't pick a winner — combine.
 4. **Validate the merge**:

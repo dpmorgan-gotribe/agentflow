@@ -332,6 +332,48 @@ competitors' stacks + selected style's icon-library choice)
 - {marker collected from phases 1-4}
 ```
 
+**6b.1 Write `docs/brief-capabilities.json`** (feat-023 — PM-stage coverage assertion).
+
+The same §11/§12 parsing pass that builds requirements.md ALSO emits a machine-readable capability catalog that `/pm` consumes downstream. Every bullet / numbered item in brief §11 (User stories) and §12 (Functional requirements) becomes one entry; the brief itself does not change format.
+
+Schema (validated by `schemas/brief-capabilities.schema.json`; Zod mirror at `packages/orchestrator-contracts/src/brief-coverage.ts`):
+
+```json
+{
+  "version": "1.0",
+  "capabilities": [
+    {
+      "id": "cap-12-column-rename",
+      "source": "brief.md#12",
+      "summary": "Users can rename a column inline (click title → input → enter to save)",
+      "category": "core"
+    },
+    {
+      "id": "cap-11.4-help-route",
+      "source": "brief.md#11.4",
+      "summary": "/help route documenting keyboard shortcuts",
+      "category": "optional"
+    }
+  ]
+}
+```
+
+Authoring rules:
+
+- **`id` pattern**: `cap-{section}-{kebab-slug}`. `{section}` is the brief heading number (e.g. `12`); subsection-scoped capabilities use a decimal (`11.4`). The slug must be globally unique within the file.
+- **`source`**: cite back to brief.md with the section anchor (`brief.md#12` or `brief.md#11.4`). PM uses this when surfacing uncovered gaps in error messages.
+- **`summary`**: one concise line; quote the brief's wording where possible. This is what the human sees if the capability turns up in the gate-4 sign-off's `coverageWarnings[]` block.
+- **`category`**: derive from brief §19 milestone level + brief §11 priority markers:
+  - `core` — brief §19 Milestone 1 OR brief §11 marked "MUST" / "P0" / "critical"
+  - `optional` — brief §19 Milestone 2+ OR brief §11 marked "SHOULD" / "P1" / "P2"
+  - `stretch` — brief §11 marked "MAY" / "nice-to-have" / "P3" / "post-launch"
+
+  When in doubt, choose `core` — over-classification surfaces capabilities to the PM but doesn't fail downstream gates.
+
+**Granularity**: one capability per discrete brief bullet point. "Card editing" is too coarse if the brief lists "card title", "card description", "card priority" as separate bullets — split into three capabilities. (Per plan open question #1: coarsening loses signal; finer granularity requires brief reformat.)
+
+**Validation**: after writing, run `node -e "JSON.parse(require('fs').readFileSync('docs/brief-capabilities.json'))"` and confirm Ajv-validation passes via `/validate-brief` (which validates this companion when present).
+
 **6c. Write `docs/brief-summary.json`** — the compact machine-readable
 index:
 
@@ -419,6 +461,9 @@ Before reporting complete, verify:
   - `docs/analysis/{platform}/{flows.md,navigation-schema.md,screens.json,coverage.md}` per detected platform
   - `docs/requirements.md`
   - `docs/brief-summary.json`
+  - `docs/brief-capabilities.json` (feat-023 — every brief §11/§12 bullet
+    has a corresponding `cap-{section}-{slug}` entry; consumed by `/pm`'s
+    coverage step)
   - `assets/styles/style-{0..N-1}/palette.json` with real values
   - `docs/brand-extracted.yaml` if `assets/brand-guides/*.pdf` existed
 - Each `screens.json` validates against `schemas/screens.schema.json`

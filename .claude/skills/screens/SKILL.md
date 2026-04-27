@@ -183,7 +183,23 @@ No inline `<style>` blocks anywhere else. No external CSS beyond the kit's `glob
 
 **Production-time builders are unaffected.** `/build-web` and `/build-mobile` translate HTML→JSX and run a real Tailwind build at app-build time. The Play CDN is preview-only — it makes design-pipeline HTML render correctly in a browser without a build step. Production apps don't ship the CDN.
 
-**4e.1. Theme opt-out attribute on `<html>` (refactor-007.1 — second silent-styling guard).** Every screen's root `<html>` element MUST set `data-theme` to the picked style's mode — `"light"` for light-default styles, `"dark"` for dark-default. Read the picked style's `characteristics` block in `docs/analysis/shared/styles.md` (or the resolved `surface.base` color in `docs/selected-style.json` — surface.base = `#FFFFFF` or near-white → `light`; surface.base = near-black → `dark`).
+**4e.1. Screen identity attribute on `<body>` (feat-022 — flow-driven E2E + reachability).** Every screen's root `<body>` element MUST carry `data-screen-id="{screen-id}"` — exactly the kebab-case screen id used in the file path (`docs/screens/{platform}/{screen-id}.html` → `data-screen-id="{screen-id}"`). This is the single thread the post-build flow synthesizer (`/build-to-spec-verify`) uses to assert "after clicking X on screen A, the page now shows screen B". One attribute per screen, machine-grep-stable.
+
+```html
+<!-- docs/screens/webapp/home.html -->
+<body data-kit-layout="AppShell" data-screen-id="home">
+  ...
+</body>
+
+<!-- docs/screens/webapp/card-modal.html -->
+<body data-kit-layout="FocusedTask" data-screen-id="card-modal">
+  ...
+</body>
+```
+
+The attribute mirrors the file's basename without `.html`. The same value is required on the page-root render in built React/Svelte code (see the corresponding stack skills' §1 / §2). Without it, the synthesizer cannot tell whether a click landed on the expected exit-screen and falls back to URL-pattern heuristics — fragile and likely to false-fire on SPAs where one URL renders multiple screens. Add this BEFORE writing each `*.html`; the anti-slop self-check (step 7) verifies presence.
+
+**4e.2. Theme opt-out attribute on `<html>` (refactor-007.1 — second silent-styling guard).** Every screen's root `<html>` element MUST set `data-theme` to the picked style's mode — `"light"` for light-default styles, `"dark"` for dark-default. Read the picked style's `characteristics` block in `docs/analysis/shared/styles.md` (or the resolved `surface.base` color in `docs/selected-style.json` — surface.base = `#FFFFFF` or near-white → `light`; surface.base = near-black → `dark`).
 
 ```html
 <html lang="en" data-theme="light">
@@ -334,6 +350,12 @@ If any of these three return 0, the screen will render unstyled in a browser eve
 **Plus the theme-opt-out presence check (refactor-007.1 — silent-dark-mode-flip guard):**
 
 - `grep -E '<html[^>]*\sdata-theme="(light|dark)"' <file>` MUST match — root `<html>` element pins to a theme matching the picked style's authored mode (light-default → `data-theme="light"`; dark-default → `data-theme="dark"`).
+
+**Plus the screen-identity presence check (feat-022 — flow-driven E2E + reachability guard):**
+
+- `grep -E '<body[^>]*\sdata-screen-id="[a-z][a-z0-9-]*"' <file>` MUST match — root `<body>` element carries `data-screen-id="{screen-id}"` matching the file's basename without `.html` (e.g. `docs/screens/webapp/home.html` → `data-screen-id="home"`).
+
+Without this attribute the post-build `/build-to-spec-verify` synthesizer cannot assert "after clicking X on screen A the page is now showing screen B" — it falls back to URL-pattern heuristics which false-fire on SPAs that render multiple screens at one URL. Mockup → built-page parity also requires the matching attribute on the page-root render in the corresponding stack skill (see react-next §1, svelte-kit §1).
 
 Without this, the kit's `tokens.css` `prefers-color-scheme: dark` media query auto-flips a light-default style to dark colors when the reviewer's OS is in dark mode (and vice-versa). The user picked one mode at gate 2; auto-flipping that choice based on system preference is silent visual drift — it makes the screen look fundamentally different from the design-system-preview.html (which DOES set the attribute) and from what the user approved at gate 3. This check is the only programmatic catch before a human opens the file and sees a black-on-light or white-on-dark surprise.
 

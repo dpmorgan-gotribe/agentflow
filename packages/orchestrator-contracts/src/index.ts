@@ -16,3 +16,5 @@ export * from "./reviewer.js";
 export * from "./security.js";
 export * from "./gates.js";
 export * from "./model-config.js";
+export * from "./brief-coverage.js";
+export * from "./build-to-spec-verify.js";

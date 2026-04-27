@@ -54,6 +54,11 @@ The phases and what each catches:
   missing a fenced code block.
 - `--companions` — a `companion-files[].path` is missing or unreadable, or
   a `type: navigation` companion fails `schemas/navigation.schema.json`.
+- `--brief-capabilities` (feat-023) — when `docs/brief-capabilities.json`
+  exists alongside brief.md, validates it against
+  `schemas/brief-capabilities.schema.json` and asserts capability IDs are
+  unique within the file. No-op pass when the file is absent (pre-feat-023
+  projects).
 - `--structure` — markdownlint MD043 (20-section headings in the exact
   order). No-ops with a warning if `.markdownlint.jsonc` hasn't shipped.
 

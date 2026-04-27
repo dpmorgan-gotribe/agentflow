@@ -72,6 +72,28 @@ apps/web/src/lib/stores/
 
 This convention is also enforced by the architect agent at scaffold time — see `.claude/agents/architect.md` §State module structure.
 
+### 1c. `data-screen-id` on every page-root render (feat-022)
+
+**Every `+page.svelte` MUST render its mockup's `data-screen-id` on the page-root element so the post-build `/build-to-spec-verify` synthesizer can assert "after click → on screen Y" without URL-pattern guesswork.** The value is the kebab-case mockup screen id (`docs/screens/webapp/{screen-id}.html` → `data-screen-id="{screen-id}"`).
+
+```svelte
+<!-- src/routes/(app)/dashboard/+page.svelte -->
+<script lang="ts">
+  /* ... */
+</script>
+
+<div data-screen-id="dashboard">
+  <!-- page content -->
+</div>
+
+<!-- src/routes/settings/+page.svelte -->
+<main data-screen-id="settings">...</main>
+```
+
+Place the attribute on the topmost element the page returns (the route's render root). For modal-style screens that render inside a Dialog component, set `data-screen-id` on the dialog's outer `<div role="dialog">` so it becomes the active screen-id when the modal mounts. The synthesizer reads `document.querySelector('[data-screen-id]')` — it accepts ANY element, just needs one match.
+
+The mockup's `<body data-screen-id="...">` (see screens skill §4e.1) is the source of truth — match it exactly. Mismatched IDs surface as flow-failure violations in `/build-to-spec-verify`.
+
 ## 2. Idioms
 
 - **Svelte 5 runes only.** `$state()`, `$derived()`, `$effect()` — no `let`-based reactivity, no `writable()` stores unless wrapping external reactive sources. Stores are fine for cross-component shared state, but rune-based `$state()` on a module-level `const` is preferred for simple cases.

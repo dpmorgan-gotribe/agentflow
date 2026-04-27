@@ -167,13 +167,13 @@ For non-lockfile, non-package.json conflicts (TypeScript / Python / SQL migratio
    - `git show :1:<path>` — common merge base (what both started from)
 2. **Identify what each side changed** vs. the merge base. Most parallel-feature conflicts fall into these patterns:
 
-| Pattern | Recipe |
-|---|---|
-| Two route handlers added to same router file | Combine: keep both handlers, alphabetize / preserve original order |
-| Two schemas added to a shared `db/schema.ts` | Combine: both `pgTable(...)` declarations |
-| Two migrations targeting the same table | DANGEROUS — order matters for SQL migrations. BAIL with diagnostic |
-| Two test cases in same `describe` block | Concatenate the `it(...)` blocks |
-| Two imports added to the same import line | Sort + dedupe |
+| Pattern                                       | Recipe                                                                       |
+| --------------------------------------------- | ---------------------------------------------------------------------------- |
+| Two route handlers added to same router file  | Combine: keep both handlers, alphabetize / preserve original order           |
+| Two schemas added to a shared `db/schema.ts`  | Combine: both `pgTable(...)` declarations                                    |
+| Two migrations targeting the same table       | DANGEROUS — order matters for SQL migrations. BAIL with diagnostic           |
+| Two test cases in same `describe` block       | Concatenate the `it(...)` blocks                                             |
+| Two imports added to the same import line     | Sort + dedupe                                                                |
 | Two divergent edits to the same function body | Read both — if behavior is incompatible, BAIL with a diagnostic (see step 5) |
 
 3. **Produce a merged version** that preserves BOTH sides' intent. Don't pick a winner — combine.

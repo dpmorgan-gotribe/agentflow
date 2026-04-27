@@ -16,6 +16,7 @@
     "uiKitVersion"
   ],
   "additionalProperties": false,
+  "x-feat-023": "Optional `coverageWarnings` field added per feat-023. When the /pm stage's brief-coverage gate surfaces deferred capabilities (especially core ones), the orchestrator (or a regenerated signoff) records them here so the human sees them before greenlighting Mode B. Older signoff files without this field remain valid.",
   "properties": {
     "version": {
       "type": "string",
@@ -60,6 +61,38 @@
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9.-]+)?$",
       "description": "Semver of packages/ui-kit at sign-off time. Orchestrator rejects if packages/ui-kit/package.json.version differs — sign-off is bound to a specific kit release."
+    },
+    "coverageWarnings": {
+      "type": "array",
+      "description": "OPTIONAL (feat-023). Surfaced deferrals from the brief-coverage gate at /pm stage. Each entry corresponds to a brief §11/§12 capability the PM agent (or human) chose to defer. Core-category deferrals here mean the human accepted the gap before Mode B started; absence of this field is valid for older signoffs (additive change).",
+      "items": {
+        "type": "object",
+        "required": ["capability", "category", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "capability": {
+            "type": "string",
+            "pattern": "^cap-[0-9]+(\\.[0-9]+)?-[a-z][a-z0-9-]*$"
+          },
+          "category": {
+            "type": "string",
+            "enum": ["core", "optional", "stretch"]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "approvedBy": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      }
     }
   }
 }

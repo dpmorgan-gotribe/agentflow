@@ -1,0 +1,259 @@
+import { describe, expect, it } from "vitest";
+import {
+  BuildToSpecVerifyOutput,
+  BuildToSpecVerifyOutputJsonSchema,
+  FlowFailure,
+  OrphanComponent,
+  OrphanRoute,
+} from "../src/build-to-spec-verify.js";
+
+const validOk: typeof BuildToSpecVerifyOutput._type = {
+  ok: true,
+  reachability: {
+    orphanComponents: [],
+    orphanRoutes: [],
+    scannedFiles: 87,
+    ignoredByAllowComment: [],
+  },
+  flows: {
+    passed: ["flow-1", "flow-2"],
+    failed: [],
+    generated: [
+      "apps/web/e2e/synthesized/flow-1.spec.ts",
+      "apps/web/e2e/synthesized/flow-2.spec.ts",
+    ],
+  },
+  bugPlansFiled: [],
+  costUsd: 0,
+  durationMs: 42_000,
+  warnings: [],
+};
+
+const validFlowFailure: typeof FlowFailure._type = {
+  flowId: "flow-4",
+  flowName: "Open detail-edit modal",
+  step: 1,
+  fromScreenId: "home",
+  expectedScreenId: "card-modal",
+  actualScreenId: "home",
+  selector: '[data-kit-component="Card"]',
+  screenshotPath: "docs/build-to-spec/failures/flow-4-step-1.png",
+  htmlDumpPath: "docs/build-to-spec/failures/flow-4-step-1.html",
+  message: "clicked card; expected card-modal; landed on home",
+};
+
+const validOrphanComponent: typeof OrphanComponent._type = {
+  path: "apps/web/src/components/board/CardDetailModal.tsx",
+  exportNames: ["CardDetailModal"],
+  owningFeature: "feat-board-core",
+  suggestedImporters: [
+    "apps/web/src/components/board/KanbanCard.tsx",
+    "apps/web/src/components/board/KanbanBoard.tsx",
+  ],
+  reason: "exported but no production importer found",
+};
+
+const validOrphanRoute: typeof OrphanRoute._type = {
+  path: "apps/web/app/settings/page.tsx",
+  routePattern: "/settings",
+  owningFeature: "feat-settings",
+  suggestedNavSurfaces: ["sidebar", "header-user-menu"],
+  reason: "no <Link href> / router.push reference found",
+};
+
+describe("OrphanComponent", () => {
+  it("accepts a happy-path component orphan", () => {
+    const parsed = OrphanComponent.parse(validOrphanComponent);
+    expect(parsed.path).toBe(
+      "apps/web/src/components/board/CardDetailModal.tsx",
+    );
+    expect(parsed.owningFeature).toBe("feat-board-core");
+  });
+
+  it("accepts null owningFeature when no attribution", () => {
+    const parsed = OrphanComponent.parse({
+      ...validOrphanComponent,
+      owningFeature: null,
+    });
+    expect(parsed.owningFeature).toBeNull();
+  });
+
+  it("defaults exportNames + suggestedImporters to []", () => {
+    const parsed = OrphanComponent.parse({
+      path: "apps/web/src/lib/foo.ts",
+      owningFeature: null,
+      reason: "exported but never imported",
+    });
+    expect(parsed.exportNames).toEqual([]);
+    expect(parsed.suggestedImporters).toEqual([]);
+  });
+
+  it("rejects empty path", () => {
+    expect(() =>
+      OrphanComponent.parse({ ...validOrphanComponent, path: "" }),
+    ).toThrow();
+  });
+
+  it("rejects malformed feature id (must match feat- pattern)", () => {
+    expect(() =>
+      OrphanComponent.parse({
+        ...validOrphanComponent,
+        owningFeature: "board-core",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects empty reason", () => {
+    expect(() =>
+      OrphanComponent.parse({ ...validOrphanComponent, reason: "" }),
+    ).toThrow();
+  });
+});
+
+describe("OrphanRoute", () => {
+  it("accepts a happy-path route orphan", () => {
+    const parsed = OrphanRoute.parse(validOrphanRoute);
+    expect(parsed.routePattern).toBe("/settings");
+  });
+
+  it("rejects missing routePattern", () => {
+    expect(() =>
+      OrphanRoute.parse({ ...validOrphanRoute, routePattern: "" }),
+    ).toThrow();
+  });
+});
+
+describe("FlowFailure", () => {
+  it("accepts a happy-path flow failure", () => {
+    const parsed = FlowFailure.parse(validFlowFailure);
+    expect(parsed.flowId).toBe("flow-4");
+    expect(parsed.step).toBe(1);
+    expect(parsed.expectedScreenId).toBe("card-modal");
+  });
+
+  it("accepts step:0 (very first transition)", () => {
+    const parsed = FlowFailure.parse({ ...validFlowFailure, step: 0 });
+    expect(parsed.step).toBe(0);
+  });
+
+  it("accepts null actualScreenId (page never reached the next screen)", () => {
+    const parsed = FlowFailure.parse({
+      ...validFlowFailure,
+      actualScreenId: null,
+    });
+    expect(parsed.actualScreenId).toBeNull();
+  });
+
+  it("accepts null selector + screenshot + html when capture failed", () => {
+    const parsed = FlowFailure.parse({
+      ...validFlowFailure,
+      selector: null,
+      screenshotPath: null,
+      htmlDumpPath: null,
+    });
+    expect(parsed.screenshotPath).toBeNull();
+  });
+
+  it("rejects negative step", () => {
+    expect(() =>
+      FlowFailure.parse({ ...validFlowFailure, step: -1 }),
+    ).toThrow();
+  });
+
+  it("rejects empty message", () => {
+    expect(() =>
+      FlowFailure.parse({ ...validFlowFailure, message: "" }),
+    ).toThrow();
+  });
+});
+
+describe("BuildToSpecVerifyOutput", () => {
+  it("accepts the success-path payload (zero violations)", () => {
+    const parsed = BuildToSpecVerifyOutput.parse(validOk);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.reachability.orphanComponents).toEqual([]);
+    expect(parsed.flows.failed).toEqual([]);
+  });
+
+  it("accepts the violation-path payload (orphan component + flow failure)", () => {
+    const parsed = BuildToSpecVerifyOutput.parse({
+      ...validOk,
+      ok: false,
+      reachability: {
+        orphanComponents: [validOrphanComponent],
+        orphanRoutes: [validOrphanRoute],
+        scannedFiles: 87,
+        ignoredByAllowComment: ["apps/web/src/lib/future-feature.ts"],
+      },
+      flows: {
+        passed: ["flow-1", "flow-2"],
+        failed: [validFlowFailure],
+        generated: [],
+      },
+      bugPlansFiled: [
+        "bug-100-flow-4-card-modal",
+        "bug-101-orphan-route-settings",
+      ],
+    });
+    expect(parsed.ok).toBe(false);
+    expect(parsed.reachability.orphanComponents).toHaveLength(1);
+    expect(parsed.flows.failed).toHaveLength(1);
+    expect(parsed.bugPlansFiled).toHaveLength(2);
+  });
+
+  it("defaults reachability/flows array fields to []", () => {
+    const parsed = BuildToSpecVerifyOutput.parse({
+      ok: true,
+      reachability: {
+        scannedFiles: 5,
+      },
+      flows: {},
+      costUsd: 0,
+      durationMs: 100,
+    });
+    expect(parsed.reachability.orphanComponents).toEqual([]);
+    expect(parsed.reachability.orphanRoutes).toEqual([]);
+    expect(parsed.flows.passed).toEqual([]);
+    expect(parsed.flows.failed).toEqual([]);
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.bugPlansFiled).toEqual([]);
+  });
+
+  it("rejects negative costUsd", () => {
+    expect(() =>
+      BuildToSpecVerifyOutput.parse({ ...validOk, costUsd: -0.5 }),
+    ).toThrow();
+  });
+
+  it("rejects negative durationMs", () => {
+    expect(() =>
+      BuildToSpecVerifyOutput.parse({ ...validOk, durationMs: -1 }),
+    ).toThrow();
+  });
+
+  it("rejects non-integer durationMs", () => {
+    expect(() =>
+      BuildToSpecVerifyOutput.parse({ ...validOk, durationMs: 12.5 }),
+    ).toThrow();
+  });
+
+  it("rejects missing required `ok`", () => {
+    const { ok: _ok, ...rest } = validOk;
+    expect(() => BuildToSpecVerifyOutput.parse(rest)).toThrow();
+  });
+});
+
+describe("BuildToSpecVerifyOutputJsonSchema (Zod-generated)", () => {
+  it("is a valid object schema with the documented top-level fields", () => {
+    const schema = BuildToSpecVerifyOutputJsonSchema as Record<string, unknown>;
+    expect(schema.type).toBe("object");
+    const props = schema.properties as Record<string, unknown>;
+    expect(props.ok).toBeDefined();
+    expect(props.reachability).toBeDefined();
+    expect(props.flows).toBeDefined();
+    expect(props.bugPlansFiled).toBeDefined();
+    expect(props.costUsd).toBeDefined();
+    expect(props.durationMs).toBeDefined();
+    expect(props.warnings).toBeDefined();
+  });
+});

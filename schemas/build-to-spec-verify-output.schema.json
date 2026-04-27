@@ -1,0 +1,277 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BuildToSpecVerifyOutput",
+  "type": "object",
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "reachability": {
+      "type": "object",
+      "properties": {
+        "orphanComponents": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "exportNames": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "owningFeature": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^feat-[a-z][a-z0-9-]{1,48}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "suggestedImporters": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "path",
+              "exportNames",
+              "owningFeature",
+              "suggestedImporters",
+              "reason"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "orphanRoutes": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "routePattern": {
+                "type": "string",
+                "minLength": 1
+              },
+              "owningFeature": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^feat-[a-z][a-z0-9-]{1,48}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "suggestedNavSurfaces": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "path",
+              "routePattern",
+              "owningFeature",
+              "suggestedNavSurfaces",
+              "reason"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "scannedFiles": {
+          "default": 0,
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "ignoredByAllowComment": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "orphanComponents",
+        "orphanRoutes",
+        "scannedFiles",
+        "ignoredByAllowComment"
+      ],
+      "additionalProperties": false
+    },
+    "flows": {
+      "type": "object",
+      "properties": {
+        "passed": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "failed": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "flowId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "flowName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "step": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "fromScreenId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expectedScreenId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "actualScreenId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "selector": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "screenshotPath": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "htmlDumpPath": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "flowId",
+              "flowName",
+              "step",
+              "fromScreenId",
+              "expectedScreenId",
+              "actualScreenId",
+              "selector",
+              "screenshotPath",
+              "htmlDumpPath",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "generated": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "passed",
+        "failed",
+        "generated"
+      ],
+      "additionalProperties": false
+    },
+    "bugPlansFiled": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "costUsd": {
+      "type": "number",
+      "minimum": 0
+    },
+    "durationMs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "warnings": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "ok",
+    "reachability",
+    "flows",
+    "bugPlansFiled",
+    "costUsd",
+    "durationMs",
+    "warnings"
+  ],
+  "additionalProperties": false
+}

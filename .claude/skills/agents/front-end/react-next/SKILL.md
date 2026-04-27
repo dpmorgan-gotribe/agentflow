@@ -82,6 +82,30 @@ apps/web/src/store/
 
 This convention is also enforced by the architect agent at scaffold time — see `.claude/agents/architect.md` §State module structure.
 
+### 1c. `data-screen-id` on every page-root render (feat-022)
+
+**Every `app/**/page.tsx`MUST render its mockup's`data-screen-id`on the page-root element so the post-build`/build-to-spec-verify` synthesizer can assert "after click → on screen Y" without URL-pattern guesswork.** The value is the kebab-case mockup screen id (`docs/screens/webapp/{screen-id}.html`→`data-screen-id="{screen-id}"`).
+
+```tsx
+// apps/web/app/(app)/dashboard/page.tsx
+export default function DashboardPage() {
+  return (
+    <div data-screen-id="dashboard" className="...">
+      ...
+    </div>
+  );
+}
+
+// apps/web/app/settings/page.tsx
+export default function SettingsPage() {
+  return <main data-screen-id="settings">...</main>;
+}
+```
+
+Place the attribute on the topmost element the page returns (the route's render root), NOT on the global `<body>` — Next.js owns `<body>` via `app/layout.tsx`. For modal-style screens that render via portal/dialog, set `data-screen-id` on the dialog's outer `<div role="dialog">` so it becomes the active screen-id when the modal mounts. The synthesizer reads `document.querySelector('[data-screen-id]')` — it accepts ANY element, just needs one match.
+
+The mockup's `<body data-screen-id="...">` (see screens skill §4e.1) is the source of truth — match it exactly. Mismatched IDs surface as flow-failure violations in `/build-to-spec-verify`.
+
 ## 2. Idioms
 
 - **Server components by default.** Add `"use client"` only when a component needs interactivity (event handlers, state, browser APIs). Data fetching happens in server components via direct function calls or `fetch()`; client components receive data via props or tRPC hooks.

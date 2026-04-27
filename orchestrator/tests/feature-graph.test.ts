@@ -41,6 +41,12 @@ function makeCtx(
     installIfPackageJsonChanged: (
       cwd: string,
     ) => Promise<{ installed: boolean; warning?: string }>;
+    skipBuildToSpecVerify: boolean;
+    runBuildToSpecVerify: (
+      args: import("../src/build-to-spec-verify.js").BuildToSpecVerifyContext,
+    ) => Promise<
+      import("@repo/orchestrator-contracts").BuildToSpecVerifyOutput
+    >;
   }> = {},
 ) {
   return {
@@ -67,6 +73,15 @@ function makeCtx(
     installIfPackageJsonChanged:
       overrides.installIfPackageJsonChanged ??
       (async () => ({ installed: false }) as const),
+    // feat-022: default to SKIPPING the post-merge verify stage. Existing
+    // tests don't supply a project tree under projectRoot — running
+    // verify there would shell out to scripts and produce noise. Tests
+    // exercising verify routing override `skipBuildToSpecVerify: false`
+    // + supply a `runBuildToSpecVerify` stub.
+    skipBuildToSpecVerify: overrides.skipBuildToSpecVerify ?? true,
+    ...(overrides.runBuildToSpecVerify !== undefined
+      ? { runBuildToSpecVerify: overrides.runBuildToSpecVerify }
+      : {}),
     ...(overrides.autoMergeAfterReviewer !== undefined
       ? { autoMergeAfterReviewer: overrides.autoMergeAfterReviewer }
       : {}),
@@ -1162,5 +1177,301 @@ describe("runFeature — install-after-commit (feat-019 Phase B)", () => {
       "auth-tests": "completed",
       "auth-review": "completed",
     });
+  });
+});
+
+describe("runFeatureGraph — feat-022 build-to-spec verification", () => {
+  function mkOkInvoke(): InvokeAgentFn {
+    return async (args) => {
+      if (args.agent === "git-agent") {
+        if (args.gitOp?.op === "checkout-feature") {
+          return {
+            taskStatus: {},
+            errors: {},
+            gitAgentOutput: {
+              op: "checkout-feature",
+              success: true,
+              worktreePath: `.claude/worktrees/${args.gitOp.worktree}`,
+              lockfilePath: `.claude/worktrees/${args.gitOp.worktree}.lock`,
+              branch: args.gitOp.branch,
+              featureId: args.gitOp.featureId,
+            },
+            costUsd: 0.001,
+          };
+        }
+        const op = args.gitOp;
+        // resolve-conflict-handoff is the only op without `featureId`;
+        // tests in this block never trigger it, so narrow safely.
+        const featureId =
+          op && op.op !== "resolve-conflict-handoff"
+            ? op.featureId
+            : "feat-unknown";
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput: {
+            op: "close-feature",
+            success: true,
+            conflict: false,
+            mergeSha: "abc1234",
+            featureId,
+          },
+          costUsd: 0.001,
+        };
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.01,
+      };
+    };
+  }
+
+  it("runs verify after all features merge; status=completed when verify ok", async () => {
+    const featA = buildFeature({
+      id: "feat-a",
+      worktree: "feat-a",
+      branch: "feat/a",
+    });
+    const tasks: TasksV2 = {
+      version: "2.0",
+      features: [featA],
+      warnings: [],
+    };
+
+    let verifyCalled = 0;
+    const result = await runFeatureGraph(
+      tasks,
+      makeCtx(mkOkInvoke(), {
+        skipBuildToSpecVerify: false,
+        runBuildToSpecVerify: async () => {
+          verifyCalled += 1;
+          return {
+            ok: true,
+            reachability: {
+              orphanComponents: [],
+              orphanRoutes: [],
+              scannedFiles: 42,
+              ignoredByAllowComment: [],
+            },
+            flows: { passed: ["flow-1"], failed: [], generated: [] },
+            bugPlansFiled: [],
+            costUsd: 0,
+            durationMs: 100,
+            warnings: [],
+          };
+        },
+      }),
+    );
+
+    expect(verifyCalled).toBe(1);
+    expect(result.completed).toEqual(["feat-a"]);
+    expect(result.status).toBe("completed");
+    expect(result.verify).toBeDefined();
+    expect(result.verify!.ok).toBe(true);
+    expect(result.verify!.reachability.scannedFiles).toBe(42);
+  });
+
+  it("status=completed-with-integration-failures when verify reports violations", async () => {
+    const featA = buildFeature({
+      id: "feat-a",
+      worktree: "feat-a",
+      branch: "feat/a",
+    });
+    const tasks: TasksV2 = {
+      version: "2.0",
+      features: [featA],
+      warnings: [],
+    };
+
+    const result = await runFeatureGraph(
+      tasks,
+      makeCtx(mkOkInvoke(), {
+        skipBuildToSpecVerify: false,
+        runBuildToSpecVerify: async () => ({
+          ok: false,
+          reachability: {
+            orphanComponents: [
+              {
+                path: "apps/web/src/components/board/CardDetailModal.tsx",
+                exportNames: ["CardDetailModal"],
+                owningFeature: "feat-board-core",
+                suggestedImporters: [
+                  "apps/web/src/components/board/KanbanBoard.tsx",
+                ],
+                reason: "exported but no production importer",
+              },
+            ],
+            orphanRoutes: [],
+            scannedFiles: 25,
+            ignoredByAllowComment: [],
+          },
+          flows: { passed: [], failed: [], generated: [] },
+          bugPlansFiled: ["bug-100-orphan-CardDetailModal"],
+          costUsd: 0,
+          durationMs: 200,
+          warnings: [],
+        }),
+      }),
+    );
+
+    expect(result.status).toBe("completed-with-integration-failures");
+    expect(result.verify!.bugPlansFiled).toContain(
+      "bug-100-orphan-CardDetailModal",
+    );
+    expect(result.verify!.reachability.orphanComponents).toHaveLength(1);
+  });
+
+  it("skips verify entirely when skipBuildToSpecVerify=true", async () => {
+    const featA = buildFeature({
+      id: "feat-a",
+      worktree: "feat-a",
+      branch: "feat/a",
+    });
+    const tasks: TasksV2 = {
+      version: "2.0",
+      features: [featA],
+      warnings: [],
+    };
+
+    let verifyCalled = 0;
+    const result = await runFeatureGraph(
+      tasks,
+      makeCtx(mkOkInvoke(), {
+        skipBuildToSpecVerify: true,
+        runBuildToSpecVerify: async () => {
+          verifyCalled += 1;
+          return {
+            ok: true,
+            reachability: {
+              orphanComponents: [],
+              orphanRoutes: [],
+              scannedFiles: 0,
+              ignoredByAllowComment: [],
+            },
+            flows: { passed: [], failed: [], generated: [] },
+            bugPlansFiled: [],
+            costUsd: 0,
+            durationMs: 0,
+            warnings: [],
+          };
+        },
+      }),
+    );
+
+    expect(verifyCalled).toBe(0);
+    expect(result.status).toBe("completed");
+    expect(result.verify).toBeUndefined();
+  });
+
+  it("skips verify when any feature failed (status=incomplete)", async () => {
+    const featA = buildFeature({
+      id: "feat-a",
+      worktree: "feat-a",
+      branch: "feat/a",
+    });
+    const tasks: TasksV2 = {
+      version: "2.0",
+      features: [featA],
+      warnings: [],
+    };
+
+    // Force the build agent to always fail every task.
+    const failingInvoke: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        if (args.gitOp?.op === "checkout-feature") {
+          return {
+            taskStatus: {},
+            errors: {},
+            gitAgentOutput: {
+              op: "checkout-feature",
+              success: true,
+              worktreePath: `.claude/worktrees/${args.gitOp.worktree}`,
+              lockfilePath: `.claude/worktrees/${args.gitOp.worktree}.lock`,
+              branch: args.gitOp.branch,
+              featureId: args.gitOp.featureId,
+            },
+            costUsd: 0.001,
+          };
+        }
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput: closeOk,
+          costUsd: 0.001,
+        };
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "failed"] as const),
+        ),
+        errors: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "synthetic failure"] as const),
+        ),
+        costUsd: 0.01,
+      };
+    };
+
+    let verifyCalled = 0;
+    const result = await runFeatureGraph(
+      tasks,
+      makeCtx(failingInvoke, {
+        skipBuildToSpecVerify: false,
+        runBuildToSpecVerify: async () => {
+          verifyCalled += 1;
+          return {
+            ok: true,
+            reachability: {
+              orphanComponents: [],
+              orphanRoutes: [],
+              scannedFiles: 0,
+              ignoredByAllowComment: [],
+            },
+            flows: { passed: [], failed: [], generated: [] },
+            bugPlansFiled: [],
+            costUsd: 0,
+            durationMs: 0,
+            warnings: [],
+          };
+        },
+      }),
+    );
+
+    expect(verifyCalled).toBe(0);
+    expect(result.status).toBe("incomplete");
+    expect(result.failed).toEqual(["feat-a"]);
+    expect(result.verify).toBeUndefined();
+  });
+
+  it("verify thrower → status=completed-with-integration-failures + warning surfaced", async () => {
+    const featA = buildFeature({
+      id: "feat-a",
+      worktree: "feat-a",
+      branch: "feat/a",
+    });
+    const tasks: TasksV2 = {
+      version: "2.0",
+      features: [featA],
+      warnings: [],
+    };
+
+    const result = await runFeatureGraph(
+      tasks,
+      makeCtx(mkOkInvoke(), {
+        skipBuildToSpecVerify: false,
+        runBuildToSpecVerify: async () => {
+          throw new Error("synthetic verify-runner crash");
+        },
+      }),
+    );
+
+    expect(result.status).toBe("completed-with-integration-failures");
+    expect(result.verify).toBeDefined();
+    expect(result.verify!.ok).toBe(false);
+    expect(result.verify!.warnings.join(" ")).toContain(
+      "synthetic verify-runner crash",
+    );
   });
 });

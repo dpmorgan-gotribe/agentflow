@@ -169,13 +169,13 @@ For non-lockfile, non-package.json conflicts (TypeScript / TSX / source code):
    - `git show :1:<path>` — common merge base (what both started from)
 2. **Identify what each side changed** vs. the merge base. Most parallel-feature conflicts fall into these patterns:
 
-| Pattern | Recipe |
-|---|---|
-| Two slices added to a Zustand/Redux/store module | Combine: keep both `set/get` blocks, both selectors, both action types |
-| Two routes added to `app/page.tsx` or layout | Combine: both `<Route>`/`<Link>` declarations |
-| Two test cases added to the same `describe` block | Concatenate the `it(...)` blocks |
-| Two imports added to the same `import { ... }` line | Sort + dedupe the imports |
-| Two divergent edits to the same function body | Read both — if behavior is incompatible, BAIL with a diagnostic (see step 5) |
+| Pattern                                             | Recipe                                                                       |
+| --------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Two slices added to a Zustand/Redux/store module    | Combine: keep both `set/get` blocks, both selectors, both action types       |
+| Two routes added to `app/page.tsx` or layout        | Combine: both `<Route>`/`<Link>` declarations                                |
+| Two test cases added to the same `describe` block   | Concatenate the `it(...)` blocks                                             |
+| Two imports added to the same `import { ... }` line | Sort + dedupe the imports                                                    |
+| Two divergent edits to the same function body       | Read both — if behavior is incompatible, BAIL with a diagnostic (see step 5) |
 
 3. **Produce a merged version** that preserves BOTH sides' intent. Don't pick a winner — combine.
 4. **Validate the merge**:

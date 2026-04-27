@@ -164,14 +164,14 @@ For non-lockfile, non-package.json conflicts (TypeScript / TSX / native config /
    - `git show :1:<path>` — common merge base (what both started from)
 2. **Identify what each side changed** vs. the merge base. Most parallel-feature conflicts fall into these patterns:
 
-| Pattern | Recipe |
-|---|---|
-| Two screens added to navigation stack | Combine: keep both `<Stack.Screen>` declarations |
-| Two slices added to a Zustand/Redux store | Combine: keep both `set/get` blocks, both selectors |
-| Two test cases in same `describe` block | Concatenate the `it(...)` blocks |
-| Two imports added to the same import line | Sort + dedupe |
-| Native config edits in `ios/` or `android/` | DANGEROUS — order matters. BAIL with diagnostic |
-| Two divergent edits to same function body | Read both — if behavior incompatible, BAIL with diagnostic (see step 5) |
+| Pattern                                     | Recipe                                                                  |
+| ------------------------------------------- | ----------------------------------------------------------------------- |
+| Two screens added to navigation stack       | Combine: keep both `<Stack.Screen>` declarations                        |
+| Two slices added to a Zustand/Redux store   | Combine: keep both `set/get` blocks, both selectors                     |
+| Two test cases in same `describe` block     | Concatenate the `it(...)` blocks                                        |
+| Two imports added to the same import line   | Sort + dedupe                                                           |
+| Native config edits in `ios/` or `android/` | DANGEROUS — order matters. BAIL with diagnostic                         |
+| Two divergent edits to same function body   | Read both — if behavior incompatible, BAIL with diagnostic (see step 5) |
 
 3. **Produce a merged version** that preserves BOTH sides' intent. Don't pick a winner — combine.
 4. **Validate the merge**:

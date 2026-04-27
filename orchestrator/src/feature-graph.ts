@@ -1,5 +1,6 @@
 import type {
   AgentSequenceMember,
+  BuildToSpecVerifyOutput as BuildToSpecVerifyOutputType,
   Feature,
   GateResolution,
   GitAgentOutput,
@@ -8,6 +9,10 @@ import type {
 } from "@repo/orchestrator-contracts";
 import { GitAgentOutput as GitAgentOutputSchema } from "@repo/orchestrator-contracts";
 import type { BudgetTracker } from "./budget-tracker.js";
+import {
+  runBuildToSpecVerify as defaultRunBuildToSpecVerify,
+  type BuildToSpecVerifyContext,
+} from "./build-to-spec-verify.js";
 import { waitForGateDecision } from "./gate-server-lifecycle.js";
 import {
   type CommitResult,
@@ -166,6 +171,28 @@ export interface FeatureGraphContext {
    * `pnpm install` against a tmp dir.
    */
   installIfPackageJsonChanged?: InstallIfPackageJsonChangedFn;
+  /**
+   * feat-022 — skip the post-merge `/build-to-spec-verify` deterministic
+   * stage. Default false (the stage runs). Tests covering the pre-feat-022
+   * happy paths set this true to keep their fixtures stable; tests that
+   * exercise verify behavior set it false + supply `runBuildToSpecVerify`.
+   */
+  skipBuildToSpecVerify?: boolean;
+  /**
+   * feat-022 — override the post-merge verification runner. Default
+   * delegates to the real script-shelling implementation in
+   * `build-to-spec-verify.ts`. Tests inject a stub returning a canned
+   * `BuildToSpecVerifyOutput` to assert orchestrator routing without
+   * spawning child processes.
+   */
+  runBuildToSpecVerify?: RunBuildToSpecVerifyFn;
+  /**
+   * feat-022 — factory root passed through to the verify runner. Default
+   * `process.cwd()`. Tests override this to a fixture dir; the real
+   * orchestrator entry point sets it to the agentflow_phase2 repo root
+   * where `scripts/audit-app-reachability.mjs` + friends live.
+   */
+  factoryRoot?: string;
 }
 
 export type FeatureStatus = "completed" | "failed" | "aborted";
@@ -192,7 +219,27 @@ export interface FeatureGraphResult {
   failed: string[];
   totalCostUsd: number;
   featureResults: Record<string, FeatureResult>;
+  /**
+   * Final orchestrator status. feat-022 added the
+   * `completed-with-integration-failures` outcome — Mode B reached
+   * "all features merged" but the post-merge `/build-to-spec-verify`
+   * stage surfaced reachability or flow violations and auto-filed bug
+   * plans. Caller chooses whether to dispatch retries or escalate.
+   */
+  status?: "completed" | "completed-with-integration-failures" | "incomplete";
+  /**
+   * `/build-to-spec-verify` payload (feat-022). Present iff the post-merge
+   * stage ran (i.e. all features completed AND the stage wasn't suppressed
+   * via `ctx.skipBuildToSpecVerify`). Inspect `verify.bugPlansFiled[]` to
+   * see which bug plans the stage created from violations.
+   */
+  verify?: BuildToSpecVerifyOutputType;
 }
+
+/** Feature-graph-level seam for the post-merge verification stage. */
+export type RunBuildToSpecVerifyFn = (
+  ctx: BuildToSpecVerifyContext,
+) => Promise<BuildToSpecVerifyOutputType>;
 
 // Per-task retry cap. bug-002 dropped this 3 → 1 for fast-fail debugging
 // during the structural-bug discovery phase. bug-008 (2026-04-26) restores
@@ -739,11 +786,61 @@ export async function runFeatureGraph(
     inFlight.delete(settled);
   }
 
+  // ── feat-022: post-merge build-to-spec verification ────────────────────────
+  // Run iff every feature in the graph completed AND the stage isn't
+  // suppressed. If any feature failed, we skip — verification on a half-merged
+  // codebase produces noise. Failures here mark the run
+  // `completed-with-integration-failures` rather than failing it outright;
+  // bug plans land in `plans/active/` for the next builder pass.
+  let verify: BuildToSpecVerifyOutputType | undefined;
+  let status: FeatureGraphResult["status"] = "completed";
+  if (failed.size > 0) {
+    status = "incomplete";
+  } else if (!ctx.skipBuildToSpecVerify && completed.size > 0) {
+    const verifyRunner =
+      ctx.runBuildToSpecVerify ?? defaultRunBuildToSpecVerify;
+    try {
+      const verifyArgs: BuildToSpecVerifyContext = {
+        projectDir: ctx.projectRoot,
+        autoFileBugPlans: true,
+      };
+      if (ctx.factoryRoot !== undefined)
+        verifyArgs.factoryRoot = ctx.factoryRoot;
+      verify = await verifyRunner(verifyArgs);
+      if (!verify.ok) {
+        status = "completed-with-integration-failures";
+      }
+    } catch (err) {
+      // Verification failure must not abort the orchestrator —
+      // surface it as a warning + treat as completed-with-integration-failures
+      // so the operator notices.
+      status = "completed-with-integration-failures";
+      verify = {
+        ok: false,
+        reachability: {
+          orphanComponents: [],
+          orphanRoutes: [],
+          scannedFiles: 0,
+          ignoredByAllowComment: [],
+        },
+        flows: { passed: [], failed: [], generated: [] },
+        bugPlansFiled: [],
+        costUsd: 0,
+        durationMs: 0,
+        warnings: [
+          `runBuildToSpecVerify threw: ${(err as Error).message ?? String(err)}`,
+        ],
+      };
+    }
+  }
+
   return {
     completed: [...completed],
     failed: [...failed],
     totalCostUsd,
     featureResults,
+    status,
+    ...(verify !== undefined ? { verify } : {}),
   };
 }
 

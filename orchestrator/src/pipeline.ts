@@ -1,7 +1,13 @@
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   GateResolution,
   PipelineStage,
 } from "@repo/orchestrator-contracts";
+import {
+  runBriefCoverageGate,
+  type BriefCoverageGateResult,
+} from "./brief-coverage-gate.js";
 import { waitForGateDecision } from "./gate-server-lifecycle.js";
 import { runStage, type RunContext, type StageResult } from "./stage-runner.js";
 import { STAGES } from "./stages-array.js";
@@ -60,6 +66,17 @@ export type SaveContextFn = (args: {
   pipelineRunId: string;
 }) => Promise<void>;
 
+/**
+ * feat-023 brief-coverage gate primitive. Runs after the `pm` stage's
+ * runStage() succeeds. The default implementation invokes
+ * `scripts/audit-brief-coverage.mjs` against the project root; tests
+ * inject a stub that returns synthetic results without spawning a
+ * subprocess. See orchestrator/src/brief-coverage-gate.ts.
+ */
+export type BriefCoverageGateFn = (args: {
+  projectRoot: string;
+}) => BriefCoverageGateResult;
+
 export interface PipelineConfig {
   projectRoot: string;
   pipelineRunId: string;
@@ -69,6 +86,12 @@ export interface PipelineConfig {
   stages?: readonly PipelineStage[];
   waitForGate?: WaitForGateFn;
   saveContext?: SaveContextFn;
+  /**
+   * Optional override for the feat-023 brief-coverage gate. Defaults to
+   * spawning `scripts/audit-brief-coverage.mjs` against `projectRoot`.
+   * Tests inject a stub.
+   */
+  briefCoverageGate?: BriefCoverageGateFn;
 }
 
 export interface PipelineResult {
@@ -78,6 +101,12 @@ export interface PipelineResult {
   totalCostUsd: number;
   gatesOpened: string[];
   stageResults: Record<string, StageResult>;
+  /**
+   * feat-023 — populated when the `pm` stage runs successfully and the
+   * brief-coverage gate fires. Captures the audit's result so the run
+   * record + downstream sign-off recapture can surface deferrals.
+   */
+  briefCoverage?: BriefCoverageGateResult;
   abortedAt?: string;
   abortReason?: string;
 }
@@ -86,6 +115,17 @@ const defaultWaitForGate: WaitForGateFn = async () => ({ approved: true });
 const defaultSaveContext: SaveContextFn = async () => {
   // no-op until task-013 lands
 };
+
+const DEFAULT_AUDIT_SCRIPT = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "scripts",
+  "audit-brief-coverage.mjs",
+);
+
+const defaultBriefCoverageGate: BriefCoverageGateFn = ({ projectRoot }) =>
+  runBriefCoverageGate({ projectRoot, scriptPath: DEFAULT_AUDIT_SCRIPT });
 
 /**
  * Walk the Mode A `STAGES[]` in order, respecting `dependsOn`. For each
@@ -102,12 +142,14 @@ export async function runPipeline(
   const stages = cfg.stages ?? STAGES;
   const waitForGate = cfg.waitForGate ?? defaultWaitForGate;
   const saveContext = cfg.saveContext ?? defaultSaveContext;
+  const briefCoverageGate = cfg.briefCoverageGate ?? defaultBriefCoverageGate;
 
   const completed = new Set<string>();
   const failed = new Set<string>();
   const gatesOpened: string[] = [];
   const stageResults: Record<string, StageResult> = {};
   let totalCostUsd = 0;
+  let briefCoverage: BriefCoverageGateResult | undefined;
   let abortedAt: string | undefined;
   let abortReason: string | undefined;
 
@@ -134,6 +176,19 @@ export async function runPipeline(
       abortedAt = stage.name;
       abortReason = result.error ?? "stage-failed";
       break;
+    }
+
+    // feat-023 — after the /pm stage emits tasks.yaml, audit brief
+    // coverage. Silent capability omissions OR dangling task references
+    // fail the stage so the human re-emits before Mode B starts.
+    if (stage.name === "pm") {
+      briefCoverage = briefCoverageGate({ projectRoot: cfg.projectRoot });
+      if (!briefCoverage.ok) {
+        failed.add(stage.name);
+        abortedAt = stage.name;
+        abortReason = briefCoverage.error ?? "brief-coverage gate failed";
+        break;
+      }
     }
 
     completed.add(stage.name);
@@ -173,6 +228,7 @@ export async function runPipeline(
     gatesOpened,
     stageResults,
   };
+  if (briefCoverage) out.briefCoverage = briefCoverage;
   if (abortedAt) out.abortedAt = abortedAt;
   if (abortReason) out.abortReason = abortReason;
   return out;

@@ -37,9 +37,10 @@ Runs in one of two modes. The orchestrator (task-035) controls invocation positi
 
 ### mode=tasks
 
-| Path              | Purpose                                                                                 |
-| ----------------- | --------------------------------------------------------------------------------------- |
-| `docs/tasks.yaml` | v2 task graph. `features[]` + `tasks[]`. Validates against `schemas/tasks.schema.json`. |
+| Path                       | Purpose                                                                                                                                                                                                                                       |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/tasks.yaml`          | v2 task graph. `features[]` + `tasks[]`. Validates against `schemas/tasks.schema.json`.                                                                                                                                                       |
+| `docs/tasks-coverage.json` | feat-023 brief-coverage claim: maps every brief §11/§12 capability to ≥1 task ID OR explicit deferral. Validates against `schemas/tasks-coverage.schema.json`. Skipped when `docs/brief-capabilities.json` is absent (pre-feat-023 projects). |
 
 ### mode=kit-change-request
 
@@ -193,6 +194,54 @@ Algorithm, per feature:
 ```
 
 **Limitation**: PM doesn't know the EXACT files agents will touch — it works from task summaries. The heuristic is conservative (over-serializes when uncertain). Phase 3 (architect feature-sliced module structure) is the long-term fix that makes this check a no-op for state modules.
+
+### 4c. Brief-coverage authoring (feat-023)
+
+After step 4b file-affinity is settled and BEFORE writing tasks.yaml in step 5, emit `docs/tasks-coverage.json` mapping every brief capability (from `docs/brief-capabilities.json`) to ≥1 task ID OR an explicit deferral with reason. This is the authoritative coverage claim that the post-stage gate (`scripts/audit-brief-coverage.mjs`) audits. **Silent omissions become impossible** because the audit fails the `/pm` stage when a capability is neither covered nor deferred.
+
+Inputs:
+
+- `docs/brief-capabilities.json` — authored at `/analyze` time; lists every brief §11/§12 capability the project must deliver. Schema: `schemas/brief-capabilities.schema.json`.
+- The in-memory `features[].tasks[].id` set you've drafted in steps 2-4.
+
+Algorithm:
+
+1. Read `docs/brief-capabilities.json`. If absent, emit `tasks.yaml.warnings[]: brief-capabilities-missing — pre-feat-023 project; coverage audit will be skipped` and skip this step (legacy behavior). Otherwise:
+2. For EACH capability in the catalog:
+   - **Find the task(s) that deliver it.** The mapping is heuristic: scan task `summary` + `notes` for keywords from `capability.summary`; check the parent feature's `brief_reference`; if the capability is core, prefer P0 tasks. List ALL tasks that contribute (e.g. one backend + one frontend task may both be required for `cap-12-card-create`).
+   - **If you cannot map it to any task**, decide whether to:
+     - **Add a task** — preferred when the capability is `core`. Walk back to step 2 and add the missing task to the appropriate feature.
+     - **Defer it** — only acceptable when the capability is `optional` / `stretch` OR when the human has explicitly scoped it out. Add to `deferred[]` with a concrete reason.
+3. Author the mapping per the schema below.
+
+Schema (Zod mirror: `packages/orchestrator-contracts/src/brief-coverage.ts`; JSON Schema: `schemas/tasks-coverage.schema.json`):
+
+```json
+{
+  "version": "1.0",
+  "covers": {
+    "cap-12-card-create": ["task-board-core-card-create"],
+    "cap-12-card-edit-inline": ["task-board-core-inline-card-edit"],
+    "cap-12-column-rename": ["task-board-core-column-rename"]
+  },
+  "deferred": [
+    {
+      "capability": "cap-11.4-help-route",
+      "reason": "MVP scope: brief §11.4 marked optional; user can re-add post-launch",
+      "approvedBy": "pm-agent-decision"
+    }
+  ]
+}
+```
+
+Authoring rules:
+
+- `covers[<capability-id>]` MUST be an array with ≥1 entry. Empty arrays are rejected.
+- Every task ID in `covers` MUST also exist in `tasks.yaml` (cross-checked by the audit; dangling refs are reported as `typoErrors`).
+- `deferred[].approvedBy = "pm-agent-decision"` when YOU decide to defer; use `"human:<name>"` when honoring a human-scoped deferral from the brief.
+- **Core deferrals require `coverage-warning`**: if you defer a capability with `category: "core"`, ALSO emit a `tasks.yaml.warnings[]` entry: `coverage-warning: deferred core capability cap-X — reason`. The orchestrator surfaces these to the gate-4 sign-off file's `coverageWarnings[]` block so the human sees them before greenlighting Mode B.
+
+After authoring, the orchestrator (post-step) runs `node scripts/audit-brief-coverage.mjs <projectRoot>` automatically and fails the `/pm` stage on `uncovered.length > 0` or `typoErrors.length > 0`. You don't need to invoke the audit yourself — but you can preview-run it locally to verify your mapping before returning.
 
 ### 5. Write + validate
 
