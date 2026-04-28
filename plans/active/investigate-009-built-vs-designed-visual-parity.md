@@ -41,6 +41,7 @@ Hypothesis: **#1 + #2 combined** beats #3 for our gap distribution at much lower
 ### Step 1 — Catalog actual kanban-10 visual divergences (15 min)
 
 Open dev server (already running at localhost:3001). For 3-5 screens (`empty-no-board`, `home`, `card-modal`, `settings`, `search-empty`):
+
 - Open the rendered page in Chrome
 - Open the mockup HTML at `projects/kanban-webapp-10/docs/screens/webapp/<id>.html` side-by-side
 - Note differences across these axes:
@@ -64,12 +65,14 @@ Write findings as a table; aim for ≥10 concrete divergences across the 5 scree
 ### Step 3 — Survey the option space + industry precedent (15 min)
 
 For each of the 3 hypothesis approaches (DOM-diff, token-CSS audit, pixel diff):
+
 - Effort estimate (LOC, new deps, ops complexity)
 - Catch rate against the divergences from Step 1
 - False-positive risk
 - Integration point (post-Mode-B verify slot, alongside feat-022 reachability)
 
 External survey (≤5 web fetches):
+
 - Storybook + Chromatic — what's the actual workflow? Pricing? Self-host options?
 - Percy / Argos — same questions
 - Playwright's `toHaveScreenshot()` — built-in; how does it handle thresholds + golden management?
@@ -79,6 +82,7 @@ External survey (≤5 web fetches):
 ### Step 4 — Cost / coverage / complexity matrix + recommendation (10 min)
 
 For the 3 approaches × the kanban-10 divergences from Step 1:
+
 - Which approach catches X of N divergences
 - One-line "why this beats / loses to" alternatives
 - Recommended primary v1 + backup
