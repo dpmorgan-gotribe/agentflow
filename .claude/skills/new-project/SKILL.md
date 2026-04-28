@@ -163,6 +163,31 @@ are re-copied in refresh mode with backup.
 Track what was preserved, overwritten, and backed up — the return payload
 needs these lists.
 
+### 5a. Sync schemas + validators (BOTH MODES — bug-019)
+
+Run `scripts/sync-project-schemas.mjs` against the project to copy
+`schemas/*.schema.json` and `scripts/validate-*.mjs` from the factory.
+Without this step, factory-side schema regenerations (e.g. bug-015 Phase 2
+adding `affects_files`) silently fail to propagate, and downstream PM
+agents either honor the stale constraint (dropping new fields) or
+silently mutate the project schema as a side-effect.
+
+```
+node scripts/sync-project-schemas.mjs projects/<name>
+```
+
+The script is idempotent: it byte-compares each factory file against the
+project's matching file and skips when identical. New factory files get
+created; updated factory files overwrite the project copy. One log line
+per file. Failures (FS errors) surface a non-zero exit (2) but don't
+abort `/new-project` — surface them in the return payload's `warnings[]`
+and continue.
+
+Add the synced filenames to `filesCopied.schemas` and a new
+`filesCopied.validators` bucket. Ad-hoc operators (suspecting drift
+between PM runs) can call this script directly with `--dry-run` to
+preview, then without it to apply.
+
 ### 5b. Scaffold the Turborepo + shared-package skeleton + design-stage MCPs (refactor-003)
 
 **INIT MODE ONLY** for the filesystem scaffold; `--scope=design` MCP registration runs in BOTH modes (idempotent on refresh — no-op when unchanged).

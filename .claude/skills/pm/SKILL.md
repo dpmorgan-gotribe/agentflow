@@ -81,6 +81,18 @@ re-grep the schema file. That claim has been wrong every time it's been
 made (per bug-018, 3 of 4 PM agents on 2026-04-28 falsely reported the
 field missing).
 
+**If your re-grep genuinely shows the field missing, the project schema
+has drifted from the factory canonical (bug-019).** Do NOT silently patch
+the schema yourself as a side-effect of PM. Run the sync script first, then
+retry:
+
+```bash
+node ../../scripts/sync-project-schemas.mjs .
+```
+
+(Path is relative to the project root; the script's `--dry-run` flag previews
+without modifying anything. The script is idempotent — re-run safely.)
+
 **3-step heuristic for populating `affects_files`** (per step 4b):
 
 1. Walk each task's `summary` for file/module hints (e.g., "render
