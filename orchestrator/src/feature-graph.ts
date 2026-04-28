@@ -243,6 +243,24 @@ export interface FeatureGraphContext {
    * since `existsSync` against a non-existent path is microseconds.
    */
   pauseSentinelPollDisabled?: boolean;
+  /**
+   * bug-021 — when set, the progress tracker created by `runFeatureGraph`
+   * is seeded from this snapshot rather than starting empty. Wired by
+   * `cli-runner.ts` on `--resume-feature-graph`: it reads
+   * `feature-graph-progress.json` from disk and passes it here so the
+   * orchestrator remembers what was in-flight at the moment of pause.
+   *
+   * Without this seed, `runFeature` cannot tell a freshly-dispatched
+   * feature from one whose worktree already exists from a prior run, and
+   * `runCheckoutFeature` hard-fails with `stale-worktree`. With the seed,
+   * `runFeature` detects the in-flight entry, skips checkout, and
+   * advances `agent_sequence[]` to `nextAgent`.
+   *
+   * Tests can pass this directly without going through state-persistence.
+   * Ignored when `progressTracker` is also set (the caller-supplied
+   * tracker wins).
+   */
+  seedProgress?: FeatureGraphProgress;
 }
 
 // ─── feat-024 Phase A: progress tracker ──────────────────────────────
@@ -305,22 +323,41 @@ export function noopProgressTracker(): ProgressTracker {
  * `flush()` writes atomically to `feature-graph-progress.json`. Each
  * mutation method calls `flush()` so the on-disk file always reflects the
  * latest known state (a Mode B crash leaves a usable checkpoint).
+ *
+ * bug-021: when `seedSnapshot` is provided, the in-memory snapshot is
+ * hydrated from it (deep-cloned) so a resumed run remembers what was
+ * completed / failed / in-flight at pause time. `pipelineRunId` and
+ * `masterCommitSha` from the args still take precedence over the seed —
+ * the seed's bookkeeping fields are advisory.
  */
 export function createProgressTracker(args: {
   projectRoot: string;
   pipelineRunId: string;
   masterCommitSha: string;
+  seedSnapshot?: FeatureGraphProgress;
 }): ProgressTracker {
-  const snapshot: FeatureGraphProgress = {
-    version: "1.0",
-    pipelineRunId: args.pipelineRunId,
-    lastUpdatedAt: new Date().toISOString(),
-    masterCommitSha: args.masterCommitSha,
-    completed: [],
-    failed: [],
-    aborted: [],
-    inFlight: [],
-  };
+  const seed = args.seedSnapshot;
+  const snapshot: FeatureGraphProgress = seed
+    ? {
+        version: "1.0",
+        pipelineRunId: args.pipelineRunId,
+        lastUpdatedAt: new Date().toISOString(),
+        masterCommitSha: args.masterCommitSha,
+        completed: [...seed.completed],
+        failed: [...seed.failed],
+        aborted: [...seed.aborted],
+        inFlight: seed.inFlight.map((f) => ({ ...f })),
+      }
+    : {
+        version: "1.0",
+        pipelineRunId: args.pipelineRunId,
+        lastUpdatedAt: new Date().toISOString(),
+        masterCommitSha: args.masterCommitSha,
+        completed: [],
+        failed: [],
+        aborted: [],
+        inFlight: [],
+      };
 
   function bump(): void {
     snapshot.lastUpdatedAt = new Date().toISOString();
@@ -549,54 +586,97 @@ export async function runFeature(
     };
   }
 
-  // feat-024 Phase A: dispatch breadcrumb. Fires AFTER the fast-skip
-  // check (a fast-skipped feature is already on master, never enters
-  // inFlight[]) but BEFORE checkout — checkout failures still warrant
-  // a recorded "we tried" state via the matched onFeatureFailed call.
-  tracker.onFeatureDispatched({
-    featureId: feature.id,
-    worktree: feature.worktree,
-    branch: feature.branch,
-    firstAgent: firstSeqAgent,
-    nextAgent: secondSeqAgent,
-  });
-
-  // 1. Checkout feature worktree
-  const checkout = await ctx.invokeAgent({
-    agent: "git-agent",
-    cwd: ctx.projectRoot,
-    featureContext,
-    tasks: [],
-    gitOp: {
-      op: "checkout-feature",
+  // bug-021: detect resume context. If a `seedProgress` was passed via
+  // ctx (via cli-runner reading feature-graph-progress.json on
+  // --resume-feature-graph), the tracker now has an inFlight[] entry for
+  // this feature. We trust the /resume-build SKILL §7 recovery actions
+  // (operator-side) ran already, so the worktree is in a state where we
+  // should:
+  //   - SKIP checkout-feature entirely (the worktree exists; calling
+  //     checkout-feature would hit `stale-worktree` and cascade-fail —
+  //     this is the bug-021 empirical hit).
+  //   - SKIP `tracker.onFeatureDispatched` (the inFlight[] entry already
+  //     exists from the prior run; replacing it with firstAgent/secondAgent
+  //     would clobber the resume signal).
+  //   - JUMP the agent_sequence walk to the index of `nextAgent`. If
+  //     `nextAgent === null`, skip the walk entirely + go to close-feature.
+  //   - Seed `lastWritingAgent` from the inFlight entry's `lastAgent` so
+  //     close-feature's conflict-handoff routing has a sensible target.
+  const inFlightEntry = tracker
+    .snapshot()
+    .inFlight.find((f) => f.featureId === feature.id);
+  const isResume = inFlightEntry !== undefined;
+  let resumeStartIdx = 0;
+  if (isResume && inFlightEntry) {
+    lastWritingAgent = inFlightEntry.lastAgent;
+    if (inFlightEntry.nextAgent === null) {
+      // Walk is fully done — skip directly to close-feature.
+      resumeStartIdx = feature.agent_sequence.length;
+    } else {
+      const idx = feature.agent_sequence.indexOf(inFlightEntry.nextAgent);
+      // If the snapshot's nextAgent isn't in agent_sequence anymore (e.g.,
+      // tasks.yaml changed between pause + resume), fall back to walking
+      // from the start. Conservative — better to redo work than skip it.
+      resumeStartIdx = idx >= 0 ? idx : 0;
+    }
+  } else {
+    // feat-024 Phase A: dispatch breadcrumb. Fires AFTER the fast-skip
+    // check (a fast-skipped feature is already on master, never enters
+    // inFlight[]) but BEFORE checkout — checkout failures still warrant
+    // a recorded "we tried" state via the matched onFeatureFailed call.
+    tracker.onFeatureDispatched({
+      featureId: feature.id,
       worktree: feature.worktree,
       branch: feature.branch,
-      featureId: feature.id,
-    },
-  });
-  totalCostUsd += checkout.costUsd;
-
-  const checkoutParsed = validateGitOutput(checkout.gitAgentOutput);
-  if (
-    !checkoutParsed ||
-    checkoutParsed.op !== "checkout-feature" ||
-    !checkoutParsed.success
-  ) {
-    tracker.onFeatureFailed({ featureId: feature.id });
-    return finish(
-      feature.id,
-      "failed",
-      startedAt,
-      attempts,
-      totalCostUsd,
-      taskOutcomes,
-      `checkout-feature failed: ${JSON.stringify(checkoutParsed ?? checkout.gitAgentOutput)}`,
-      commitWarnings,
-    );
+      firstAgent: firstSeqAgent,
+      nextAgent: secondSeqAgent,
+    });
   }
 
-  // 2. Walk agent_sequence[]
-  for (let seqIdx = 0; seqIdx < feature.agent_sequence.length; seqIdx++) {
+  // 1. Checkout feature worktree (skipped on resume — worktree already
+  // exists from prior run; /resume-build SKILL §7 recovery actions ran).
+  if (!isResume) {
+    const checkout = await ctx.invokeAgent({
+      agent: "git-agent",
+      cwd: ctx.projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "checkout-feature",
+        worktree: feature.worktree,
+        branch: feature.branch,
+        featureId: feature.id,
+      },
+    });
+    totalCostUsd += checkout.costUsd;
+
+    const checkoutParsed = validateGitOutput(checkout.gitAgentOutput);
+    if (
+      !checkoutParsed ||
+      checkoutParsed.op !== "checkout-feature" ||
+      !checkoutParsed.success
+    ) {
+      tracker.onFeatureFailed({ featureId: feature.id });
+      return finish(
+        feature.id,
+        "failed",
+        startedAt,
+        attempts,
+        totalCostUsd,
+        taskOutcomes,
+        `checkout-feature failed: ${JSON.stringify(checkoutParsed ?? checkout.gitAgentOutput)}`,
+        commitWarnings,
+      );
+    }
+  }
+
+  // 2. Walk agent_sequence[] (on resume, start from `resumeStartIdx` so
+  // already-completed agents from the prior run are skipped).
+  for (
+    let seqIdx = resumeStartIdx;
+    seqIdx < feature.agent_sequence.length;
+    seqIdx++
+  ) {
     // feat-024 Phase C: poll for paused.json sentinel before each agent
     // dispatch. If present, drain happens implicitly (this in-flight
     // feature finishes its current agent before we re-check + abort the
@@ -1026,12 +1106,17 @@ export async function runFeatureGraph(
   // feat-024 Phase A: build (or accept) a progress tracker. The real
   // tracker writes feature-graph-progress.json on every transition;
   // tests inject a noop tracker via ctx.progressTracker to avoid disk.
+  // bug-021: when ctx.seedProgress is set (resume path), hydrate the
+  // tracker's in-memory snapshot from it so runFeature can detect
+  // already-in-flight features instead of treating every entry as a
+  // fresh dispatch.
   const tracker: ProgressTracker =
     ctx.progressTracker ??
     createProgressTracker({
       projectRoot: ctx.projectRoot,
       pipelineRunId: ctx.pipelineRunId,
       masterCommitSha: ctx.masterCommitSha ?? "unknown",
+      ...(ctx.seedProgress ? { seedSnapshot: ctx.seedProgress } : {}),
     });
   // Wrap ctx so runFeature inherits the tracker even if the caller didn't
   // set one — without this, runFeature's `ctx.progressTracker ?? noop`
@@ -1050,6 +1135,56 @@ export async function runFeatureGraph(
   let totalCostUsd = 0;
 
   const remaining = new Set(features.map((f) => f.id));
+
+  // bug-021: when resuming with a hydrated progress snapshot, pre-populate
+  // the topological loop's tracking sets so already-resolved features
+  // (merged / failed / aborted) don't get re-dispatched. Features in
+  // `seed.inFlight[]` stay in `remaining` — they're the resume targets and
+  // runFeature detects them via tracker.snapshot().inFlight to skip
+  // checkout-feature + advance to nextAgent.
+  if (ctx.seedProgress) {
+    for (const id of ctx.seedProgress.completed) {
+      if (!remaining.has(id)) continue;
+      remaining.delete(id);
+      completed.add(id);
+      featureResults[id] = {
+        featureId: id,
+        status: "completed",
+        durationMs: 0,
+        attempts: 0,
+        totalCostUsd: 0,
+        taskOutcomes: {},
+      };
+    }
+    for (const id of ctx.seedProgress.failed) {
+      if (!remaining.has(id)) continue;
+      remaining.delete(id);
+      failed.add(id);
+      featureResults[id] = {
+        featureId: id,
+        status: "failed",
+        durationMs: 0,
+        attempts: 0,
+        totalCostUsd: 0,
+        taskOutcomes: {},
+        abortReason: "carried over from prior run (paused-then-resumed)",
+      };
+    }
+    for (const id of ctx.seedProgress.aborted) {
+      if (!remaining.has(id)) continue;
+      remaining.delete(id);
+      failed.add(id);
+      featureResults[id] = {
+        featureId: id,
+        status: "aborted",
+        durationMs: 0,
+        attempts: 0,
+        totalCostUsd: 0,
+        taskOutcomes: {},
+        abortReason: "carried over from prior run (paused-then-resumed)",
+      };
+    }
+  }
 
   while (remaining.size > 0 || inFlight.size > 0) {
     // Drain doomed features whose dependencies have already failed —

@@ -338,6 +338,45 @@ export async function runCli(
       );
       return { exitCode: 1, messages };
     }
+    // bug-021: hydrate feature-graph-progress.json from disk so the
+    // orchestrator remembers what was completed / failed / in-flight at
+    // pause time. Without this seed, runFeature treats every feature as a
+    // fresh dispatch + runCheckoutFeature hard-fails on the existing
+    // worktree with `stale-worktree`. The seed is keyed by the same
+    // pipelineRunId the resume was launched with (--pipeline-run-id from
+    // /resume-build), so the on-disk path is deterministic.
+    const { readFeatureGraphProgress } = await import("./state-persistence.js");
+    let seedProgress;
+    try {
+      seedProgress =
+        readFeatureGraphProgress(projectRoot, pipelineRunId) ?? undefined;
+    } catch (err) {
+      messages.push(
+        `Failed to read feature-graph-progress.json: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { exitCode: 1, messages };
+    }
+    if (seedProgress) {
+      messages.push(
+        `Resuming with progress snapshot: ` +
+          `${seedProgress.completed.length} completed, ` +
+          `${seedProgress.failed.length} failed, ` +
+          `${seedProgress.aborted.length} aborted, ` +
+          `${seedProgress.inFlight.length} in-flight`,
+      );
+      if (seedProgress.inFlight.length > 0) {
+        for (const f of seedProgress.inFlight) {
+          messages.push(
+            `  in-flight: ${f.featureId} ` +
+              `lastAgent=${f.lastAgent} nextAgent=${f.nextAgent ?? "(null — pending close-feature)"}`,
+          );
+        }
+      }
+    } else {
+      messages.push(
+        `(no feature-graph-progress.json found for run-id ${pipelineRunId} — resume will treat this as a fresh dispatch)`,
+      );
+    }
     const graphCtx: Parameters<typeof runFeatureGraph>[1] = {
       projectRoot,
       pipelineRunId,
@@ -352,6 +391,7 @@ export async function runCli(
       // not the factory root — spawn fails silently, status flips to
       // "completed-with-integration-failures", warnings go unsurfaced.
       factoryRoot,
+      ...(seedProgress ? { seedProgress } : {}),
       ...(opts.autoMergeAfterReviewer ? { autoMergeAfterReviewer: true } : {}),
       ...(opts.maxConcurrent
         ? { maxConcurrentFeatures: opts.maxConcurrent }

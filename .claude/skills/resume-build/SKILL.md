@@ -201,6 +201,25 @@ orchestrator to reuse the existing run-id rather than mint a new one,
 so the resumed process writes to the SAME `<runId>/counters.json` +
 `feature-graph-progress.json` files.
 
+**Orchestrator-side resume contract (bug-021):** when started with
+`--resume-feature-graph` + `--pipeline-run-id <id>`, the orchestrator
+hydrates `feature-graph-progress.json` from disk and seeds its in-memory
+progress tracker from that snapshot. For each feature in `inFlight[]`,
+`runFeature` then:
+
+- SKIPS `checkout-feature` (the worktree exists; calling it would hit
+  `stale-worktree`).
+- Advances the `agent_sequence[]` walk to the index of `nextAgent`.
+- When `nextAgent === null`, skips the walk entirely + goes to
+  close-feature.
+
+For each feature in `completed[]` / `failed[]` / `aborted[]`, the
+topological loop pre-populates the result so the feature is NOT
+re-dispatched. This is what closes the loop on the recovery actions
+this skill performs in step 10 — without the hydration the orchestrator
+would not see the in-flight entries and `checkout-feature` would
+hard-fail with `stale-worktree`.
+
 This is the LAST step the skill takes. The orchestrator runs in the
 foreground (or background, depending on the user's invocation context) —
 the skill's exit code reflects whether it dispatched the command

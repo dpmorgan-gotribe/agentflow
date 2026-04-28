@@ -1791,3 +1791,388 @@ describe("runFeatureGraph — feat-026 fix-bugs-loop wiring", () => {
     expect(result.bugLoopResult!.status).toBe("no-bugs");
   });
 });
+
+// ─── bug-021: resume-aware feature graph ──────────────────────────────────
+//
+// Prior to bug-021, runFeature always called checkout-feature, which
+// hard-failed with `stale-worktree` for any feature whose worktree already
+// existed from a paused prior run. The fix: when ctx.seedProgress contains
+// an inFlight[] entry for the feature, runFeature skips checkout +
+// advances agent_sequence walk to nextAgent. When seedProgress contains a
+// completed/failed/aborted entry, runFeatureGraph skips the feature
+// entirely (no dispatch).
+describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
+  const NOW_ISO = "2026-04-28T03:30:00.000Z";
+
+  it("skips checkout-feature for an in-flight feature + starts walk from nextAgent", async () => {
+    // Arrange: pretend a prior run got through backend-builder, paused
+    // before tester. The on-disk snapshot has an inFlight entry with
+    // lastAgent=backend-builder, nextAgent=tester.
+    const seedProgress = {
+      version: "1.0",
+      pipelineRunId: "pipe-test-001",
+      lastUpdatedAt: NOW_ISO,
+      masterCommitSha: "abcd1234",
+      completed: [],
+      failed: [],
+      aborted: [],
+      inFlight: [
+        {
+          featureId: "feat-auth",
+          worktree: "feat-auth",
+          branch: "feat/auth",
+          lastAgent: "backend-builder",
+          nextAgent: "tester",
+          lastProgressAt: NOW_ISO,
+          dispatchedAt: NOW_ISO,
+        },
+      ],
+    } as const;
+
+    // Track which agents are dispatched. We expect: NO checkout-feature,
+    // tester (the resume-from agent), reviewer, then close-feature.
+    const dispatched: string[] = [];
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        const op = args.gitOp?.op ?? "(no-op)";
+        dispatched.push(`git-agent:${op}`);
+        if (op === "checkout-feature") {
+          // If we ever hit this path on resume, the test fails — and the
+          // bug-021 empirical hit reproduces.
+          throw new Error("checkout-feature was dispatched on resume");
+        }
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput: {
+            op: "close-feature",
+            success: true,
+            conflict: false,
+            mergeSha: "deadbee",
+            featureId: "feat-auth",
+          },
+          costUsd: 0.001,
+        };
+      }
+      dispatched.push(args.agent);
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.01,
+      };
+    };
+
+    const tasks: TasksV2 = {
+      version: "2.0",
+      project: "test",
+      generatedAt: NOW_ISO,
+      features: [buildFeature()],
+    };
+
+    // Act
+    const ctx = makeCtx(invokeAgent);
+    const result = await runFeatureGraph(tasks, {
+      ...ctx,
+      seedProgress,
+    });
+
+    // Assert: agent walk started at tester (skipped backend-builder), then
+    // reviewer, then close-feature. NO checkout-feature.
+    expect(dispatched).toEqual([
+      "tester",
+      "reviewer",
+      "git-agent:close-feature",
+    ]);
+    expect(result.completed).toEqual(["feat-auth"]);
+    expect(result.failed).toEqual([]);
+  });
+
+  it("skips agent_sequence walk entirely when nextAgent === null + goes straight to close-feature", async () => {
+    // Arrange: prior run completed reviewer (the last agent in the
+    // sequence) but paused before close-feature. Snapshot has nextAgent=null.
+    const seedProgress = {
+      version: "1.0",
+      pipelineRunId: "pipe-test-001",
+      lastUpdatedAt: NOW_ISO,
+      masterCommitSha: "abcd1234",
+      completed: [],
+      failed: [],
+      aborted: [],
+      inFlight: [
+        {
+          featureId: "feat-auth",
+          worktree: "feat-auth",
+          branch: "feat/auth",
+          lastAgent: "reviewer",
+          nextAgent: null,
+          lastProgressAt: NOW_ISO,
+          dispatchedAt: NOW_ISO,
+        },
+      ],
+    } as const;
+
+    const dispatched: string[] = [];
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        const op = args.gitOp?.op ?? "(no-op)";
+        dispatched.push(`git-agent:${op}`);
+        if (op === "checkout-feature") {
+          throw new Error("checkout-feature was dispatched on resume");
+        }
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput: {
+            op: "close-feature",
+            success: true,
+            conflict: false,
+            mergeSha: "deadbee",
+            featureId: "feat-auth",
+          },
+          costUsd: 0.001,
+        };
+      }
+      dispatched.push(args.agent);
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.01,
+      };
+    };
+
+    const tasks: TasksV2 = {
+      version: "2.0",
+      project: "test",
+      generatedAt: NOW_ISO,
+      features: [buildFeature()],
+    };
+
+    const ctx = makeCtx(invokeAgent);
+    const result = await runFeatureGraph(tasks, { ...ctx, seedProgress });
+
+    // Assert: ONLY close-feature was dispatched.
+    expect(dispatched).toEqual(["git-agent:close-feature"]);
+    expect(result.completed).toEqual(["feat-auth"]);
+  });
+
+  it("falls back to walking from index 0 when snapshot's nextAgent is no longer in agent_sequence", async () => {
+    // Arrange: tasks.yaml was edited between pause + resume, removing the
+    // agent that was the snapshot's nextAgent. Resume must NOT crash —
+    // conservative fallback: walk from start.
+    const seedProgress = {
+      version: "1.0",
+      pipelineRunId: "pipe-test-001",
+      lastUpdatedAt: NOW_ISO,
+      masterCommitSha: "abcd1234",
+      completed: [],
+      failed: [],
+      aborted: [],
+      inFlight: [
+        {
+          featureId: "feat-auth",
+          worktree: "feat-auth",
+          branch: "feat/auth",
+          lastAgent: "backend-builder",
+          // mobile-frontend-builder is NOT in agent_sequence below.
+          nextAgent: "mobile-frontend-builder",
+          lastProgressAt: NOW_ISO,
+          dispatchedAt: NOW_ISO,
+        },
+      ],
+    } as const;
+
+    const dispatched: string[] = [];
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        const op = args.gitOp?.op ?? "(no-op)";
+        dispatched.push(`git-agent:${op}`);
+        if (op === "checkout-feature") {
+          throw new Error("checkout-feature was dispatched on resume");
+        }
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput: {
+            op: "close-feature",
+            success: true,
+            conflict: false,
+            mergeSha: "deadbee",
+            featureId: "feat-auth",
+          },
+          costUsd: 0.001,
+        };
+      }
+      dispatched.push(args.agent);
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.01,
+      };
+    };
+
+    const tasks: TasksV2 = {
+      version: "2.0",
+      project: "test",
+      generatedAt: NOW_ISO,
+      features: [buildFeature()],
+    };
+
+    const ctx = makeCtx(invokeAgent);
+    await runFeatureGraph(tasks, { ...ctx, seedProgress });
+
+    // Assert: walked from index 0 (backend-builder onward); checkout still
+    // skipped because the resume signal was honored.
+    expect(dispatched).toEqual([
+      "backend-builder",
+      "tester",
+      "reviewer",
+      "git-agent:close-feature",
+    ]);
+  });
+
+  it("skips features already in seed.completed[] without dispatching them", async () => {
+    // Arrange: prior run merged feat-auth. New run should not re-dispatch.
+    const seedProgress = {
+      version: "1.0",
+      pipelineRunId: "pipe-test-001",
+      lastUpdatedAt: NOW_ISO,
+      masterCommitSha: "abcd1234",
+      completed: ["feat-auth"],
+      failed: [],
+      aborted: [],
+      inFlight: [],
+    } as const;
+
+    let invocations = 0;
+    const invokeAgent: InvokeAgentFn = async () => {
+      invocations += 1;
+      return {
+        taskStatus: {},
+        errors: {},
+        costUsd: 0,
+      };
+    };
+
+    const tasks: TasksV2 = {
+      version: "2.0",
+      project: "test",
+      generatedAt: NOW_ISO,
+      features: [buildFeature()],
+    };
+
+    const ctx = makeCtx(invokeAgent);
+    const result = await runFeatureGraph(tasks, { ...ctx, seedProgress });
+
+    // Zero invocations — feature was carried over from prior run.
+    expect(invocations).toBe(0);
+    expect(result.completed).toEqual(["feat-auth"]);
+    expect(result.featureResults["feat-auth"]?.status).toBe("completed");
+    expect(result.featureResults["feat-auth"]?.attempts).toBe(0);
+  });
+
+  it("skips features already in seed.failed[] + records carryover reason", async () => {
+    const seedProgress = {
+      version: "1.0",
+      pipelineRunId: "pipe-test-001",
+      lastUpdatedAt: NOW_ISO,
+      masterCommitSha: "abcd1234",
+      completed: [],
+      failed: ["feat-auth"],
+      aborted: [],
+      inFlight: [],
+    } as const;
+
+    let invocations = 0;
+    const invokeAgent: InvokeAgentFn = async () => {
+      invocations += 1;
+      return { taskStatus: {}, errors: {}, costUsd: 0 };
+    };
+
+    const tasks: TasksV2 = {
+      version: "2.0",
+      project: "test",
+      generatedAt: NOW_ISO,
+      features: [buildFeature()],
+    };
+
+    const ctx = makeCtx(invokeAgent);
+    const result = await runFeatureGraph(tasks, { ...ctx, seedProgress });
+
+    expect(invocations).toBe(0);
+    expect(result.failed).toEqual(["feat-auth"]);
+    expect(result.featureResults["feat-auth"]?.status).toBe("failed");
+    expect(result.featureResults["feat-auth"]?.abortReason).toMatch(
+      /carried over from prior run/,
+    );
+  });
+
+  it("seedProgress=undefined behaves like a fresh run (no resume path)", async () => {
+    // Sanity: ensure the bug-021 code paths only fire when seedProgress is
+    // present. Without it, runFeature dispatches checkout-feature normally.
+    const dispatched: string[] = [];
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        const op = args.gitOp?.op ?? "(no-op)";
+        dispatched.push(`git-agent:${op}`);
+        if (op === "checkout-feature") {
+          return {
+            taskStatus: {},
+            errors: {},
+            gitAgentOutput: {
+              op: "checkout-feature",
+              success: true,
+              worktreePath: ".claude/worktrees/feat-auth",
+              lockfilePath: ".claude/worktrees/feat-auth.lock",
+              branch: "feat/auth",
+              featureId: "feat-auth",
+            },
+            costUsd: 0.001,
+          };
+        }
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput: {
+            op: "close-feature",
+            success: true,
+            conflict: false,
+            mergeSha: "deadbee",
+            featureId: "feat-auth",
+          },
+          costUsd: 0.001,
+        };
+      }
+      dispatched.push(args.agent);
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.01,
+      };
+    };
+
+    const tasks: TasksV2 = {
+      version: "2.0",
+      project: "test",
+      generatedAt: NOW_ISO,
+      features: [buildFeature()],
+    };
+
+    const ctx = makeCtx(invokeAgent);
+    await runFeatureGraph(tasks, ctx); // NO seedProgress
+
+    // Full walk including checkout-feature.
+    expect(dispatched[0]).toBe("git-agent:checkout-feature");
+    expect(dispatched).toContain("backend-builder");
+    expect(dispatched).toContain("tester");
+    expect(dispatched).toContain("reviewer");
+    expect(dispatched[dispatched.length - 1]).toBe("git-agent:close-feature");
+  });
+});

@@ -736,3 +736,228 @@ describe("runCli — bugs.yaml lifecycle (--bugs-yaml-mode)", () => {
     expect(existsSync(join(projectRoot, "docs", "bugs.yaml"))).toBe(true);
   });
 });
+
+describe("runCli — bug-021 resume-aware hydration", () => {
+  it("loads feature-graph-progress.json + skips checkout-feature for in-flight features", async () => {
+    // Arrange — scaffold a project with a tasks.yaml + a pre-existing
+    // feature-graph-progress.json under the SAME pipelineRunId we'll pass
+    // via opts.pipelineRunId. This mimics what /resume-build does: it
+    // dispatches `--pipeline-run-id <id>` so cli-runner reuses the on-disk
+    // state directory.
+    const pipelineRunId = "pipe-resume-001";
+    scaffoldProject("alpha", {
+      "docs/brief-summary.json": "{}",
+      "docs/mockups/manifest.json": "{}",
+      "docs/tasks.yaml": [
+        'version: "2.0"',
+        "features:",
+        "  - id: feat-auth",
+        "    worktree: feat-auth",
+        "    branch: feat/auth",
+        "    priority: P1",
+        "    depends_on: []",
+        "    skip: []",
+        "    agent_sequence: [backend-builder, tester, reviewer]",
+        "    tasks:",
+        "      - id: api",
+        "        agent: backend-builder",
+        "        depends_on: []",
+        "        skills: []",
+        "        screens: []",
+        "      - id: api-tests",
+        "        agent: tester",
+        "        depends_on: []",
+        "        skills: []",
+        "        screens: []",
+        "      - id: api-review",
+        "        agent: reviewer",
+        "        depends_on: []",
+        "        skills: []",
+        "        screens: []",
+        "warnings: []",
+        "",
+      ].join("\n"),
+    });
+    const projectRoot = join(factoryRoot, "projects", "alpha");
+    const stateDir = join(projectRoot, ".claude", "state", pipelineRunId);
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, "feature-graph-progress.json"),
+      JSON.stringify(
+        {
+          version: "1.0",
+          pipelineRunId,
+          lastUpdatedAt: "2026-04-28T03:30:00.000Z",
+          masterCommitSha: "deadbeef",
+          completed: [],
+          failed: [],
+          aborted: [],
+          inFlight: [
+            {
+              featureId: "feat-auth",
+              worktree: "feat-auth",
+              branch: "feat/auth",
+              lastAgent: "backend-builder",
+              nextAgent: "tester",
+              lastProgressAt: "2026-04-28T03:30:00.000Z",
+              dispatchedAt: "2026-04-28T03:00:00.000Z",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+
+    const dispatched: string[] = [];
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        const op = args.gitOp?.op ?? "(none)";
+        dispatched.push(`git-agent:${op}`);
+        if (op === "checkout-feature") {
+          // Surfacing the bug-021 empirical hit shape — if hydration didn't
+          // happen, runFeature would call this and we'd return stale-worktree.
+          throw new Error("checkout-feature was dispatched on resume");
+        }
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput: {
+            op: "close-feature",
+            success: true,
+            conflict: false,
+            mergeSha: "abc1234",
+            featureId: "feat-auth",
+          },
+          costUsd: 0,
+        };
+      }
+      dispatched.push(args.agent);
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.01,
+      };
+    };
+
+    // Act
+    const result = await runCli(
+      {
+        flags: "",
+        projectName: "alpha",
+        resumeFeatureGraph: true,
+        pipelineRunId, // matches the on-disk state dir
+        invokeAgentOverride: invokeAgent,
+        // Skip gate 6 (pr-review) — otherwise the test hangs waiting for a
+        // docs/gate-6-approved-*.txt file drop. Resume-path correctness is
+        // independent of gate-6 routing.
+        autoMergeAfterReviewer: true,
+      },
+      factoryRoot,
+    );
+
+    // Assert
+    const joined = result.messages.join("\n");
+    expect(result.exitCode).toBe(0);
+    expect(joined).toContain("Resuming with progress snapshot");
+    expect(joined).toContain("0 completed");
+    expect(joined).toContain("1 in-flight");
+    expect(joined).toContain("in-flight: feat-auth");
+    expect(joined).toContain("lastAgent=backend-builder nextAgent=tester");
+    // Walk should be tester → reviewer → close-feature, NO checkout.
+    expect(dispatched).toEqual([
+      "tester",
+      "reviewer",
+      "git-agent:close-feature",
+    ]);
+    expect(joined).toContain("Features completed: 1");
+  });
+
+  it("emits a 'no snapshot' note when --resume-feature-graph runs but no progress file exists", async () => {
+    // The orchestrator should still proceed with a fresh dispatch in this
+    // case (defensive — no crash).
+    const pipelineRunId = "pipe-resume-002";
+    scaffoldProject("alpha", {
+      "docs/brief-summary.json": "{}",
+      "docs/mockups/manifest.json": "{}",
+      "docs/tasks.yaml": [
+        'version: "2.0"',
+        "features:",
+        "  - id: feat-auth",
+        "    worktree: feat-auth",
+        "    branch: feat/auth",
+        "    priority: P1",
+        "    depends_on: []",
+        "    skip: []",
+        "    agent_sequence: [backend-builder]",
+        "    tasks:",
+        "      - id: api",
+        "        agent: backend-builder",
+        "        depends_on: []",
+        "        skills: []",
+        "        screens: []",
+        "warnings: []",
+        "",
+      ].join("\n"),
+    });
+
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        if (args.gitOp?.op === "checkout-feature") {
+          return {
+            taskStatus: {},
+            errors: {},
+            gitAgentOutput: {
+              op: "checkout-feature",
+              success: true,
+              worktreePath: ".claude/worktrees/feat-auth",
+              lockfilePath: ".claude/worktrees/feat-auth.lock",
+              branch: "feat/auth",
+              featureId: "feat-auth",
+            },
+            costUsd: 0,
+          };
+        }
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput: {
+            op: "close-feature",
+            success: true,
+            conflict: false,
+            mergeSha: "abc1234",
+            featureId: "feat-auth",
+          },
+          costUsd: 0,
+        };
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.01,
+      };
+    };
+
+    const result = await runCli(
+      {
+        flags: "",
+        projectName: "alpha",
+        resumeFeatureGraph: true,
+        pipelineRunId,
+        invokeAgentOverride: invokeAgent,
+      },
+      factoryRoot,
+    );
+
+    const joined = result.messages.join("\n");
+    expect(result.exitCode).toBe(0);
+    expect(joined).toContain(
+      `(no feature-graph-progress.json found for run-id ${pipelineRunId}`,
+    );
+    expect(joined).toContain("Features completed: 1");
+  });
+});
