@@ -107,6 +107,47 @@ The mockup's `<body data-screen-id="...">` (see screens skill §4e.1) is the sou
 - **Loading skeletons** via the kit's `data-kit-component="Skeleton"` CSS + Svelte's `#await` block for promise resolution.
 - **data-kit-\* attrs preserved.** Svelte primitives match the kit's React contract: every Svelte `<Button>` emits `data-kit-component="Button"` + `data-kit-variant="primary|..."` for HTML-structure parity with React builds.
 
+### 2a. HTML → Svelte translation: `data-kit-*` pass-through (feat-028 visual-parity contract)
+
+When translating a screen mockup at `docs/screens/webapp/{screen-id}.html` into a Svelte page (`src/routes/.../+page.svelte` + supporting `src/lib/components/**`), every `data-kit-*` attribute on the source HTML element MUST survive translation.
+
+The mapping is mechanical:
+
+```html
+<!-- Mockup source -->
+<button
+  data-kit-component="Button"
+  data-kit-variant="primary"
+  data-kit-size="md"
+>
+  Save
+</button>
+```
+
+```svelte
+<!-- Translated Svelte — primitive forwards the attrs back via Phase 0 retrofit -->
+<script>
+  import Button from "$lib/components/Button.svelte";
+</script>
+
+<Button variant="primary" size="md">Save</Button>
+```
+
+The locally-authored `<Button>` Svelte primitive (kit's React exports aren't usable in Svelte; per §1's "Special note on @repo/ui-kit") emits `data-kit-component="Button" data-kit-variant="primary" data-kit-size="md"` on its rendered root, restoring the contract.
+
+**Critical: do NOT strip the AppShell wrapper.** When the mockup wraps page content in `<div data-kit-component="AppShell">…<aside data-kit-component="Sidebar">…</aside>…</div>`, the Svelte render MUST emit the same wrapper hierarchy via Svelte primitives + slot props. Stripping the shell is the dominant divergence pattern investigate-009 catalogued — the post-build `/build-to-spec-verify` parity stage (feat-028) flags it as `shell-stripping` (P0) + auto-files a bug plan with a per-pattern fix template.
+
+### 2b. Self-verify: kit-attribute presence
+
+Before returning `taskStatus: "completed"`, run a quick presence check on the feature's authored components:
+
+```bash
+# From the worktree root, after authoring:
+grep -rE "data-kit-component" apps/web/src 2>/dev/null | wc -l
+```
+
+A count of 0 in a feature whose mockups DO use kit primitives is a strong signal that the translation pass dropped the attributes — re-check each `+page.svelte` against its mockup. The actual contract enforcement happens in `/build-to-spec-verify`'s parity stage which renders the built page + diffs against the mockup HTML; this self-verify only catches the most-egregious omissions before the orchestrator gets there.
+
 ## 3. Testing
 
 - **Test-file naming**: `src/lib/foo.ts` → `src/lib/foo.test.ts`; component `src/lib/components/Button.svelte` → `src/lib/components/Button.test.ts`.

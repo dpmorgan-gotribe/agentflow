@@ -1,7 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Feature, GitAgentOutput, TasksV2 } from "@repo/orchestrator-contracts";
+import type {
+  Feature,
+  GitAgentOutput,
+  TasksV2,
+} from "@repo/orchestrator-contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BudgetTracker } from "../src/budget-tracker.js";
 import {
@@ -88,7 +92,11 @@ const happyPathInvoke: InvokeAgentFn = async (args) => {
   if (args.agent === "git-agent") {
     const output: GitAgentOutput =
       args.gitOp?.op === "checkout-feature"
-        ? { ...checkoutOk, featureId: args.featureContext.id, branch: args.featureContext.branch }
+        ? {
+            ...checkoutOk,
+            featureId: args.featureContext.id,
+            branch: args.featureContext.branch,
+          }
         : { ...closeOk, featureId: args.featureContext.id };
     return {
       taskStatus: {},
@@ -311,7 +319,10 @@ describe("runFeature — tracker integration (happy path)", () => {
       pipelineRunId,
       masterCommitSha: "deadbeef",
     });
-    const result = await runFeature(buildFeature(), makeCtx(happyPathInvoke, t));
+    const result = await runFeature(
+      buildFeature(),
+      makeCtx(happyPathInvoke, t),
+    );
     expect(result.status).toBe("completed");
     const snap = t.snapshot();
     expect(snap.completed).toContain("feat-shell");
@@ -402,7 +413,10 @@ describe("runFeatureGraph — auto-creates a real progressTracker when none prov
     const ctx: FeatureGraphContext = {
       projectRoot,
       pipelineRunId,
-      budget: new BudgetTracker({ perPipelineMaxUsd: 1000, perStageMaxUsd: {} }),
+      budget: new BudgetTracker({
+        perPipelineMaxUsd: 1000,
+        perStageMaxUsd: {},
+      }),
       retryCounters: new RetryCounters(),
       invokeAgent: happyPathInvoke,
       skipBuildToSpecVerify: true,
@@ -419,7 +433,11 @@ describe("runFeatureGraph — auto-creates a real progressTracker when none prov
   });
 
   it("dependency-cascade aborted features land in aborted[]", async () => {
-    const featA = buildFeature({ id: "feat-a", worktree: "feat-a", branch: "feat/a" });
+    const featA = buildFeature({
+      id: "feat-a",
+      worktree: "feat-a",
+      branch: "feat/a",
+    });
     const featB = buildFeature({
       id: "feat-b",
       worktree: "feat-b",
@@ -459,7 +477,10 @@ describe("runFeatureGraph — auto-creates a real progressTracker when none prov
     const ctx: FeatureGraphContext = {
       projectRoot,
       pipelineRunId,
-      budget: new BudgetTracker({ perPipelineMaxUsd: 1000, perStageMaxUsd: {} }),
+      budget: new BudgetTracker({
+        perPipelineMaxUsd: 1000,
+        perStageMaxUsd: {},
+      }),
       retryCounters: new RetryCounters(),
       invokeAgent: invoke,
       skipBuildToSpecVerify: true,

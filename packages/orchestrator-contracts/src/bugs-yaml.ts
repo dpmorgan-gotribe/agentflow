@@ -17,10 +17,21 @@ import { AgentSequenceMember } from "./tasks.js";
  * authored by `/plan-bug`.
  */
 
-/** Where the bug came from. The verifier emits all three; nothing else writes here. */
+/**
+ * Where the bug came from. The verifier emits all six; nothing else writes
+ * here. Sources are roughly ordered by the loop's fix-priority sort:
+ * reachability orphans first (often cause downstream flow failures),
+ * runtime-error / dev-server-compile next (page literally won't render),
+ * visual-parity third (a stripped shell breaks every flow assertion),
+ * flow-execution-failure fourth (downstream of all of the above),
+ * pm-coverage-omission last (rare).
+ */
 export const BugSourceSchema = z.enum([
   "reachability-orphan", // feat-022 reachability analyzer
   "flow-execution-failure", // feat-025 spec runner
+  "runtime-error", // feat-027 runtime-error capture (console / page / network)
+  "dev-server-compile", // feat-027 Next.js dev-server overlay (cascade root-cause)
+  "visual-parity", // feat-028 ParityVerify (DOM-skeleton + computed-style audit)
   "pm-coverage-omission", // feat-023 brief-coverage gate (rare; usually fails earlier)
 ]);
 export type BugSource = z.infer<typeof BugSourceSchema>;
@@ -70,12 +81,18 @@ export type BugOrphanContext = z.infer<typeof BugOrphanContextSchema>;
  * `flow` or `orphan` is populated (matching `source`); the other is
  * undefined / omitted.
  *
- * Bug ID grammar: `bug-(flow|orphan|coverage)-<slug>`. The slug is
+ * Bug ID grammar:
+ * `bug-(flow|orphan|coverage|runtime|compile|parity)-<slug>`. The slug is
  * derived by `scripts/file-bug-plan.mjs` so the orchestrator + the writer
- * agree on identity for cross-iteration dedup.
+ * agree on identity for cross-iteration dedup. The `runtime` + `compile`
+ * prefixes were added in feat-027 alongside the matching BugSourceSchema
+ * entries; `parity` was added in feat-028 for visual-parity divergence
+ * bugs (one per (screen, pattern) tuple).
  */
 export const BugEntrySchema = z.object({
-  id: z.string().regex(/^bug-(flow|orphan|coverage)-[a-z0-9-]+$/),
+  id: z
+    .string()
+    .regex(/^bug-(flow|orphan|coverage|runtime|compile|parity)-[a-z0-9-]+$/),
   iteration: z.number().int().min(1),
   source: BugSourceSchema,
   severity: BugSeveritySchema.default("P0"),
@@ -144,6 +161,9 @@ export const BugsYamlJsonSchema = z.toJSONSchema(BugsYamlSchema);
  *   - reachability-orphan        → web-frontend-builder, tester, reviewer
  *   - flow-execution-failure     → web-frontend-builder, tester, reviewer
  *   - pm-coverage-omission       → pm, web-frontend-builder, tester, reviewer
+ *   - runtime-error              → web-frontend-builder, tester, reviewer (feat-027)
+ *   - dev-server-compile         → web-frontend-builder, tester, reviewer (feat-027)
+ *   - visual-parity              → web-frontend-builder, tester, reviewer (feat-028)
  *
  * For `pm-coverage-omission`, `pm` is NOT in `AgentSequenceMember` (PM is
  * Mode A, not Mode B); we treat coverage bugs as builder work in v1 and
@@ -156,6 +176,9 @@ export function defaultAgentSequenceForSource(
   switch (source) {
     case "reachability-orphan":
     case "flow-execution-failure":
+    case "runtime-error":
+    case "dev-server-compile":
+    case "visual-parity":
     case "pm-coverage-omission":
       return ["web-frontend-builder", "tester", "reviewer"] as const;
   }

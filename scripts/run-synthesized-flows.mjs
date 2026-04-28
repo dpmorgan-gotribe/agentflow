@@ -473,11 +473,39 @@ function parseReporterJson(stdout, warnings, stderr = "") {
         attachments.find(
           (a) => a.contentType === "text/html" || /\.html$/i.test(a.path ?? ""),
         )?.path ?? null;
+      // ── feat-027 Phase B: extract runtime-errors attachment ───────────────
+      // The synthesizer's afterEach hook attaches a JSON payload named
+      // "runtime-errors" with consoleErrors / pageErrors / networkFailures /
+      // devServerOverlay. We surface that into failure.runtimeErrors so the
+      // bug-author can render it into a runtime-error bug template.
+      const runtimeErrors = extractRuntimeErrors(attachments, warnings);
       // Try to extract step / from / expected from the error message
       // (the synthesizer formats them as
       //   `step N: clicked toward "X" but landed on "Y" (selector: ...)`).
       const meta = parseFailureMessage(errorMsg);
-      flows.failed.push({
+      // ── feat-027 Phase B: classify primary cause ──────────────────────────
+      // - dev-server-compile: overlay detected → ALWAYS primary (cascades all)
+      // - runtime-error: any console / page / network errors captured
+      // - timeout-no-evidence: timedOut with no runtime signal AND no step meta
+      // - step-transition: the synthesizer's own assertion fired (default)
+      const isTimedOut = firstFailed?.status === "timedOut";
+      const hasRuntimeSignal =
+        runtimeErrors !== null &&
+        (runtimeErrors.consoleErrors.length > 0 ||
+          runtimeErrors.pageErrors.length > 0 ||
+          runtimeErrors.networkFailures.length > 0 ||
+          runtimeErrors.devServerOverlay !== undefined);
+      let primaryCause;
+      if (runtimeErrors?.devServerOverlay) {
+        primaryCause = "dev-server-compile";
+      } else if (hasRuntimeSignal) {
+        primaryCause = "runtime-error";
+      } else if (isTimedOut && !meta.step) {
+        primaryCause = "timeout-no-evidence";
+      } else {
+        primaryCause = "step-transition";
+      }
+      const failure = {
         flowId,
         flowName: spec.title ?? flowId,
         step: meta.step ?? 0,
@@ -488,7 +516,10 @@ function parseReporterJson(stdout, warnings, stderr = "") {
         screenshotPath: screenshot,
         htmlDumpPath: htmlDump,
         message: errorMsg,
-      });
+        primaryCause,
+      };
+      if (runtimeErrors !== null) failure.runtimeErrors = runtimeErrors;
+      flows.failed.push(failure);
     } else if (anyPassed) {
       flows.passed.push(flowId);
     } else if (allSkipped) {
@@ -513,6 +544,95 @@ function flowIdFromFile(file) {
   if (!file) return "unknown";
   const base = path.basename(String(file), ".spec.ts");
   return base; // e.g., "flow-1"
+}
+
+/**
+ * feat-027 Phase B — extract the "runtime-errors" attachment if present.
+ *
+ * The synthesizer's afterEach hook attaches a JSON document with the shape:
+ *   {
+ *     consoleErrors: string[],
+ *     pageErrors: { message, stack? }[],
+ *     networkFailures: { method, url, failureText }[],
+ *     devServerOverlay: { detected, rawText } | null,
+ *   }
+ *
+ * Playwright's JSON reporter writes attachments to disk by default and
+ * exposes `path`. Modern reporters may inline the body via `body` (base64
+ * for binary, utf8 for text) — we honor either. Returns null when no
+ * runtime-errors attachment exists OR the body fails to parse (best-effort
+ * — we surface a warning instead of throwing).
+ */
+function extractRuntimeErrors(attachments, warnings) {
+  const att = attachments.find((a) => a && a.name === "runtime-errors");
+  if (!att) return null;
+  let raw;
+  try {
+    if (typeof att.body === "string" && att.body.length > 0) {
+      // Inline body — Playwright base64-encodes binary attachments but text
+      // contentTypes (application/json) are written as utf8.
+      raw = att.body;
+    } else if (att.path && fs.existsSync(att.path)) {
+      raw = fs.readFileSync(att.path, "utf8");
+    } else {
+      return null;
+    }
+  } catch (err) {
+    warnings.push(
+      `runtime-errors attachment read failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    /** @type {{ consoleErrors: string[], pageErrors: Array<{message: string, stack?: string}>, networkFailures: Array<{method: string, url: string, failureText: string}>, devServerOverlay?: { detected: boolean, rawText: string } }} */
+    const out = {
+      consoleErrors: Array.isArray(parsed.consoleErrors)
+        ? parsed.consoleErrors.filter((s) => typeof s === "string")
+        : [],
+      pageErrors: Array.isArray(parsed.pageErrors)
+        ? parsed.pageErrors
+            .filter((e) => e && typeof e.message === "string")
+            .map((e) => {
+              /** @type {{message: string, stack?: string}} */
+              const r = { message: e.message };
+              if (typeof e.stack === "string") r.stack = e.stack;
+              return r;
+            })
+        : [],
+      networkFailures: Array.isArray(parsed.networkFailures)
+        ? parsed.networkFailures
+            .filter(
+              (n) =>
+                n &&
+                typeof n.method === "string" &&
+                typeof n.url === "string" &&
+                typeof n.failureText === "string",
+            )
+            .map((n) => ({
+              method: n.method,
+              url: n.url,
+              failureText: n.failureText,
+            }))
+        : [],
+    };
+    if (
+      parsed.devServerOverlay &&
+      typeof parsed.devServerOverlay === "object" &&
+      typeof parsed.devServerOverlay.rawText === "string"
+    ) {
+      out.devServerOverlay = {
+        detected: parsed.devServerOverlay.detected !== false,
+        rawText: parsed.devServerOverlay.rawText,
+      };
+    }
+    return out;
+  } catch (err) {
+    warnings.push(
+      `runtime-errors attachment JSON parse failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
 }
 
 /**

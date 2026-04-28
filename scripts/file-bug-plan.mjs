@@ -82,6 +82,21 @@ function bugIdFor(violation, seq) {
   if (violation.kind === "flow-failure") {
     return `bug-${seq}-flow-${slugify(violation.flowId)}-${slugify(violation.expectedScreenId)}`;
   }
+  // ── feat-027: runtime-error / dev-server-compile bug ids ─────────────────
+  // The bugs.yaml id grammar allows `runtime` / `compile` prefixes per
+  // packages/orchestrator-contracts/src/bugs-yaml.ts. We use the flow-id as
+  // the slug since these failures are anchored to the spec that surfaced
+  // them — even though the underlying defect is project-wide (cascade root).
+  if (violation.kind === "runtime-error") {
+    return `bug-${seq}-runtime-${slugify(violation.flowId)}`;
+  }
+  if (violation.kind === "dev-server-compile") {
+    return `bug-${seq}-compile-${slugify(violation.flowId)}`;
+  }
+  // ── feat-028: visual-parity bug id — one per (screen, pattern) tuple ─────
+  if (violation.kind === "parity-divergence") {
+    return `bug-${seq}-parity-${slugify(violation.screen)}-${slugify(violation.pattern)}`;
+  }
   if (violation.kind === "orphan-component") {
     const name =
       violation.exportNames?.[0] ??
@@ -182,7 +197,194 @@ function flowFailureBody(v, opts) {
   lines.push(
     `Re-run \`/build-to-spec-verify\`; \`${v.flowId}\` must pass${opts.relatedOrphan ? ` + reachability for \`${opts.relatedOrphan.exportNames?.[0] ?? "the wired component"}\` must clear` : ""}.`,
   );
+  if (opts.dependsOnBugId) {
+    lines.push("");
+    lines.push(
+      `> **Depends on**: \`${opts.dependsOnBugId}\` — this is a \`timeout-no-evidence\` failure that likely cascades from a runtime / compile error. The bug-fix loop will defer this entry until the cascade root resolves; on the next verify pass it should clear automatically.`,
+    );
+  }
   return lines.join("\n");
+}
+
+/**
+ * feat-027 Phase D — runtime-error / dev-server-compile bug template.
+ *
+ * Used when a synthesized flow fails AND the runner extracted runtime
+ * signals (console errors / page errors / network failures / Next.js
+ * dev-server overlay) from the spec's `runtime-errors` attachment.
+ *
+ * The body surfaces:
+ *   - The console / page / network errors verbatim (ordered, the FIRST one
+ *     is the suspected root cause)
+ *   - Dev-server overlay text when present (always cascade root)
+ *   - Likely category heuristic (parse-error, missing-import,
+ *     hydration-mismatch) so the agent has a starting point
+ *   - Screenshot path so the agent can see what the user would see
+ *   - dependsOnBugId reference (when applicable)
+ */
+function runtimeErrorBody(v, opts = {}) {
+  const re = v.runtimeErrors ?? {
+    consoleErrors: [],
+    pageErrors: [],
+    networkFailures: [],
+  };
+  const screenshotPath = v.screenshot ?? v.screenshotPath ?? null;
+  const htmlPath = v.html ?? v.htmlDumpPath ?? null;
+  const isCompile = v.kind === "dev-server-compile" || re.devServerOverlay;
+  const lines = [
+    "## Description",
+    "",
+    isCompile
+      ? `Dev-server compile error blocked rendering during synthesized flow \`${v.flowName}\` (${v.flowId}). The page rendered the Next.js error overlay instead of the expected screen — every downstream flow will time out until this resolves.`
+      : `Runtime errors observed during synthesized flow \`${v.flowName}\` (${v.flowId}). The page may have rendered, but interactive behaviour is blocked by JavaScript errors.`,
+    "",
+  ];
+
+  if (re.devServerOverlay) {
+    lines.push("### Dev-server compile error (Next.js overlay)");
+    lines.push("");
+    lines.push("```");
+    lines.push(re.devServerOverlay.rawText);
+    lines.push("```");
+    lines.push("");
+  }
+
+  if (re.consoleErrors.length > 0) {
+    lines.push(`### Console errors (${re.consoleErrors.length})`);
+    lines.push("");
+    for (const msg of re.consoleErrors.slice(0, 10)) {
+      lines.push(`- \`${msg.replace(/`/g, "\\`")}\``);
+    }
+    if (re.consoleErrors.length > 10) {
+      lines.push(`- _… ${re.consoleErrors.length - 10} more_`);
+    }
+    lines.push("");
+  }
+
+  if (re.pageErrors.length > 0) {
+    lines.push(`### Page errors (${re.pageErrors.length})`);
+    lines.push("");
+    for (const err of re.pageErrors.slice(0, 5)) {
+      lines.push(`- **${err.message.replace(/\n/g, " ")}**`);
+      if (err.stack) {
+        const head = err.stack.split("\n").slice(0, 4).join("\n");
+        lines.push("  ```");
+        lines.push("  " + head.replace(/\n/g, "\n  "));
+        lines.push("  ```");
+      }
+    }
+    lines.push("");
+  }
+
+  if (re.networkFailures.length > 0) {
+    lines.push(`### Failed network requests (${re.networkFailures.length})`);
+    lines.push("");
+    for (const n of re.networkFailures.slice(0, 10)) {
+      lines.push(`- \`${n.method} ${n.url}\` → ${n.failureText}`);
+    }
+    lines.push("");
+  }
+
+  if (screenshotPath) {
+    lines.push("### Screenshot at moment of failure");
+    lines.push("");
+    lines.push(`![flow-${v.flowId} runtime failure](${screenshotPath})`);
+    lines.push("");
+  }
+  if (htmlPath) {
+    lines.push(`Page HTML dump: \`${htmlPath}\``);
+    lines.push("");
+  }
+
+  // Heuristic category — sniff the FIRST signal to suggest a fix family.
+  const firstSignal =
+    re.devServerOverlay?.rawText ??
+    re.pageErrors[0]?.message ??
+    re.consoleErrors[0] ??
+    re.networkFailures[0]?.url ??
+    "";
+  const category = inferRuntimeCategory(firstSignal, re);
+  lines.push("## Likely category");
+  lines.push("");
+  for (const hint of category.hints) lines.push(`- ${hint}`);
+  lines.push("");
+
+  lines.push("## Fix approach");
+  lines.push("");
+  lines.push(
+    "Surface the FIRST listed error as the root cause; downstream errors often cascade from it. Re-run `/build-to-spec-verify` after the fix to confirm the cascade clears.",
+  );
+  if (isCompile) {
+    lines.push("");
+    lines.push(
+      "Because this is a dev-server compile error, EVERY synthesized flow likely timed out behind it. Resolve this bug FIRST — the dependent timeouts (tagged `dependsOnBugId: " +
+        "<this id>`) should clear automatically on the next verify pass.",
+    );
+  }
+  lines.push("");
+
+  lines.push("## Validation");
+  lines.push("");
+  lines.push(
+    `Re-run \`/build-to-spec-verify\`; the runtime-errors attachment for \`${v.flowId}\` must be empty AND the page must render the expected screen \`${v.expectedScreenId}\` without console / page / network errors.`,
+  );
+
+  if (opts.dependsOnBugId) {
+    lines.push("");
+    lines.push(
+      `> Dependent timeouts in this iteration are tagged \`dependsOn: ${opts.dependsOnBugId}\` (the cascade root).`,
+    );
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * feat-027 — heuristic category dispatcher for runtime errors. Returns a
+ * small bag of category hints the bug-fix agent can pattern-match on
+ * before re-deriving from scratch.
+ */
+function inferRuntimeCategory(firstSignal, re) {
+  const sig = String(firstSignal).toLowerCase();
+  /** @type {string[]} */
+  const hints = [];
+  if (
+    /can'?t resolve|cannot find module|module not found/.test(sig) ||
+    re.networkFailures?.some((n) => /\.(css|js|jsx?|tsx?)$/.test(n.url))
+  ) {
+    hints.push(
+      "**missing-import**: grep for the failing module path; check `tsconfig.paths` + workspace alias (most common: `@repo/ui-kit/*` mis-typed or moved).",
+    );
+  }
+  if (/syntax|unexpected token|parse error|@import.*before/.test(sig)) {
+    hints.push(
+      "**parse-error**: check the most-recently-edited CSS / TSX files in the cited path. Tailwind / PostCSS often surfaces ordering bugs (e.g. `@import` after `@tailwind`).",
+    );
+  }
+  if (
+    /hydration|server html.*didn'?t match|maximum (call stack|update depth)/.test(
+      sig,
+    )
+  ) {
+    hints.push(
+      "**hydration-mismatch / infinite-loop**: check for `Date.now()` / `Math.random()` in server components, OR a Zustand selector returning a fresh object on every render.",
+    );
+  }
+  if (
+    re.networkFailures?.length > 0 &&
+    !hints.some((h) => h.includes("missing-import"))
+  ) {
+    const url = re.networkFailures[0].url;
+    hints.push(
+      `**network-failure**: the request to \`${url}\` failed. Check for a missing API route, wrong base URL, or CORS misconfig.`,
+    );
+  }
+  if (hints.length === 0) {
+    hints.push(
+      "**unknown**: review the FIRST error verbatim and inspect the screenshot to localise. Page-error stack traces (if present) usually point straight at the offending file.",
+    );
+  }
+  return { hints };
 }
 
 function orphanComponentBody(v) {
@@ -255,6 +457,182 @@ function orphanRouteBody(v) {
   return lines.join("\n");
 }
 
+// ─── feat-028 Phase 4: parityDivergenceBody template ─────────────────────
+//
+// One bug-plan per (screen, pattern) tuple — NOT one per individual
+// missing/extra/variantDrift entry. The body lists all per-pattern details
+// in a single plan so the builder can fix the cluster in one pass; the
+// per-pattern suggested-fix wording matches the pattern's typical root
+// cause (shell-stripping → wrap in AppShell; token-drift → re-bind the
+// className to the kit token; etc.).
+
+/**
+ * @param {{
+ *   screen: string,
+ *   pattern: string,
+ *   severity: "P0"|"P1"|"P2",
+ *   detail: {
+ *     missing: string[],
+ *     extra: string[],
+ *     variantDrift: { selector: string, mockupValue: string, builtValue: string }[],
+ *     styleDrift: { selector: string, property: string, mockupValue: string, builtValue: string }[],
+ *   }
+ * }} v
+ */
+function parityDivergenceBody(v) {
+  const lines = [
+    "## Description",
+    "",
+    `The built page \`/${v.screen}\` diverges from its mockup at \`docs/screens/webapp/${v.screen}.html\`. Pattern: **\`${v.pattern}\`** (severity \`${v.severity}\`).`,
+    "",
+  ];
+
+  // Per-pattern explanation
+  switch (v.pattern) {
+    case "shell-stripping":
+      lines.push(
+        "The mockup wraps page content in an `AppShell` (sidebar + topbar) but the built page renders the content as a stand-alone island. Every downstream nav-flow assertion will fail until the shell is wired in.",
+      );
+      break;
+    case "layout-regrouping":
+      lines.push(
+        "Kit primitives are present but reorganised into a different layout than the mockup specifies. Builder likely composed children differently than the mockup HTML.",
+      );
+      break;
+    case "token-drift":
+      lines.push(
+        "Computed colors, radii, or border widths drift from the mockup's token-bound values. Most often the className references an arbitrary value (`bg-[#ff0000]`) instead of the kit's tokenised utility (`bg-accent-500`).",
+      );
+      break;
+    case "copy-sizing-drift":
+      lines.push(
+        "Typography (font-family, font-size, font-weight, line-height) drifts from the mockup. Builder probably swapped a kit primitive's preset variant for a hand-rolled className.",
+      );
+      break;
+    case "spacing-token-drift":
+      lines.push(
+        "Padding, margin, or gap values drift off the kit's spacing scale. Builder likely used arbitrary Tailwind values (`p-[18px]`) instead of token-bound utilities (`p-4`).",
+      );
+      break;
+    case "identity-contract-broken":
+      lines.push(
+        "A brand identity element (logo, wordmark, brand-mark) is missing or swapped. The mockup is the contract for brand presentation; deviations leak into screenshots + visual-review.",
+      );
+      break;
+    default:
+      lines.push(
+        "Mismatch between mockup + built page that doesn't fit a known pattern; review missing/extra/drift below.",
+      );
+  }
+  lines.push("");
+
+  if (v.detail.missing.length > 0) {
+    lines.push("## Missing kit nodes");
+    lines.push("");
+    lines.push(
+      "Present in mockup, absent from built page (paths are dotted-component selectors, e.g. `AppShell[0] > Sidebar[0] > Button[2]`):",
+    );
+    lines.push("");
+    for (const sel of v.detail.missing.slice(0, 20)) lines.push(`- \`${sel}\``);
+    if (v.detail.missing.length > 20)
+      lines.push(`- … (${v.detail.missing.length - 20} more)`);
+    lines.push("");
+  }
+
+  if (v.detail.extra.length > 0) {
+    lines.push("## Extra kit nodes");
+    lines.push("");
+    lines.push("Present in built page, absent from mockup:");
+    lines.push("");
+    for (const sel of v.detail.extra.slice(0, 20)) lines.push(`- \`${sel}\``);
+    if (v.detail.extra.length > 20)
+      lines.push(`- … (${v.detail.extra.length - 20} more)`);
+    lines.push("");
+  }
+
+  if (v.detail.variantDrift.length > 0) {
+    lines.push("## Variant drift");
+    lines.push("");
+    lines.push(
+      "Same primitive in same position, but `data-kit-variant` / `data-kit-size` differs:",
+    );
+    lines.push("");
+    for (const d of v.detail.variantDrift.slice(0, 20)) {
+      lines.push(
+        `- \`${d.selector}\` — mockup: \`${d.mockupValue}\` → built: \`${d.builtValue}\``,
+      );
+    }
+    if (v.detail.variantDrift.length > 20)
+      lines.push(`- … (${v.detail.variantDrift.length - 20} more)`);
+    lines.push("");
+  }
+
+  if (v.detail.styleDrift.length > 0) {
+    lines.push("## Computed-style drift");
+    lines.push("");
+    lines.push(
+      "Curated computed-style properties differ between mockup + built page (numeric ±1px tolerance applied):",
+    );
+    lines.push("");
+    for (const d of v.detail.styleDrift.slice(0, 20)) {
+      lines.push(
+        `- \`${d.selector}\` \`${d.property}\` — mockup: \`${d.mockupValue}\` → built: \`${d.builtValue}\``,
+      );
+    }
+    if (v.detail.styleDrift.length > 20)
+      lines.push(`- … (${v.detail.styleDrift.length - 20} more)`);
+    lines.push("");
+  }
+
+  // Per-pattern fix approach
+  lines.push("## Fix approach");
+  lines.push("");
+  switch (v.pattern) {
+    case "shell-stripping":
+      lines.push(
+        `Wrap the rendered content in \`<AppShell sidebar={...} header={...}>\` from \`@repo/ui-kit\`. Pull the sidebar + topbar tree from the mockup at \`docs/screens/webapp/${v.screen}.html\` (the kit's \`AppShell\` primitive accepts \`sidebar\` + \`header\` slot props). The \`data-kit-component\` attributes on the mockup elements are the binding contract — every primitive in the mockup's shell must surface in the built page with the matching attributes.`,
+      );
+      break;
+    case "layout-regrouping":
+      lines.push(
+        `Re-shuffle the JSX so kit primitives appear in the same parent → child structure as \`docs/screens/webapp/${v.screen}.html\`. Walk the mockup's DOM, match each \`[data-kit-component]\` to a JSX import, preserve order. If a primitive in the missing/extra list has been intentionally moved per a kit-change-request, document the deviation in the feature plan rather than fixing here.`,
+      );
+      break;
+    case "token-drift":
+      lines.push(
+        `Replace arbitrary Tailwind values (\`bg-[#ff0000]\`, \`rounded-[12px]\`) with kit-token utilities (\`bg-accent-500\`, \`rounded-md\`). The kit's \`tailwind.config.ts\` exposes the full token table — the mockup's classes are the source of truth.`,
+      );
+      break;
+    case "copy-sizing-drift":
+      lines.push(
+        `Swap any hand-rolled typography classNames for the kit's pre-bound utilities (\`text-lg\` instead of \`text-[18px]\`; the kit's font scale is in \`packages/ui-kit/src/tokens/tokens.json\`). When a heading level differs, match the semantic tag (\`<h1>\` vs \`<h2>\`) AND its kit class — don't fix one without the other.`,
+      );
+      break;
+    case "spacing-token-drift":
+      lines.push(
+        `Swap arbitrary spacing values for the kit's spacing scale: \`p-4\` instead of \`p-[16px]\`, \`gap-2\` instead of \`gap-[8px]\`. The kit's spacing scale is in \`packages/ui-kit/src/tokens/tokens.json\`.`,
+      );
+      break;
+    case "identity-contract-broken":
+      lines.push(
+        `Restore the missing brand element from \`docs/asset-inventory.json\` (user-supplied) OR the mockup at \`docs/screens/webapp/${v.screen}.html\`. If a brand element was renamed/restructured, file a kit-change-request rather than fixing here.`,
+      );
+      break;
+    default:
+      lines.push(
+        `Manual review required — the divergence didn't fit a curated pattern. Reference \`docs/screens/webapp/${v.screen}.html\` as the contract.`,
+      );
+  }
+  lines.push("");
+
+  lines.push("## Validation");
+  lines.push("");
+  lines.push(
+    `Re-run \`/build-to-spec-verify\`; the parity report's \`${v.pattern}\` divergence on \`${v.screen}\` must clear (no missing/extra/drift entries).`,
+  );
+  return lines.join("\n");
+}
+
 // ─── feat-026 Phase A: bugs.yaml writer ───────────────────────────────────
 //
 // In addition to writing the standalone bug-NNN-*.md plan, the verifier
@@ -268,10 +646,13 @@ function orphanRouteBody(v) {
 
 /**
  * @param {Violation} violation
- * @returns {"reachability-orphan"|"flow-execution-failure"}
+ * @returns {"reachability-orphan"|"flow-execution-failure"|"runtime-error"|"dev-server-compile"|"visual-parity"}
  */
 function bugSourceFor(violation) {
   if (violation.kind === "flow-failure") return "flow-execution-failure";
+  if (violation.kind === "runtime-error") return "runtime-error";
+  if (violation.kind === "dev-server-compile") return "dev-server-compile";
+  if (violation.kind === "parity-divergence") return "visual-parity";
   return "reachability-orphan"; // both orphan-component + orphan-route
 }
 
@@ -304,6 +685,13 @@ function deriveAffectsFiles(violation, relatedOrphan) {
       out.push(i);
   } else if (violation.kind === "orphan-route") {
     out.push(violation.path);
+  } else if (violation.kind === "parity-divergence") {
+    // Parity bugs reference the mockup as the contract + the page-render
+    // root as the most-likely fix-site (the build-to-spec wrapper doesn't
+    // know which JSX file owns the rendered page; the builder resolves
+    // it from `data-screen-id`).
+    out.push(`docs/screens/webapp/${violation.screen}.html`);
+    out.push(`apps/web/app/**/page.tsx`);
   } else {
     if (relatedOrphan?.path) out.push(relatedOrphan.path);
     for (const i of (relatedOrphan?.suggestedImporters ?? []).slice(0, 3)) {
@@ -320,20 +708,33 @@ function buildBugEntry({
   violation,
   relatedOrphan,
   iteration,
+  dependsOnBugId,
 }) {
   const id = shortBugIdFor(planId);
   const source = bugSourceFor(violation);
   const owningFeature =
-    violation.kind === "flow-failure"
+    violation.kind === "flow-failure" ||
+    violation.kind === "runtime-error" ||
+    violation.kind === "dev-server-compile"
       ? (relatedOrphan?.owningFeature ?? null)
-      : (violation.owningFeature ?? null);
+      : violation.kind === "parity-divergence"
+        ? null // parity bugs aren't owned by a single feature — span the page render
+        : (violation.owningFeature ?? null);
+
+  // feat-028 — parity violations carry their own severity (P0 for
+  // shell-stripping, P1 for everything else). Other kinds default to P0
+  // per the verifier's "treat all integration bugs as P0 in v1" stance.
+  const severity =
+    violation.kind === "parity-divergence"
+      ? (violation.severity ?? "P0")
+      : "P0";
 
   /** @type {Record<string, any>} */
   const entry = {
     id,
     iteration,
     source,
-    severity: "P0",
+    severity,
     summary: summaryFor(violation),
     correlatedOrphanPath: relatedOrphan?.path ?? null,
     owningFeature,
@@ -351,7 +752,20 @@ function buildBugEntry({
     errorLog: [],
   };
 
-  if (violation.kind === "flow-failure") {
+  // feat-027 Phase D — surface dependsOnBugId so the bug-fix loop knows to
+  // defer this bug until the cascade root resolves. Schema-wise this is a
+  // free-form pass-through field on bugs.yaml entries (BugEntrySchema uses
+  // .strip() so unknown fields are dropped silently — extend the schema in
+  // a follow-up if we want strict validation).
+  if (dependsOnBugId) {
+    entry.dependsOnBugId = dependsOnBugId;
+  }
+
+  if (
+    violation.kind === "flow-failure" ||
+    violation.kind === "runtime-error" ||
+    violation.kind === "dev-server-compile"
+  ) {
     entry.flow = {
       id: violation.flowId,
       name: violation.flowName,
@@ -362,18 +776,42 @@ function buildBugEntry({
       screenshot: violation.screenshot ?? violation.screenshotPath ?? null,
       htmlDump: violation.html ?? violation.htmlDumpPath ?? null,
     };
-  } else if (violation.kind === "orphan-component") {
+    if (
+      violation.kind !== "flow-failure" &&
+      violation.runtimeErrors !== undefined
+    ) {
+      // feat-027 Phase D — preserve the captured runtime payload so bug-fix
+      // agents can inspect it without re-running the spec.
+      entry.runtimeErrors = violation.runtimeErrors;
+    }
+    if (violation.primaryCause !== undefined) {
+      entry.primaryCause = violation.primaryCause;
+    }
+  }
+
+  if (violation.kind === "orphan-component") {
     entry.orphan = {
       componentPath: violation.path,
       exportNames: violation.exportNames ?? [],
       suggestedImporters: violation.suggestedImporters ?? [],
     };
-  } else {
+  } else if (violation.kind === "orphan-route") {
     // orphan-route — still represent under `orphan` slot for downstream agents
     entry.orphan = {
       componentPath: violation.path,
       exportNames: [],
       suggestedImporters: violation.suggestedNavSurfaces ?? [],
+    };
+  } else if (violation.kind === "parity-divergence") {
+    // feat-028 — surface the (screen, pattern) tuple + detail counts so the
+    // bug-fix loop has enough context without re-running the verifier.
+    // Schema-wise this is a free-form pass-through field; BugEntrySchema
+    // strips unknown fields, so the loop reads it via the YAML doc rather
+    // than the parsed Zod type.
+    entry.parity = {
+      screen: violation.screen,
+      pattern: violation.pattern,
+      detail: violation.detail,
     };
   }
   return entry;
@@ -388,11 +826,57 @@ function summaryFor(violation) {
       200,
     );
   }
+  if (violation.kind === "dev-server-compile") {
+    const overlay = violation.runtimeErrors?.devServerOverlay?.rawText ?? "";
+    const head =
+      overlay.split("\n")[0]?.trim().slice(0, 120) ?? "compile error";
+    return `Dev-server compile error during ${violation.flowId}: ${head}`.slice(
+      0,
+      200,
+    );
+  }
+  if (violation.kind === "runtime-error") {
+    const re = violation.runtimeErrors ?? {
+      consoleErrors: [],
+      pageErrors: [],
+      networkFailures: [],
+    };
+    const first =
+      re.pageErrors?.[0]?.message ??
+      re.consoleErrors?.[0] ??
+      re.networkFailures?.[0]?.url ??
+      "runtime error";
+    return `Runtime error during ${violation.flowId}: ${String(first).slice(0, 140)}`.slice(
+      0,
+      200,
+    );
+  }
   if (violation.kind === "orphan-component") {
     const name =
       violation.exportNames?.[0] ??
       path.basename(violation.path, path.extname(violation.path));
     return `${name} (${violation.path}) exported but never imported in production`.slice(
+      0,
+      200,
+    );
+  }
+  if (violation.kind === "parity-divergence") {
+    // feat-028: per-(screen, pattern) tuple summary; counts the most
+    // salient detail bucket so the operator gets a one-line gist.
+    const d = violation.detail ?? {
+      missing: [],
+      extra: [],
+      variantDrift: [],
+      styleDrift: [],
+    };
+    const counts = [];
+    if (d.missing.length) counts.push(`${d.missing.length} missing`);
+    if (d.extra.length) counts.push(`${d.extra.length} extra`);
+    if (d.variantDrift.length)
+      counts.push(`${d.variantDrift.length} variantDrift`);
+    if (d.styleDrift.length) counts.push(`${d.styleDrift.length} styleDrift`);
+    const tail = counts.length ? ` (${counts.join(", ")})` : "";
+    return `Parity ${violation.pattern} on ${violation.screen}${tail}`.slice(
       0,
       200,
     );
@@ -478,7 +962,7 @@ function freshDoc({ projectDir, pipelineRunId, iteration }) {
 }
 
 /**
- * @param {{projectDir: string, violation: Violation, relatedOrphan?: OrphanViolation, pipelineRunId?: string, iteration?: number, appendToYaml?: boolean}} args
+ * @param {{projectDir: string, violation: Violation, relatedOrphan?: OrphanViolation, pipelineRunId?: string, iteration?: number, appendToYaml?: boolean, dependsOnBugId?: string}} args
  * @returns {Promise<{planId: string, planPath: string, bugYamlId?: string}>}
  */
 export async function fileBugPlan({
@@ -488,6 +972,7 @@ export async function fileBugPlan({
   pipelineRunId,
   iteration,
   appendToYaml,
+  dependsOnBugId,
 }) {
   const plansDir = path.join(projectDir, "plans");
   fs.mkdirSync(path.join(plansDir, "active"), { recursive: true });
@@ -502,7 +987,15 @@ export async function fileBugPlan({
       relatedOrphan,
       relatedOwner: relatedOrphan?.owningFeature ?? null,
       relatedImporters: relatedOrphan?.suggestedImporters ?? [],
+      dependsOnBugId,
     });
+  } else if (
+    violation.kind === "runtime-error" ||
+    violation.kind === "dev-server-compile"
+  ) {
+    body = runtimeErrorBody(violation, { dependsOnBugId });
+  } else if (violation.kind === "parity-divergence") {
+    body = parityDivergenceBody(violation);
   } else if (violation.kind === "orphan-component") {
     body = orphanComponentBody(violation);
   } else {
@@ -510,7 +1003,11 @@ export async function fileBugPlan({
   }
 
   const affected = [];
-  if (violation.kind === "flow-failure") {
+  if (
+    violation.kind === "flow-failure" ||
+    violation.kind === "runtime-error" ||
+    violation.kind === "dev-server-compile"
+  ) {
     if (relatedOrphan?.path) affected.push(relatedOrphan.path);
     if (relatedOrphan?.suggestedImporters?.[0])
       affected.push(relatedOrphan.suggestedImporters[0]);
@@ -518,17 +1015,24 @@ export async function fileBugPlan({
     affected.push(violation.path);
     if (violation.suggestedImporters?.[0])
       affected.push(violation.suggestedImporters[0]);
+  } else if (violation.kind === "parity-divergence") {
+    // Reference the mockup as the contract; the build-to-spec wrapper
+    // doesn't know which page.tsx renders the screen.
+    affected.push(`docs/screens/webapp/${violation.screen}.html`);
   } else {
     affected.push(violation.path);
   }
 
   const owningFeature =
-    violation.kind === "flow-failure"
+    violation.kind === "flow-failure" ||
+    violation.kind === "runtime-error" ||
+    violation.kind === "dev-server-compile"
       ? (relatedOrphan?.owningFeature ?? null)
-      : violation.owningFeature;
+      : violation.kind === "parity-divergence"
+        ? null
+        : violation.owningFeature;
 
-  const branch =
-    violation.kind === "flow-failure" ? `fix/${planId}` : `fix/${planId}`;
+  const branch = `fix/${planId}`;
 
   const frontmatter = [
     "---",
@@ -571,6 +1075,7 @@ export async function fileBugPlan({
       violation,
       relatedOrphan,
       iteration: iteration ?? 1,
+      dependsOnBugId,
     });
     try {
       bugYamlId = appendBugToYaml({

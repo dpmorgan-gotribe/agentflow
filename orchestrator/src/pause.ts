@@ -29,13 +29,7 @@ export function pausedStatePath(
   projectRoot: string,
   pipelineRunId: string,
 ): string {
-  return join(
-    projectRoot,
-    ".claude",
-    "state",
-    pipelineRunId,
-    "paused.json",
-  );
+  return join(projectRoot, ".claude", "state", pipelineRunId, "paused.json");
 }
 
 /** Path to orchestrator.pid for the given run. */

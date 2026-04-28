@@ -37,7 +37,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "pattern": "^bug-(flow|orphan|coverage)-[a-z0-9-]+$"
+            "pattern": "^bug-(flow|orphan|coverage|runtime|compile|parity)-[a-z0-9-]+$"
           },
           "iteration": {
             "type": "integer",
@@ -49,6 +49,9 @@
             "enum": [
               "reachability-orphan",
               "flow-execution-failure",
+              "runtime-error",
+              "dev-server-compile",
+              "visual-parity",
               "pm-coverage-omission"
             ]
           },

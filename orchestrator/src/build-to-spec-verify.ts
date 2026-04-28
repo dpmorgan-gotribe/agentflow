@@ -7,7 +7,10 @@ import {
   type FlowFailure,
   type OrphanComponent,
   type OrphanRoute,
+  type ParityVerifyOutput,
+  type ParityDivergence,
 } from "@repo/orchestrator-contracts";
+import { runParityVerify, type ParityVerifyContext } from "./parity-verify.js";
 
 /**
  * feat-022 Phase 4 — orchestrator-side wrapper for the
@@ -60,6 +63,14 @@ export interface BuildToSpecVerifyContext {
     relatedOrphan?: OrphanComponent;
     pipelineRunId?: string;
     iteration?: number;
+    /**
+     * feat-027 Phase D — when set, the bug-author tags the resulting
+     * bugs.yaml entry with `dependsOnBugId: <id>`. The bug-fix loop uses
+     * this to defer dependent timeouts until the cascade root resolves.
+     * Optional; only flow-execution-failure bugs with primaryCause:
+     * "timeout-no-evidence" carry it.
+     */
+    dependsOnBugId?: string;
   }) => Promise<{ planId: string; planPath: string; bugYamlId?: string }>;
   /**
    * feat-025 Phase 3 — test seam for the flow-execution runner. Replaces
@@ -77,6 +88,20 @@ export interface BuildToSpecVerifyContext {
    * exercise execution can opt out without supplying a stub.
    */
   executeFlows?: boolean;
+  /**
+   * feat-028 Phase 4 — when false, skip the visual-parity stage entirely.
+   * Default true. The stage is also a runtime no-op (returns ok:true,
+   * screensChecked:0) when the project has no
+   * `docs/screens/{platform}/*.html` mockups, so most callers don't need
+   * to disable it explicitly.
+   */
+  runParity?: boolean;
+  /**
+   * feat-028 Phase 4 — test seam replacing the parity-verify wrapper.
+   * Defaults to `runParityVerify` from `./parity-verify.js`. Tests stub
+   * to inject canned divergences without booting Playwright.
+   */
+  parityVerify?: (ctx: ParityVerifyContext) => Promise<ParityVerifyOutput>;
 }
 
 /**
@@ -100,10 +125,40 @@ export interface RunFlowsResult {
   warnings?: string[];
 }
 
+/**
+ * feat-028 Phase 4 — minimal serializable shape for a parity divergence
+ * the bug-author template consumes. Mirrors `ParityDivergence` from the
+ * contracts package; defined inline to avoid forcing the bug-author script
+ * (a .mjs CLI helper) to import the Zod-generated type.
+ */
+export interface ParityViolationShape {
+  screen: string;
+  pattern: string;
+  severity: "P0" | "P1" | "P2";
+  detail: {
+    missing: string[];
+    extra: string[];
+    variantDrift: {
+      selector: string;
+      mockupValue: string;
+      builtValue: string;
+    }[];
+    styleDrift: {
+      selector: string;
+      property: string;
+      mockupValue: string;
+      builtValue: string;
+    }[];
+  };
+}
+
 export type BugPlanViolation =
   | (FlowFailure & { kind: "flow-failure" })
+  | (FlowFailure & { kind: "runtime-error" })
+  | (FlowFailure & { kind: "dev-server-compile" })
   | (OrphanComponent & { kind: "orphan-component" })
-  | (OrphanRoute & { kind: "orphan-route" });
+  | (OrphanRoute & { kind: "orphan-route" })
+  | (ParityViolationShape & { kind: "parity-divergence" });
 
 /**
  * Default `runScript` implementation. Spawns `node <script> <projectDir>`
@@ -269,6 +324,7 @@ export async function runBuildToSpecVerify(
         relatedOrphan,
         pipelineRunId: prid,
         iteration: it,
+        dependsOnBugId,
       }) => {
         const specifier = `../../scripts/file-bug-plan.mjs`;
         const mod = (await import(specifier)) as unknown as {
@@ -278,6 +334,7 @@ export async function runBuildToSpecVerify(
             relatedOrphan?: OrphanComponent;
             pipelineRunId?: string;
             iteration?: number;
+            dependsOnBugId?: string;
           }) => Promise<{
             planId: string;
             planPath: string;
@@ -291,6 +348,8 @@ export async function runBuildToSpecVerify(
         if (relatedOrphan !== undefined) callArgs.relatedOrphan = relatedOrphan;
         if (prid !== undefined) callArgs.pipelineRunId = prid;
         if (it !== undefined) callArgs.iteration = it;
+        if (dependsOnBugId !== undefined)
+          callArgs.dependsOnBugId = dependsOnBugId;
         return mod.fileBugPlan(callArgs);
       });
 
@@ -299,8 +358,55 @@ export async function runBuildToSpecVerify(
     // mentions the same orphan).
     const consumedOrphanPaths = new Set<string>();
 
+    // ── feat-027 Phase D: classify failures by primaryCause ─────────────────
+    // dev-server-compile + runtime-error bugs are CASCADE ROOTS — they
+    // typically mask every downstream timeout. File them FIRST so the
+    // bugs.yaml priority sort + the bug-fix loop see them before chasing
+    // dependent failures. After they file, surface their bug IDs as a
+    // `dependsOnBugId` on any subsequent flow-execution-failure tagged
+    // with primaryCause: "timeout-no-evidence" so the loop suppresses /
+    // defers them until the cascade root resolves.
+    const cascadeRootFailures = flowsFailed.filter(
+      (f) =>
+        f.primaryCause === "dev-server-compile" ||
+        f.primaryCause === "runtime-error",
+    );
+    const dependentFailures = flowsFailed.filter(
+      (f) =>
+        f.primaryCause !== "dev-server-compile" &&
+        f.primaryCause !== "runtime-error",
+    );
+    const cascadeRootBugIds: string[] = [];
+
+    // 0. cascade-root plans (dev-server-compile + runtime-error)
+    for (const failure of cascadeRootFailures) {
+      try {
+        const kind: "runtime-error" | "dev-server-compile" =
+          failure.primaryCause === "dev-server-compile"
+            ? "dev-server-compile"
+            : "runtime-error";
+        const args: Parameters<typeof fileBugPlan>[0] = {
+          projectDir,
+          violation: {
+            ...failure,
+            kind,
+          },
+        };
+        if (ctx.pipelineRunId !== undefined)
+          args.pipelineRunId = ctx.pipelineRunId;
+        if (ctx.iteration !== undefined) args.iteration = ctx.iteration;
+        const { planId } = await fileBugPlan(args);
+        bugPlansFiled.push(planId);
+        cascadeRootBugIds.push(planId);
+      } catch (err) {
+        warnings.push(
+          `file-bug-plan failed for ${failure.primaryCause} ${failure.flowId}: ${(err as Error).message}`,
+        );
+      }
+    }
+
     // 1. flow-failure plans (consolidated with related orphan when matched)
-    for (const failure of flowsFailed) {
+    for (const failure of dependentFailures) {
       try {
         const relatedOrphan = correlateFlowFailureToOrphan(
           failure,
@@ -318,6 +424,17 @@ export async function runBuildToSpecVerify(
         if (ctx.pipelineRunId !== undefined)
           args.pipelineRunId = ctx.pipelineRunId;
         if (ctx.iteration !== undefined) args.iteration = ctx.iteration;
+        // feat-027 Phase D: dependent timeouts → tag with the FIRST cascade-
+        // root bug id so the bug-fix loop can defer them until the root fix
+        // lands. The fileBugPlan helper accepts `dependsOnBugId` as a
+        // post-construction hook (we extend it below).
+        if (
+          failure.primaryCause === "timeout-no-evidence" &&
+          cascadeRootBugIds.length > 0 &&
+          cascadeRootBugIds[0] !== undefined
+        ) {
+          args.dependsOnBugId = cascadeRootBugIds[0];
+        }
         const { planId } = await fileBugPlan(args);
         bugPlansFiled.push(planId);
       } catch (err) {
@@ -365,10 +482,61 @@ export async function runBuildToSpecVerify(
     }
   }
 
+  // ── feat-028 Phase 4: visual-parity stage ─────────────────────────────────
+  // Runs AFTER reachability + flow synthesis + flow execution. Default-on;
+  // operator can disable per-call via `runParity:false`. The stage gracefully
+  // degrades to a no-op (returns ok:true, screensChecked:0) when the project
+  // lacks `docs/screens/{platform}/*.html` mockups OR Playwright isn't
+  // installed — both cases surface as warnings, not failures.
+  let parity: ParityVerifyOutput | undefined;
+  if (ctx.runParity !== false) {
+    const parityVerify = ctx.parityVerify ?? runParityVerify;
+    try {
+      parity = await parityVerify({
+        projectDir,
+        factoryRoot,
+      });
+      for (const w of parity.warnings) warnings.push(`parity: ${w}`);
+    } catch (err) {
+      warnings.push(`parity-verify threw: ${(err as Error).message}`);
+    }
+  }
+
+  // Auto-file ONE bug per (screen, pattern) parity divergence — the
+  // divergences are already merged by `mergeByScreenPattern` inside
+  // `runParityVerify`, so each entry here maps 1:1 to a bug plan. When the
+  // operator opted out of bug-plan filing entirely (`autoFileBugPlans:false`)
+  // we still surface the divergences in the output for human review.
+  if (ctx.autoFileBugPlans !== false && parity) {
+    const fileBugPlan = ctx.fileBugPlan ?? defaultFileBugPlanResolver();
+    for (const div of parity.divergences) {
+      try {
+        const args: Parameters<typeof fileBugPlan>[0] = {
+          projectDir,
+          violation: {
+            ...divToViolation(div),
+            kind: "parity-divergence" as const,
+          } as unknown as BugPlanViolation,
+        };
+        if (ctx.pipelineRunId !== undefined)
+          args.pipelineRunId = ctx.pipelineRunId;
+        if (ctx.iteration !== undefined) args.iteration = ctx.iteration;
+        const { planId } = await fileBugPlan(args);
+        bugPlansFiled.push(planId);
+      } catch (err) {
+        warnings.push(
+          `file-bug-plan failed for parity ${div.screen}/${div.pattern}: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  const parityOk = parity ? parity.divergences.length === 0 : true;
   const ok =
     orphanComponents.length === 0 &&
     orphanRoutes.length === 0 &&
-    flows.failed.length === 0;
+    flows.failed.length === 0 &&
+    parityOk;
 
   const output: BuildToSpecVerifyOutputType = {
     ok,
@@ -379,6 +547,7 @@ export async function runBuildToSpecVerify(
       ignoredByAllowComment,
     },
     flows,
+    ...(parity ? { parity } : {}),
     bugPlansFiled,
     costUsd: 0, // v1: zero LLM dispatch
     durationMs: Date.now() - startedAt,
@@ -388,6 +557,49 @@ export async function runBuildToSpecVerify(
   // Validate before returning — guard against drift between this code +
   // the contract.
   return BuildToSpecVerifyOutput.parse(output);
+}
+
+/**
+ * feat-028 Phase 4 — fold a `ParityDivergence` into a serializable
+ * violation that `scripts/file-bug-plan.mjs#parityDivergenceBody()`
+ * understands. The result is NOT a `FlowFailure | OrphanComponent | OrphanRoute`
+ * (we cast the kind to `parity-divergence` at the call site); the
+ * type-checker accepts the cast because the bug-author dispatch table
+ * keys on `kind` and our new branch is wired in below.
+ */
+function divToViolation(div: ParityDivergence) {
+  return {
+    screen: div.screen,
+    pattern: div.pattern,
+    severity: div.severity,
+    detail: div.detail,
+  };
+}
+
+/**
+ * Resolves the default `fileBugPlan` function via dynamic import. Mirrors
+ * the inline-resolver pattern further up but extracted for the parity
+ * branch. Tests pass `ctx.fileBugPlan` directly + this resolver isn't
+ * touched.
+ */
+function defaultFileBugPlanResolver() {
+  return async (args: {
+    projectDir: string;
+    violation: BugPlanViolation;
+    relatedOrphan?: OrphanComponent;
+    pipelineRunId?: string;
+    iteration?: number;
+  }) => {
+    const specifier = `../../scripts/file-bug-plan.mjs`;
+    const mod = (await import(specifier)) as unknown as {
+      fileBugPlan: (a: typeof args) => Promise<{
+        planId: string;
+        planPath: string;
+        bugYamlId?: string;
+      }>;
+    };
+    return mod.fileBugPlan(args);
+  };
 }
 
 /**

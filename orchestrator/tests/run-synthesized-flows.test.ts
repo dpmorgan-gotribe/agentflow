@@ -394,6 +394,359 @@ describe("runSynthesizedFlows — dev server lifecycle", () => {
   });
 });
 
+// ─── feat-027 Phase B: runtime-errors attachment extraction ─────────────────
+
+describe("runSynthesizedFlows — feat-027 runtime-errors extraction", () => {
+  it("extracts runtime-errors attachment (inline body) → failure.runtimeErrors", async () => {
+    writePackageJson({ hasPlaywright: true });
+    writePlaywrightConfig();
+    writeSpec("flow-rt.spec.ts");
+
+    const runtimePayload = {
+      consoleErrors: ["Error: Foo failed"],
+      pageErrors: [
+        { message: "TypeError: x is undefined", stack: "at Foo:1:1" },
+      ],
+      networkFailures: [
+        { method: "GET", url: "/missing.css", failureText: "net::ERR_FAILED" },
+      ],
+    };
+
+    const reporterJson = JSON.stringify({
+      suites: [
+        {
+          file: "e2e/synthesized/flow-rt.spec.ts",
+          specs: [
+            {
+              title: "rt flow",
+              tests: [
+                {
+                  results: [
+                    {
+                      status: "failed",
+                      error: { message: "transition failed at step 2" },
+                      attachments: [
+                        {
+                          name: "runtime-errors",
+                          contentType: "application/json",
+                          body: JSON.stringify(runtimePayload),
+                        },
+                        {
+                          contentType: "image/png",
+                          path: "test-results/flow-rt.png",
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    let spawnCallIdx = 0;
+    const spawnFn = ((..._args: unknown[]) => {
+      spawnCallIdx += 1;
+      if (spawnCallIdx === 1) return fakeProc({ exitCode: 0 });
+      return fakeProc({ stdout: reporterJson, exitCode: 1 });
+    }) as unknown as typeof import("node:child_process").spawn;
+
+    const result = await runSynthesizedFlows({
+      projectDir,
+      spawnFn,
+      spawnSyncFn: noopSpawnSync,
+      httpGet: httpGetOk,
+      baseUrlOverride: "http://localhost:3000",
+    });
+
+    expect(result.flows.failed).toHaveLength(1);
+    const f = result.flows.failed[0];
+    expect(f.runtimeErrors).toBeDefined();
+    expect(f.runtimeErrors.consoleErrors).toEqual(["Error: Foo failed"]);
+    expect(f.runtimeErrors.pageErrors[0].message).toContain("TypeError");
+    expect(f.runtimeErrors.networkFailures[0].url).toBe("/missing.css");
+  });
+
+  it("classifies primaryCause=runtime-error when console/page/network errors present", async () => {
+    writePackageJson({ hasPlaywright: true });
+    writePlaywrightConfig();
+    writeSpec("flow-pc.spec.ts");
+
+    const runtimePayload = {
+      consoleErrors: ["Error: thing"],
+      pageErrors: [],
+      networkFailures: [],
+    };
+
+    const reporterJson = JSON.stringify({
+      suites: [
+        {
+          file: "e2e/synthesized/flow-pc.spec.ts",
+          specs: [
+            {
+              title: "pc flow",
+              tests: [
+                {
+                  results: [
+                    {
+                      status: "failed",
+                      error: { message: "transition failed step 1" },
+                      attachments: [
+                        {
+                          name: "runtime-errors",
+                          contentType: "application/json",
+                          body: JSON.stringify(runtimePayload),
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    let spawnCallIdx = 0;
+    const spawnFn = ((..._args: unknown[]) => {
+      spawnCallIdx += 1;
+      if (spawnCallIdx === 1) return fakeProc({ exitCode: 0 });
+      return fakeProc({ stdout: reporterJson, exitCode: 1 });
+    }) as unknown as typeof import("node:child_process").spawn;
+
+    const result = await runSynthesizedFlows({
+      projectDir,
+      spawnFn,
+      spawnSyncFn: noopSpawnSync,
+      httpGet: httpGetOk,
+      baseUrlOverride: "http://localhost:3000",
+    });
+
+    expect(result.flows.failed[0].primaryCause).toBe("runtime-error");
+  });
+
+  it("classifies primaryCause=dev-server-compile when devServerOverlay present (root cascade)", async () => {
+    writePackageJson({ hasPlaywright: true });
+    writePlaywrightConfig();
+    writeSpec("flow-ovl.spec.ts");
+
+    const runtimePayload = {
+      consoleErrors: ["Error: foo"], // even with other signals, overlay wins
+      pageErrors: [],
+      networkFailures: [],
+      devServerOverlay: {
+        detected: true,
+        rawText: "Module not found: Can't resolve 'X'",
+      },
+    };
+
+    const reporterJson = JSON.stringify({
+      suites: [
+        {
+          file: "e2e/synthesized/flow-ovl.spec.ts",
+          specs: [
+            {
+              title: "ovl flow",
+              tests: [
+                {
+                  results: [
+                    {
+                      status: "timedOut",
+                      error: { message: "timeout 30s" },
+                      attachments: [
+                        {
+                          name: "runtime-errors",
+                          contentType: "application/json",
+                          body: JSON.stringify(runtimePayload),
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    let spawnCallIdx = 0;
+    const spawnFn = ((..._args: unknown[]) => {
+      spawnCallIdx += 1;
+      if (spawnCallIdx === 1) return fakeProc({ exitCode: 0 });
+      return fakeProc({ stdout: reporterJson, exitCode: 1 });
+    }) as unknown as typeof import("node:child_process").spawn;
+
+    const result = await runSynthesizedFlows({
+      projectDir,
+      spawnFn,
+      spawnSyncFn: noopSpawnSync,
+      httpGet: httpGetOk,
+      baseUrlOverride: "http://localhost:3000",
+    });
+
+    expect(result.flows.failed[0].primaryCause).toBe("dev-server-compile");
+    expect(result.flows.failed[0].runtimeErrors.devServerOverlay.detected).toBe(
+      true,
+    );
+  });
+
+  it("classifies primaryCause=timeout-no-evidence when timed out + no runtime signals", async () => {
+    writePackageJson({ hasPlaywright: true });
+    writePlaywrightConfig();
+    writeSpec("flow-to.spec.ts");
+
+    const reporterJson = JSON.stringify({
+      suites: [
+        {
+          file: "e2e/synthesized/flow-to.spec.ts",
+          specs: [
+            {
+              title: "to flow",
+              tests: [
+                {
+                  results: [
+                    {
+                      status: "timedOut",
+                      error: { message: "Test timeout of 30000ms exceeded" },
+                      attachments: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    let spawnCallIdx = 0;
+    const spawnFn = ((..._args: unknown[]) => {
+      spawnCallIdx += 1;
+      if (spawnCallIdx === 1) return fakeProc({ exitCode: 0 });
+      return fakeProc({ stdout: reporterJson, exitCode: 1 });
+    }) as unknown as typeof import("node:child_process").spawn;
+
+    const result = await runSynthesizedFlows({
+      projectDir,
+      spawnFn,
+      spawnSyncFn: noopSpawnSync,
+      httpGet: httpGetOk,
+      baseUrlOverride: "http://localhost:3000",
+    });
+
+    expect(result.flows.failed[0].primaryCause).toBe("timeout-no-evidence");
+    expect(result.flows.failed[0].runtimeErrors).toBeUndefined();
+  });
+
+  it("classifies primaryCause=step-transition for synthesizer-fired assertion failures", async () => {
+    writePackageJson({ hasPlaywright: true });
+    writePlaywrightConfig();
+    writeSpec("flow-st.spec.ts");
+
+    const reporterJson = JSON.stringify({
+      suites: [
+        {
+          file: "e2e/synthesized/flow-st.spec.ts",
+          specs: [
+            {
+              title: "st flow",
+              tests: [
+                {
+                  results: [
+                    {
+                      status: "failed",
+                      error: {
+                        message:
+                          'flow-st — step 2: clicked toward "card-modal" but landed on "home" (selector: x)',
+                      },
+                      attachments: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    let spawnCallIdx = 0;
+    const spawnFn = ((..._args: unknown[]) => {
+      spawnCallIdx += 1;
+      if (spawnCallIdx === 1) return fakeProc({ exitCode: 0 });
+      return fakeProc({ stdout: reporterJson, exitCode: 1 });
+    }) as unknown as typeof import("node:child_process").spawn;
+
+    const result = await runSynthesizedFlows({
+      projectDir,
+      spawnFn,
+      spawnSyncFn: noopSpawnSync,
+      httpGet: httpGetOk,
+      baseUrlOverride: "http://localhost:3000",
+    });
+
+    expect(result.flows.failed[0].primaryCause).toBe("step-transition");
+  });
+
+  it("gracefully handles malformed runtime-errors JSON → warning + null", async () => {
+    writePackageJson({ hasPlaywright: true });
+    writePlaywrightConfig();
+    writeSpec("flow-bad.spec.ts");
+
+    const reporterJson = JSON.stringify({
+      suites: [
+        {
+          file: "e2e/synthesized/flow-bad.spec.ts",
+          specs: [
+            {
+              title: "bad flow",
+              tests: [
+                {
+                  results: [
+                    {
+                      status: "failed",
+                      error: { message: "x" },
+                      attachments: [
+                        {
+                          name: "runtime-errors",
+                          contentType: "application/json",
+                          body: "<<not json>>",
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    let spawnCallIdx = 0;
+    const spawnFn = ((..._args: unknown[]) => {
+      spawnCallIdx += 1;
+      if (spawnCallIdx === 1) return fakeProc({ exitCode: 0 });
+      return fakeProc({ stdout: reporterJson, exitCode: 1 });
+    }) as unknown as typeof import("node:child_process").spawn;
+
+    const result = await runSynthesizedFlows({
+      projectDir,
+      spawnFn,
+      spawnSyncFn: noopSpawnSync,
+      httpGet: httpGetOk,
+      baseUrlOverride: "http://localhost:3000",
+    });
+
+    expect(result.flows.failed[0].runtimeErrors).toBeUndefined();
+    expect(result.warnings.join(" ")).toContain("runtime-errors");
+  });
+});
+
 describe("runSynthesizedFlows — JSON reporter parsing edge cases", () => {
   it("handles empty/non-JSON stdout gracefully", async () => {
     writePackageJson({ hasPlaywright: true });

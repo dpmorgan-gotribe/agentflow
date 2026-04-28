@@ -60,6 +60,7 @@ ls projects/<name>/.claude/state/*/paused.json 2>/dev/null
 paused runs found — resuming most recent)`.
 
 Set:
+
 - `runIdDir = projects/<name>/.claude/state/<runId>`
 - `pausedPath = $runIdDir/paused.json`
 - `progressPath = $runIdDir/feature-graph-progress.json`
@@ -109,20 +110,28 @@ Investigate the diff or re-run with --ignore-master-drift to override.`.
 For each entry in `progress.inFlight[]`, inspect its worktree at
 `projects/<name>/.claude/worktrees/<worktree>/`:
 
-| Worktree state | Action | Recovery class |
-|---|---|---|
-| Directory missing | Mark feature as failed → next orchestrator pass treats it as fresh | `orphaned` |
-| Branch DOESN'T exist anymore (`git rev-parse <branch>` fails) | Mark feature aborted → surface to operator | `aborted` |
-| Worktree clean (`git status --porcelain` empty) | Resume from `nextAgent` (or close-feature when nextAgent=null) | `clean` |
-| Worktree dirty + `lastAgent ∈ {backend-builder, web-frontend-builder, mobile-frontend-builder}` | Soft-reset (`git reset --hard <branch>`) → retry from `lastAgent` | `dirty-builder` |
-| Worktree dirty + `lastAgent ∈ {tester, reviewer}` | Stage + commit (`git add -A && git commit -m '<lastAgent>: resume snapshot'`) → advance to `nextAgent` | `dirty-meta` |
+| Worktree state                                                                                  | Action                                                                                                 | Recovery class  |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------- |
+| Directory missing                                                                               | Mark feature as failed → next orchestrator pass treats it as fresh                                     | `orphaned`      |
+| Branch DOESN'T exist anymore (`git rev-parse <branch>` fails)                                   | Mark feature aborted → surface to operator                                                             | `aborted`       |
+| Worktree clean (`git status --porcelain` empty)                                                 | Resume from `nextAgent` (or close-feature when nextAgent=null)                                         | `clean`         |
+| Worktree dirty + `lastAgent ∈ {backend-builder, web-frontend-builder, mobile-frontend-builder}` | Soft-reset (`git reset --hard <branch>`) → retry from `lastAgent`                                      | `dirty-builder` |
+| Worktree dirty + `lastAgent ∈ {tester, reviewer}`                                               | Stage + commit (`git add -A && git commit -m '<lastAgent>: resume snapshot'`) → advance to `nextAgent` | `dirty-meta`    |
 
 Build a `recoveryPlan[]` array with one entry per in-flight feature:
 
 ```json
 [
-  { "featureId": "feat-filters", "class": "clean", "action": "advance to tester" },
-  { "featureId": "feat-search",  "class": "dirty-builder", "action": "soft-reset + retry web-frontend-builder" }
+  {
+    "featureId": "feat-filters",
+    "class": "clean",
+    "action": "advance to tester"
+  },
+  {
+    "featureId": "feat-search",
+    "class": "dirty-builder",
+    "action": "soft-reset + retry web-frontend-builder"
+  }
 ]
 ```
 
@@ -212,9 +221,7 @@ successfully, NOT whether the orchestrator's own run completed.
   "runId": "<runId>",
   "preview": false,
   "pauseReason": "<reason>",
-  "recovered": [
-    { "featureId": "feat-x", "class": "clean", "ok": true }
-  ],
+  "recovered": [{ "featureId": "feat-x", "class": "clean", "ok": true }],
   "deleted": ["projects/<name>/.claude/state/<runId>/paused.json"],
   "dispatched": "pnpm --filter orchestrator start generate <name> --resume-feature-graph --pipeline-run-id <runId>",
   "warnings": [],

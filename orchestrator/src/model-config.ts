@@ -267,9 +267,7 @@ export function readStallTimeoutMode(
     opts?.projectPath ?? join(projectRoot, ".claude", "models.yaml");
   const globalCfg = loadYaml(globalPath);
   const projectCfg = loadYaml(projectPath);
-  return (
-    projectCfg.stallTimeoutMode ?? globalCfg.stallTimeoutMode ?? "lenient"
-  );
+  return projectCfg.stallTimeoutMode ?? globalCfg.stallTimeoutMode ?? "lenient";
 }
 
 /**

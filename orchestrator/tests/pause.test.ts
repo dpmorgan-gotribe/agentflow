@@ -6,7 +6,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { mkdirSync } from "node:fs";
-import type { Feature, GitAgentOutput, TasksV2 } from "@repo/orchestrator-contracts";
+import type {
+  Feature,
+  GitAgentOutput,
+  TasksV2,
+} from "@repo/orchestrator-contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BudgetTracker } from "../src/budget-tracker.js";
 import {
@@ -242,7 +246,11 @@ const happyInvoke: InvokeAgentFn = async (args) => {
   if (args.agent === "git-agent") {
     const output: GitAgentOutput =
       args.gitOp?.op === "checkout-feature"
-        ? { ...checkoutOk, featureId: args.featureContext.id, branch: args.featureContext.branch }
+        ? {
+            ...checkoutOk,
+            featureId: args.featureContext.id,
+            branch: args.featureContext.branch,
+          }
         : { ...closeOk, featureId: args.featureContext.id };
     return { taskStatus: {}, errors: {}, gitAgentOutput: output, costUsd: 0 };
   }

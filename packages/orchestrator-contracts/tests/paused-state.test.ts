@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  PauseReason,
-  PausedStateSchema,
-} from "../src/paused-state.js";
+import { PauseReason, PausedStateSchema } from "../src/paused-state.js";
 
 describe("PauseReason — accepted enum values", () => {
   it("accepts all v1 trigger reasons", () => {

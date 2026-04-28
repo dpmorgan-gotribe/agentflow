@@ -274,8 +274,14 @@ async function preFlightSnapshot(opts: {
   commitMessage: string;
   dirtyWarn: string;
 }): Promise<PreFlightSnapshotResult> {
-  const { projectRoot, execGit, callerLabel, featureId, commitMessage, dirtyWarn } =
-    opts;
+  const {
+    projectRoot,
+    execGit,
+    callerLabel,
+    featureId,
+    commitMessage,
+    dirtyWarn,
+  } = opts;
   try {
     const status = await execGit("git status --porcelain", projectRoot);
     if (status.stdout.trim() === "") {

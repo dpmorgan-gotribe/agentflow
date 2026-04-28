@@ -2,9 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   BuildToSpecVerifyOutput,
   BuildToSpecVerifyOutputJsonSchema,
+  DevServerOverlay,
   FlowFailure,
+  FlowPrimaryCause,
   OrphanComponent,
   OrphanRoute,
+  RuntimeErrors,
+  RuntimeNetworkFailure,
+  RuntimePageError,
 } from "../src/build-to-spec-verify.js";
 
 const validOk: typeof BuildToSpecVerifyOutput._type = {
@@ -297,5 +302,166 @@ describe("BuildToSpecVerifyOutputJsonSchema (Zod-generated)", () => {
     expect(props.costUsd).toBeDefined();
     expect(props.durationMs).toBeDefined();
     expect(props.warnings).toBeDefined();
+  });
+});
+
+// ─── feat-027 Phase C — runtime-error capture schema ────────────────────────
+
+describe("RuntimePageError (feat-027)", () => {
+  it("accepts a happy-path message + stack", () => {
+    const parsed = RuntimePageError.parse({
+      message: "TypeError: Cannot read property 'foo' of undefined",
+      stack: "TypeError: Cannot read…\n  at Object.<anonymous> (foo.js:42:1)",
+    });
+    expect(parsed.message).toContain("TypeError");
+    expect(parsed.stack).toContain("at Object");
+  });
+
+  it("accepts message-only (stack omitted)", () => {
+    const parsed = RuntimePageError.parse({ message: "Something broke" });
+    expect(parsed.stack).toBeUndefined();
+  });
+
+  it("rejects empty message", () => {
+    expect(() => RuntimePageError.parse({ message: "" })).toThrow();
+  });
+});
+
+describe("RuntimeNetworkFailure (feat-027)", () => {
+  it("accepts a happy-path failed request", () => {
+    const parsed = RuntimeNetworkFailure.parse({
+      method: "GET",
+      url: "/api/missing",
+      failureText: "net::ERR_FILE_NOT_FOUND",
+    });
+    expect(parsed.method).toBe("GET");
+    expect(parsed.failureText).toContain("ERR_FILE_NOT_FOUND");
+  });
+
+  it("rejects empty url", () => {
+    expect(() =>
+      RuntimeNetworkFailure.parse({
+        method: "GET",
+        url: "",
+        failureText: "x",
+      }),
+    ).toThrow();
+  });
+});
+
+describe("DevServerOverlay (feat-027)", () => {
+  it("accepts a happy-path overlay payload", () => {
+    const parsed = DevServerOverlay.parse({
+      detected: true,
+      rawText:
+        "Module not found: Can't resolve '../../packages/ui-kit/src/styles/globals.css'",
+    });
+    expect(parsed.detected).toBe(true);
+    expect(parsed.rawText).toContain("Module not found");
+  });
+
+  it("rejects empty rawText", () => {
+    expect(() =>
+      DevServerOverlay.parse({ detected: true, rawText: "" }),
+    ).toThrow();
+  });
+});
+
+describe("RuntimeErrors (feat-027)", () => {
+  it("defaults all arrays to [] when omitted", () => {
+    const parsed = RuntimeErrors.parse({});
+    expect(parsed.consoleErrors).toEqual([]);
+    expect(parsed.pageErrors).toEqual([]);
+    expect(parsed.networkFailures).toEqual([]);
+    expect(parsed.devServerOverlay).toBeUndefined();
+  });
+
+  it("accepts a fully-populated payload + dev-server overlay", () => {
+    const parsed = RuntimeErrors.parse({
+      consoleErrors: ["Error: Foo failed"],
+      pageErrors: [{ message: "TypeError x" }],
+      networkFailures: [{ method: "GET", url: "/a.css", failureText: "404" }],
+      devServerOverlay: { detected: true, rawText: "compile error" },
+    });
+    expect(parsed.consoleErrors).toHaveLength(1);
+    expect(parsed.pageErrors).toHaveLength(1);
+    expect(parsed.networkFailures).toHaveLength(1);
+    expect(parsed.devServerOverlay?.detected).toBe(true);
+  });
+});
+
+describe("FlowPrimaryCause (feat-027)", () => {
+  it("accepts the four documented values", () => {
+    expect(FlowPrimaryCause.parse("step-transition")).toBe("step-transition");
+    expect(FlowPrimaryCause.parse("runtime-error")).toBe("runtime-error");
+    expect(FlowPrimaryCause.parse("dev-server-compile")).toBe(
+      "dev-server-compile",
+    );
+    expect(FlowPrimaryCause.parse("timeout-no-evidence")).toBe(
+      "timeout-no-evidence",
+    );
+  });
+
+  it("rejects unknown values", () => {
+    expect(() => FlowPrimaryCause.parse("flake")).toThrow();
+  });
+});
+
+describe("FlowFailure with feat-027 runtime-error fields", () => {
+  it("accepts FlowFailure with runtimeErrors + primaryCause populated", () => {
+    const parsed = FlowFailure.parse({
+      ...validFlowFailure,
+      primaryCause: "runtime-error",
+      runtimeErrors: {
+        consoleErrors: ["Error: Foo"],
+        pageErrors: [
+          { message: "ReferenceError: x is not defined", stack: "at A:1:1" },
+        ],
+        networkFailures: [
+          {
+            method: "GET",
+            url: "/missing.css",
+            failureText: "net::ERR_FILE_NOT_FOUND",
+          },
+        ],
+      },
+    });
+    expect(parsed.primaryCause).toBe("runtime-error");
+    expect(parsed.runtimeErrors?.consoleErrors).toEqual(["Error: Foo"]);
+    expect(parsed.runtimeErrors?.pageErrors[0]?.message).toContain(
+      "ReferenceError",
+    );
+  });
+
+  it("accepts FlowFailure with dev-server overlay → primaryCause: dev-server-compile", () => {
+    const parsed = FlowFailure.parse({
+      ...validFlowFailure,
+      primaryCause: "dev-server-compile",
+      runtimeErrors: {
+        consoleErrors: [],
+        pageErrors: [],
+        networkFailures: [],
+        devServerOverlay: {
+          detected: true,
+          rawText: "Module not found: Can't resolve 'foo'",
+        },
+      },
+    });
+    expect(parsed.runtimeErrors?.devServerOverlay?.detected).toBe(true);
+  });
+
+  it("accepts FlowFailure WITHOUT runtimeErrors / primaryCause (back-compat)", () => {
+    const parsed = FlowFailure.parse(validFlowFailure);
+    expect(parsed.runtimeErrors).toBeUndefined();
+    expect(parsed.primaryCause).toBeUndefined();
+  });
+
+  it("rejects unknown primaryCause value", () => {
+    expect(() =>
+      FlowFailure.parse({
+        ...validFlowFailure,
+        primaryCause: "made-up-cause",
+      }),
+    ).toThrow();
   });
 });

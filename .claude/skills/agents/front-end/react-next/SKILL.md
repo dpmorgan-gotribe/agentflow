@@ -113,6 +113,56 @@ The mockup's `<body data-screen-id="...">` (see screens skill §4e.1) is the sou
 - **Per-segment layouts.** A layout at `app/(app)/layout.tsx` wraps everything under that group; puts shared chrome (sidebar, header) in one place.
 - **tRPC for API.** Mutations + queries via `@repo/api-client` hooks in client components; direct tRPC caller in server components for streaming initial data.
 - **`@repo/ui-kit` is the ONLY component source.** Never inline a `<Button>` — import from `@repo/ui-kit`. Kit primitives carry their own `data-kit-*` attributes from HTML translation; builders must preserve those attrs when converting screens.
+
+### 2a. HTML → JSX translation: `data-kit-*` pass-through (feat-028 visual-parity contract)
+
+When translating a screen mockup at `docs/screens/webapp/{screen-id}.html` into a React page (`apps/web/app/**/page.tsx` + supporting `apps/web/components/**`), every `data-kit-*` attribute on the source HTML element MUST survive translation.
+
+The mapping is mechanical:
+
+```html
+<!-- Mockup source -->
+<button
+  data-kit-component="Button"
+  data-kit-variant="primary"
+  data-kit-size="md"
+>
+  Save
+</button>
+```
+
+```tsx
+// Translated JSX — kit primitive forwards the attrs back via Phase 0 retrofit
+import { Button } from "@repo/ui-kit";
+
+<Button variant="primary" size="md">
+  Save
+</Button>;
+```
+
+The kit's `<Button>` primitive (per `/stylesheet` §9e) emits `data-kit-component="Button" data-kit-variant="primary" data-kit-size="md"` on its rendered root, restoring the contract. The same logic applies to AppShell + Sidebar + every other primitive — the mockup is the authority for which kit components compose the screen + how they nest.
+
+**Critical: do NOT strip the AppShell wrapper.** When the mockup wraps page content in `<div data-kit-component="AppShell">…<aside data-kit-component="Sidebar">…</aside>…</div>`, the React render MUST emit:
+
+```tsx
+<AppShell sidebar={<Sidebar>…</Sidebar>} header={<TopBar>…</TopBar>}>
+  {/* page content */}
+</AppShell>
+```
+
+Stripping the shell is the dominant divergence pattern investigate-009 catalogued — the post-build `/build-to-spec-verify` parity stage (feat-028) flags it as `shell-stripping` (P0) + auto-files a bug plan with a per-pattern fix template.
+
+### 2b. Self-verify: kit-attribute presence
+
+Before returning `taskStatus: "completed"`, run a quick presence check on the feature's authored components — emit a warning (NOT a failure; the kit primitives themselves emit the attrs at render-time, so source-grep is best-effort) when the count of `data-kit-component` references in the diff is suspiciously low:
+
+```bash
+# From the worktree root, after authoring:
+grep -rE "data-kit-component" apps/web/src apps/web/components apps/web/app 2>/dev/null | wc -l
+```
+
+A count of 0 in a feature whose mockups DO use kit primitives is a strong signal that the translation pass dropped the attributes — re-check each `page.tsx` against its mockup. The actual contract enforcement happens in `/build-to-spec-verify`'s parity stage which renders the built page + diffs against the mockup HTML; this self-verify only catches the most-egregious omissions before the orchestrator gets there.
+
 - **`cn()` from `@repo/ui-kit/lib/cn`** for className composition — not `clsx` directly, not hand-concatenated strings. Consistent merging of Tailwind class conflicts via `tailwind-merge`.
 - **Forms: React Hook Form + Zod.** Import Zod schemas from `@repo/types`; use `zodResolver`. Never re-declare the schema in the component.
 - **Loading + error UI** via `loading.tsx` + `error.tsx` co-located with each `page.tsx`. Use kit's `Skeleton` for loading.

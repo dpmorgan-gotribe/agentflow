@@ -215,4 +215,85 @@ describe("defaultAgentSequenceForSource", () => {
       "reviewer",
     ]);
   });
+
+  // ── feat-027 — runtime-error / dev-server-compile sources ────────────────
+  it("returns the same builder sequence for runtime-error + dev-server-compile (feat-027)", () => {
+    expect(defaultAgentSequenceForSource("runtime-error")).toEqual([
+      "web-frontend-builder",
+      "tester",
+      "reviewer",
+    ]);
+    expect(defaultAgentSequenceForSource("dev-server-compile")).toEqual([
+      "web-frontend-builder",
+      "tester",
+      "reviewer",
+    ]);
+  });
+});
+
+// ─── feat-027 — BugSourceSchema enum extensions + bug-id grammar ────────────
+
+describe("BugSourceSchema (feat-027 additions)", () => {
+  it("accepts the new runtime-error + dev-server-compile values", () => {
+    const runtimeEntry = BugEntrySchema.parse({
+      ...validOrphanEntry,
+      id: "bug-runtime-flow-1",
+      source: "runtime-error",
+    });
+    expect(runtimeEntry.source).toBe("runtime-error");
+    const compileEntry = BugEntrySchema.parse({
+      ...validOrphanEntry,
+      id: "bug-compile-flow-1",
+      source: "dev-server-compile",
+    });
+    expect(compileEntry.source).toBe("dev-server-compile");
+  });
+
+  it("preserves the original enum values (back-compat)", () => {
+    expect(() =>
+      BugEntrySchema.parse({
+        ...validOrphanEntry,
+        source: "reachability-orphan",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      BugEntrySchema.parse({
+        ...validFlowEntry,
+        source: "flow-execution-failure",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      BugEntrySchema.parse({
+        ...validOrphanEntry,
+        source: "pm-coverage-omission",
+      }),
+    ).not.toThrow();
+  });
+
+  it("accepts bug-runtime-* + bug-compile-* id prefixes", () => {
+    const runtimeBug = BugEntrySchema.parse({
+      ...validOrphanEntry,
+      id: "bug-runtime-board-load-fail",
+      source: "runtime-error",
+    });
+    expect(runtimeBug.id).toBe("bug-runtime-board-load-fail");
+    const compileBug = BugEntrySchema.parse({
+      ...validOrphanEntry,
+      id: "bug-compile-css-import-order",
+      source: "dev-server-compile",
+    });
+    expect(compileBug.id).toBe("bug-compile-css-import-order");
+  });
+
+  it("rejects malformed runtime/compile bug ids", () => {
+    expect(() =>
+      BugEntrySchema.parse({
+        ...validOrphanEntry,
+        id: "bug-runtime-Bad_Id",
+      }),
+    ).toThrow();
+    expect(() =>
+      BugEntrySchema.parse({ ...validOrphanEntry, id: "bug-compile-" }),
+    ).toThrow();
+  });
 });

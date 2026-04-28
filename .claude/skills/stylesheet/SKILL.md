@@ -493,6 +493,31 @@ Primitives outside both rosters (Toast, Accordion, Slider, Switch, Tooltip) are 
 - **Tests per primitive**: at minimum 3 cases — renders with canonical props, applies variant-class changes, carries expected a11y attribute. Use `@testing-library/react` + `@testing-library/jest-dom` matchers. Mock `next/navigation` + external modules only at the app boundary, not in the kit.
 - **Dark-mode support**: the kit's `tokens.css` defines a `.dark` selector block with the inverted palette. Primitives read CSS vars, so dark-mode works automatically — test does NOT need to exercise both modes; the visual-review stage handles that.
 - **Version bump** — first successful primitive-shipping run bumps `package.json.version` from `0.1.0-tokens-only` to `0.2.0-primitives` (semver minor per "new primitive surface" per the versioning policy below).
+- **`data-kit-*` attribute pass-through (feat-028 visual-parity contract — LOAD-BEARING)** — every primitive's root element MUST emit:
+  - `data-kit-component="<Name>"` — hard-coded inside the primitive (e.g. `<button data-kit-component="Button" {...props}>`); never derived from a prop
+  - `data-kit-variant={variant}` — forwarded from the primitive's `variant` prop (when present)
+  - `data-kit-size={size}` — forwarded from the primitive's `size` prop (when present)
+  - `data-kit-props={JSON.stringify(otherKitProps)}` — optional; emit only when the primitive accepts a non-trivial structural prop (`AppShell`'s `sidebar` slot, `Tabs`'s `orientation`) that the verifier should compare. Keep payloads small (under 200 chars).
+
+  The visual-parity verifier (`/build-to-spec-verify`'s feat-028 stage) extracts these attributes from BOTH the mockup HTML and the rendered built page, then diffs the resulting kit-skeleton trees. Without the attributes, the differ has no structural signal and the verifier degrades to a no-op — every shipped project after feat-028 must preserve them.
+
+  Per-primitive test should assert presence:
+
+  ```tsx
+  test("forwards data-kit-* attributes", () => {
+    render(
+      <Button variant="primary" size="md">
+        Save
+      </Button>,
+    );
+    const btn = screen.getByRole("button");
+    expect(btn).toHaveAttribute("data-kit-component", "Button");
+    expect(btn).toHaveAttribute("data-kit-variant", "primary");
+    expect(btn).toHaveAttribute("data-kit-size", "md");
+  });
+  ```
+
+  When extending the kit (kit-bump or follow-on primitive), preserve this contract — `/skills-audit --scope=build` will warn if a new primitive ships without the three core attributes.
 
 #### 9f. Public barrel (`src/index.ts`)
 

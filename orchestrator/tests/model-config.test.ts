@@ -313,7 +313,10 @@ describe("readModelConfig — stallTimeoutMs (feat-024 Phase B)", () => {
       globalPath,
       `defaults:\n  build: claude-sonnet-4-6\nagents:\n  reviewer: { tier: build }\n`,
     );
-    const cfg = readModelConfig("reviewer", tmpDir, { globalPath, projectPath });
+    const cfg = readModelConfig("reviewer", tmpDir, {
+      globalPath,
+      projectPath,
+    });
     expect(cfg.stallTimeoutMs).toBe(10 * 60 * 1000);
   });
 
@@ -334,10 +337,7 @@ describe("readModelConfig — stallTimeoutMs (feat-024 Phase B)", () => {
       globalPath,
       `defaults:\n  build: claude-sonnet-4-6\nagents:\n  tester: { tier: build }\n`,
     );
-    writeFileSync(
-      projectPath,
-      `stallTimeoutMs:\n  tester: 60000\n`,
-    );
+    writeFileSync(projectPath, `stallTimeoutMs:\n  tester: 60000\n`);
     const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
     expect(cfg.stallTimeoutMs).toBe(60_000);
   });
@@ -360,10 +360,7 @@ describe("readModelConfig — stallTimeoutMs (feat-024 Phase B)", () => {
       globalPath,
       `defaults:\n  build: claude-sonnet-4-6\nagents:\n  tester: { tier: build }\n`,
     );
-    writeFileSync(
-      projectPath,
-      `agents:\n  tester: { stallTimeoutMs: null }\n`,
-    );
+    writeFileSync(projectPath, `agents:\n  tester: { stallTimeoutMs: null }\n`);
     const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
     expect(cfg.stallTimeoutMs).toBeNull();
   });
@@ -372,25 +369,25 @@ describe("readModelConfig — stallTimeoutMs (feat-024 Phase B)", () => {
 describe("readStallTimeoutMode (feat-024 Phase C)", () => {
   it("defaults to 'lenient'", () => {
     writeFileSync(globalPath, `defaults: {}\n`);
-    expect(
-      readStallTimeoutMode(tmpDir, { globalPath, projectPath }),
-    ).toBe("lenient");
+    expect(readStallTimeoutMode(tmpDir, { globalPath, projectPath })).toBe(
+      "lenient",
+    );
   });
 
   it("reads 'strict' from project YAML", () => {
     writeFileSync(globalPath, `defaults: {}\n`);
     writeFileSync(projectPath, `stallTimeoutMode: strict\n`);
-    expect(
-      readStallTimeoutMode(tmpDir, { globalPath, projectPath }),
-    ).toBe("strict");
+    expect(readStallTimeoutMode(tmpDir, { globalPath, projectPath })).toBe(
+      "strict",
+    );
   });
 
   it("project overrides global", () => {
     writeFileSync(globalPath, `stallTimeoutMode: strict\n`);
     writeFileSync(projectPath, `stallTimeoutMode: lenient\n`);
-    expect(
-      readStallTimeoutMode(tmpDir, { globalPath, projectPath }),
-    ).toBe("lenient");
+    expect(readStallTimeoutMode(tmpDir, { globalPath, projectPath })).toBe(
+      "lenient",
+    );
   });
 });
 

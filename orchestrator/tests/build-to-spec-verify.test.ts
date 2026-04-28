@@ -495,3 +495,505 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
     expect(result.warnings.join(" ")).toContain("spawn ENOENT");
   });
 });
+
+// ─── feat-027 Phase D — runtime-error / dev-server-compile routing ──────────
+
+describe("runBuildToSpecVerify — feat-027 cascade-root routing", () => {
+  it("files dev-server-compile bug FIRST and tags dependent timeouts with dependsOnBugId", async () => {
+    /** @type {Array<{kind: string, dependsOnBugId?: string}>} */
+    const filed: Array<{ kind: string; dependsOnBugId?: string }> = [];
+    let seq = 0;
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) =>
+        script.includes("audit-app-reachability")
+          ? stubReachOk()
+          : stubSynthOk(),
+      runFlows: async () => ({
+        ok: false,
+        flows: {
+          passed: [],
+          failed: [
+            {
+              flowId: "flow-1",
+              flowName: "Sign in",
+              step: 0,
+              fromScreenId: "(entry)",
+              expectedScreenId: "home",
+              actualScreenId: null,
+              selector: null,
+              screenshotPath: null,
+              htmlDumpPath: null,
+              message: "Test timeout 30000ms exceeded",
+              primaryCause: "timeout-no-evidence",
+            },
+            {
+              flowId: "flow-2",
+              flowName: "View board",
+              step: 0,
+              fromScreenId: "(entry)",
+              expectedScreenId: "board",
+              actualScreenId: null,
+              selector: null,
+              screenshotPath: null,
+              htmlDumpPath: null,
+              message: "Test timeout 30000ms exceeded",
+              primaryCause: "timeout-no-evidence",
+            },
+            {
+              flowId: "flow-3",
+              flowName: "Edit card",
+              step: 1,
+              fromScreenId: "home",
+              expectedScreenId: "card-modal",
+              actualScreenId: null,
+              selector: null,
+              screenshotPath: "test-results/flow-3.png",
+              htmlDumpPath: null,
+              message: "Test timeout 30000ms exceeded",
+              primaryCause: "dev-server-compile",
+              runtimeErrors: {
+                consoleErrors: [],
+                pageErrors: [],
+                networkFailures: [],
+                devServerOverlay: {
+                  detected: true,
+                  rawText: "Module not found: Can't resolve '../../foo.css'",
+                },
+              },
+            },
+          ],
+          skipped: [],
+        },
+        warnings: [],
+      }),
+      fileBugPlan: async ({ violation, dependsOnBugId }) => {
+        seq += 1;
+        const planId = `bug-${String(seq).padStart(3, "0")}-${violation.kind}-stub`;
+        filed.push({
+          kind: violation.kind,
+          ...(dependsOnBugId !== undefined && { dependsOnBugId }),
+        });
+        return { planId, planPath: `/tmp/${planId}.md` };
+      },
+    });
+    expect(result.ok).toBe(false);
+    // Cascade root files FIRST
+    expect(filed[0]!.kind).toBe("dev-server-compile");
+    expect(filed[0]!.dependsOnBugId).toBeUndefined();
+    // Dependent timeouts file SECOND + THIRD with dependsOnBugId set
+    expect(filed.slice(1).every((f) => f.kind === "flow-failure")).toBe(true);
+    expect(filed[1]!.dependsOnBugId).toBe("bug-001-dev-server-compile-stub");
+    expect(filed[2]!.dependsOnBugId).toBe("bug-001-dev-server-compile-stub");
+  });
+
+  it("files runtime-error bug FIRST when no dev-server overlay", async () => {
+    /** @type {string[]} */
+    const filed: string[] = [];
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) =>
+        script.includes("audit-app-reachability")
+          ? stubReachOk()
+          : stubSynthOk(),
+      runFlows: async () => ({
+        ok: false,
+        flows: {
+          passed: [],
+          failed: [
+            {
+              flowId: "flow-2",
+              flowName: "Late",
+              step: 1,
+              fromScreenId: "home",
+              expectedScreenId: "board",
+              actualScreenId: "home",
+              selector: "[data-x]",
+              screenshotPath: null,
+              htmlDumpPath: null,
+              message: "step 1 failed",
+              primaryCause: "step-transition",
+            },
+            {
+              flowId: "flow-1",
+              flowName: "Boot",
+              step: 0,
+              fromScreenId: "(entry)",
+              expectedScreenId: "home",
+              actualScreenId: null,
+              selector: null,
+              screenshotPath: null,
+              htmlDumpPath: null,
+              message: "step 1 failed; runtime errors present",
+              primaryCause: "runtime-error",
+              runtimeErrors: {
+                consoleErrors: ["Error: Maximum update depth exceeded"],
+                pageErrors: [],
+                networkFailures: [],
+              },
+            },
+          ],
+          skipped: [],
+        },
+        warnings: [],
+      }),
+      fileBugPlan: async ({ violation }) => {
+        const planId = `bug-${violation.kind}-stub`;
+        filed.push(planId);
+        return { planId, planPath: "/tmp/x" };
+      },
+    });
+    expect(result.ok).toBe(false);
+    // First filed = runtime-error (cascade root)
+    expect(filed[0]).toBe("bug-runtime-error-stub");
+    // Second = step-transition (dependent flow-failure, no dependsOn since
+    // this isn't a timeout-no-evidence)
+    expect(filed[1]).toBe("bug-flow-failure-stub");
+  });
+
+  it("does NOT tag dependsOnBugId on step-transition failures (only timeout-no-evidence)", async () => {
+    /** @type {Array<{kind: string, dependsOnBugId?: string}>} */
+    const filed: Array<{ kind: string; dependsOnBugId?: string }> = [];
+    await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) =>
+        script.includes("audit-app-reachability")
+          ? stubReachOk()
+          : stubSynthOk(),
+      runFlows: async () => ({
+        ok: false,
+        flows: {
+          passed: [],
+          failed: [
+            {
+              flowId: "flow-1",
+              flowName: "x",
+              step: 1,
+              fromScreenId: "a",
+              expectedScreenId: "b",
+              actualScreenId: "c",
+              selector: "[d]",
+              screenshotPath: null,
+              htmlDumpPath: null,
+              message: "synth assertion fired",
+              primaryCause: "step-transition",
+            },
+            {
+              flowId: "flow-2",
+              flowName: "y",
+              step: 0,
+              fromScreenId: "(entry)",
+              expectedScreenId: "home",
+              actualScreenId: null,
+              selector: null,
+              screenshotPath: null,
+              htmlDumpPath: null,
+              message: "runtime err",
+              primaryCause: "runtime-error",
+              runtimeErrors: {
+                consoleErrors: ["Error: a"],
+                pageErrors: [],
+                networkFailures: [],
+              },
+            },
+          ],
+          skipped: [],
+        },
+        warnings: [],
+      }),
+      fileBugPlan: async ({ violation, dependsOnBugId }) => {
+        filed.push({
+          kind: violation.kind,
+          ...(dependsOnBugId !== undefined && { dependsOnBugId }),
+        });
+        return { planId: `bug-${violation.kind}`, planPath: "" };
+      },
+    });
+    // First entry = runtime-error (cascade root, no dependsOn)
+    expect(filed[0]!.kind).toBe("runtime-error");
+    expect(filed[0]!.dependsOnBugId).toBeUndefined();
+    // Second entry = step-transition (NOT timeout-no-evidence, so no dependsOn)
+    expect(filed[1]!.kind).toBe("flow-failure");
+    expect(filed[1]!.dependsOnBugId).toBeUndefined();
+  });
+
+  it("preserves existing flow-failure routing when no cascade-root failures present", async () => {
+    /** @type {string[]} */
+    const filed: string[] = [];
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) =>
+        script.includes("audit-app-reachability")
+          ? stubReachOk()
+          : stubSynthOk(),
+      runFlows: async () => ({
+        ok: false,
+        flows: {
+          passed: [],
+          failed: [
+            {
+              flowId: "flow-1",
+              flowName: "x",
+              step: 2,
+              fromScreenId: "a",
+              expectedScreenId: "b",
+              actualScreenId: "a",
+              selector: "[d]",
+              screenshotPath: null,
+              htmlDumpPath: null,
+              message: "synth fail",
+              primaryCause: "step-transition",
+            },
+          ],
+          skipped: [],
+        },
+        warnings: [],
+      }),
+      fileBugPlan: async ({ violation }) => {
+        const planId = `bug-${violation.kind}`;
+        filed.push(planId);
+        return { planId, planPath: "" };
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(filed).toEqual(["bug-flow-failure"]);
+  });
+});
+
+// ─── feat-028 Phase 4 — parity-verify integration ──────────────────────────
+
+describe("runBuildToSpecVerify — parity-verify integration (feat-028)", () => {
+  it("calls parityVerify when runParity is unset (default true) + folds output", async () => {
+    let parityCalls = 0;
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) =>
+        script.includes("audit-app-reachability")
+          ? stubReachOk()
+          : stubSynthOk(),
+      executeFlows: false,
+      parityVerify: async () => {
+        parityCalls += 1;
+        return {
+          ok: true,
+          screensChecked: 4,
+          divergences: [],
+          warnings: [],
+          durationMs: 100,
+          costUsd: 0,
+        };
+      },
+    });
+    expect(parityCalls).toBe(1);
+    expect(result.parity).toBeDefined();
+    expect(result.parity?.screensChecked).toBe(4);
+    expect(result.ok).toBe(true);
+  });
+
+  it("does NOT call parityVerify when runParity:false", async () => {
+    let parityCalls = 0;
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      runParity: false,
+      runScript: async ({ script }) =>
+        script.includes("audit-app-reachability")
+          ? stubReachOk()
+          : stubSynthOk(),
+      executeFlows: false,
+      parityVerify: async () => {
+        parityCalls += 1;
+        return {
+          ok: true,
+          screensChecked: 0,
+          divergences: [],
+          warnings: [],
+          durationMs: 0,
+          costUsd: 0,
+        };
+      },
+    });
+    expect(parityCalls).toBe(0);
+    expect(result.parity).toBeUndefined();
+    expect(result.ok).toBe(true);
+  });
+
+  it("flips top-level ok:false when parity has divergences (otherwise green)", async () => {
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) =>
+        script.includes("audit-app-reachability")
+          ? stubReachOk()
+          : stubSynthOk(),
+      executeFlows: false,
+      parityVerify: async () => ({
+        ok: false,
+        screensChecked: 1,
+        divergences: [
+          {
+            screen: "home",
+            pattern: "shell-stripping",
+            detail: {
+              missing: ['[data-kit-component="AppShell"]'],
+              extra: [],
+              variantDrift: [],
+              styleDrift: [],
+            },
+            severity: "P0",
+          },
+        ],
+        warnings: [],
+        durationMs: 100,
+        costUsd: 0,
+      }),
+      fileBugPlan: async () => ({
+        planId: "bug-001-parity-home-shell-stripping",
+        planPath: "/tmp/x",
+      }),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.parity?.divergences).toHaveLength(1);
+    expect(result.bugPlansFiled).toContain(
+      "bug-001-parity-home-shell-stripping",
+    );
+  });
+
+  it("propagates parity warnings into top-level warnings[]", async () => {
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) =>
+        script.includes("audit-app-reachability")
+          ? stubReachOk()
+          : stubSynthOk(),
+      executeFlows: false,
+      parityVerify: async () => ({
+        ok: true,
+        screensChecked: 0,
+        divergences: [],
+        warnings: ["playwright-not-installed"],
+        durationMs: 5,
+        costUsd: 0,
+      }),
+    });
+    expect(result.warnings.join(" ")).toContain(
+      "parity: playwright-not-installed",
+    );
+  });
+
+  it("captures parityVerify exceptions as warnings without aborting", async () => {
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) =>
+        script.includes("audit-app-reachability")
+          ? stubReachOk()
+          : stubSynthOk(),
+      executeFlows: false,
+      parityVerify: async () => {
+        throw new Error("parity boom");
+      },
+    });
+    expect(result.warnings.join(" ")).toContain("parity-verify threw");
+    expect(result.warnings.join(" ")).toContain("parity boom");
+    expect(result.parity).toBeUndefined();
+    expect(result.ok).toBe(true); // no divergences (threw → no parity object)
+  });
+
+  it("files ONE bug plan per (screen, pattern) divergence", async () => {
+    const filed: string[] = [];
+    await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) =>
+        script.includes("audit-app-reachability")
+          ? stubReachOk()
+          : stubSynthOk(),
+      executeFlows: false,
+      parityVerify: async () => ({
+        ok: false,
+        screensChecked: 2,
+        divergences: [
+          {
+            screen: "home",
+            pattern: "shell-stripping",
+            detail: {
+              missing: ['[data-kit-component="AppShell"]'],
+              extra: [],
+              variantDrift: [],
+              styleDrift: [],
+            },
+            severity: "P0",
+          },
+          {
+            screen: "settings",
+            pattern: "token-drift",
+            detail: {
+              missing: [],
+              extra: [],
+              variantDrift: [],
+              styleDrift: [
+                {
+                  selector: '[data-kit-component="Card"]',
+                  property: "background-color",
+                  mockupValue: "rgb(248, 250, 252)",
+                  builtValue: "rgb(255, 255, 255)",
+                },
+              ],
+            },
+            severity: "P1",
+          },
+        ],
+        warnings: [],
+        durationMs: 200,
+        costUsd: 0,
+      }),
+      fileBugPlan: async ({ violation }) => {
+        const div = violation as unknown as { kind: string; screen?: string };
+        filed.push(`bug-${div.kind}-${div.screen ?? "n/a"}`);
+        return { planId: filed[filed.length - 1]!, planPath: "" };
+      },
+    });
+    expect(filed).toEqual([
+      "bug-parity-divergence-home",
+      "bug-parity-divergence-settings",
+    ]);
+  });
+
+  it("does NOT file parity bug plans when autoFileBugPlans:false", async () => {
+    let calls = 0;
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      autoFileBugPlans: false,
+      runScript: async ({ script }) =>
+        script.includes("audit-app-reachability")
+          ? stubReachOk()
+          : stubSynthOk(),
+      executeFlows: false,
+      parityVerify: async () => ({
+        ok: false,
+        screensChecked: 1,
+        divergences: [
+          {
+            screen: "home",
+            pattern: "shell-stripping",
+            detail: {
+              missing: ['[data-kit-component="AppShell"]'],
+              extra: [],
+              variantDrift: [],
+              styleDrift: [],
+            },
+            severity: "P0",
+          },
+        ],
+        warnings: [],
+        durationMs: 100,
+        costUsd: 0,
+      }),
+      fileBugPlan: async () => {
+        calls += 1;
+        return { planId: "x", planPath: "" };
+      },
+    });
+    expect(calls).toBe(0);
+    expect(result.parity?.divergences).toHaveLength(1);
+    expect(result.bugPlansFiled).toEqual([]);
+    expect(result.ok).toBe(false); // divergences still flip ok:false
+  });
+});

@@ -150,6 +150,77 @@ function specForFlow(flow, flowIndex) {
   lines.push(`const FAILURE_DIR = "../../docs/build-to-spec/failures";`);
   lines.push(`const TRANSITION_TIMEOUT_MS = 2000;`);
   lines.push(``);
+  // ─── feat-027 Phase A: runtime-error capture ─────────────────────────────
+  // Listeners attached per-test capture console.error / pageerror /
+  // requestfailed events into a per-test context object. afterEach attaches
+  // the captured payload as a Playwright test attachment named
+  // "runtime-errors" so the runner (scripts/run-synthesized-flows.mjs) can
+  // surface it via testResult.attachments[]. Also probes the Next.js error
+  // overlay so dev-server-compile errors surface as a first-class signal.
+  lines.push(`test.beforeEach(async ({ page }, testInfo) => {`);
+  lines.push(`  const ctx = {`);
+  lines.push(`    consoleErrors: [],`);
+  lines.push(`    pageErrors: [],`);
+  lines.push(`    networkFailures: [],`);
+  lines.push(`    devServerOverlay: null,`);
+  lines.push(`  };`);
+  lines.push(`  /** @type {any} */ (testInfo).__runtimeCtx = ctx;`);
+  lines.push(`  page.on("console", (msg) => {`);
+  lines.push(
+    `    if (msg.type() === "error") ctx.consoleErrors.push(msg.text());`,
+  );
+  lines.push(`  });`);
+  lines.push(`  page.on("pageerror", (err) => {`);
+  lines.push(
+    `    ctx.pageErrors.push({ message: err.message, stack: err.stack });`,
+  );
+  lines.push(`  });`);
+  lines.push(`  page.on("requestfailed", (req) => {`);
+  lines.push(`    ctx.networkFailures.push({`);
+  lines.push(`      method: req.method(),`);
+  lines.push(`      url: req.url(),`);
+  lines.push(`      failureText: req.failure()?.errorText ?? "unknown",`);
+  lines.push(`    });`);
+  lines.push(`  });`);
+  lines.push(`});`);
+  lines.push(``);
+  lines.push(`test.afterEach(async ({ page }, testInfo) => {`);
+  lines.push(`  const ctx = /** @type {any} */ (testInfo).__runtimeCtx;`);
+  lines.push(`  if (!ctx) return;`);
+  lines.push(
+    `  // Probe the Next.js dev-server error overlay one last time. The page`,
+  );
+  lines.push(`  // may already be torn down, in which case we silently skip.`);
+  lines.push(`  try {`);
+  lines.push(`    const overlayText = await page.evaluate(() => {`);
+  lines.push(`      const el = document.querySelector(`);
+  lines.push(
+    `        "#__next_error__, [data-nextjs-error-overlay], nextjs-portal",`,
+  );
+  lines.push(`      );`);
+  lines.push(`      return el ? (el.textContent || "").trim() : null;`);
+  lines.push(`    });`);
+  lines.push(`    if (overlayText && overlayText.length > 0) {`);
+  lines.push(
+    `      ctx.devServerOverlay = { detected: true, rawText: overlayText.slice(0, 4000) };`,
+  );
+  lines.push(`    }`);
+  lines.push(`  } catch {`);
+  lines.push(`    // page closed / navigation in progress — best effort only`);
+  lines.push(`  }`);
+  lines.push(`  if (`);
+  lines.push(`    ctx.consoleErrors.length ||`);
+  lines.push(`    ctx.pageErrors.length ||`);
+  lines.push(`    ctx.networkFailures.length ||`);
+  lines.push(`    ctx.devServerOverlay`);
+  lines.push(`  ) {`);
+  lines.push(`    await testInfo.attach("runtime-errors", {`);
+  lines.push(`      body: JSON.stringify(ctx, null, 2),`);
+  lines.push(`      contentType: "application/json",`);
+  lines.push(`    });`);
+  lines.push(`  }`);
+  lines.push(`});`);
+  lines.push(``);
   lines.push(`test.describe("${flowName} (${flowId})", () => {`);
   lines.push(
     `  test("walks ${steps.length} steps; each transition lands on expected screen-id", async ({ page }) => {`,

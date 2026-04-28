@@ -4,18 +4,17 @@
  * `query()` that lets the test script when (or whether) keepalive
  * messages arrive.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Task } from "@repo/orchestrator-contracts";
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BudgetTracker } from "../src/budget-tracker.js";
 import { createInvokeAgent } from "../src/invoke-agent.js";
 import type { QueryFn } from "../src/stage-runner.js";
@@ -94,7 +93,8 @@ function makeScriptedQuery(plan: {
             duration_api_ms: plan.resultAt,
             is_error: false,
             num_turns: 1,
-            result: '<<<TASK_OUTCOME>>>{"taskOutcomes":{"t1":"completed"},"errors":{}}<<<END_TASK_OUTCOME>>>',
+            result:
+              '<<<TASK_OUTCOME>>>{"taskOutcomes":{"t1":"completed"},"errors":{}}<<<END_TASK_OUTCOME>>>',
             stop_reason: "end_turn",
             total_cost_usd: 0.05,
             usage: {},

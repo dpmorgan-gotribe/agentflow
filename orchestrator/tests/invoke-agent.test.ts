@@ -741,7 +741,8 @@ describe("runCheckoutFeature (bug-016 pre-flight snapshot race)", () => {
       if (/git add -A/.test(cmd)) return { stdout: "", stderr: "", code: 0 };
       if (/git commit -F/.test(cmd))
         throw Object.assign(new Error("GPG signing failed"), {
-          stderr: "error: gpg failed to sign the data\nfatal: failed to write commit object",
+          stderr:
+            "error: gpg failed to sign the data\nfatal: failed to write commit object",
           code: 1,
         });
       throw new Error(`unexpected: ${cmd}`);
@@ -2967,7 +2968,8 @@ describe("runCloseFeature (bug-016 pre-flight snapshot race)", () => {
       if (/git add -A/.test(cmd)) return { stdout: "", stderr: "", code: 0 };
       if (/git commit -F/.test(cmd))
         throw Object.assign(new Error("GPG signing failed"), {
-          stderr: "error: gpg failed to sign the data\nfatal: failed to write commit object",
+          stderr:
+            "error: gpg failed to sign the data\nfatal: failed to write commit object",
           code: 1,
         });
       throw new Error(`unexpected: ${cmd}`);

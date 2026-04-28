@@ -73,6 +73,7 @@ under projects/<name>/.claude/state/.`. Exit code 1.
   proceed.
 
 The directory containing the chosen counters.json is the `<runId>`. Set:
+
 - `runIdDir = projects/<name>/.claude/state/<runId>`
 - `pausedPath = $runIdDir/paused.json`
 - `pidPath = $runIdDir/orchestrator.pid`

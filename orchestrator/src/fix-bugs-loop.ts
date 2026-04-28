@@ -199,17 +199,25 @@ function closeFixupWorktree(args: {
 }
 
 /**
- * Comparator: P0 > P1 > P2; within tier, orphan > flow > coverage.
+ * Comparator: P0 > P1 > P2; within tier, the cascade-root sources sort
+ * FIRST (feat-027): dev-server-compile + runtime-error typically mask every
+ * downstream flow failure, so the loop fixes them before chasing dependent
+ * timeouts. After cascade-roots: orphan → flow → coverage. Visual-parity
+ * (feat-028) sits between orphan and flow since a stripped-shell breaks
+ * every assertion downstream.
  */
 function bugPriorityComparator(a: BugEntry, b: BugEntry): number {
   const sevOrder = { P0: 0, P1: 1, P2: 2 } as const;
   const sevDelta = sevOrder[a.severity] - sevOrder[b.severity];
   if (sevDelta !== 0) return sevDelta;
-  const sourceOrder = {
-    "reachability-orphan": 0,
-    "flow-execution-failure": 1,
-    "pm-coverage-omission": 2,
-  } as const;
+  const sourceOrder: Record<BugEntry["source"], number> = {
+    "dev-server-compile": 0, // feat-027 — page literally won't render
+    "runtime-error": 1, // feat-027 — JS error prevents interaction
+    "reachability-orphan": 2,
+    "visual-parity": 3, // feat-028 — DOM-skeleton / computed-style mismatch
+    "flow-execution-failure": 4,
+    "pm-coverage-omission": 5,
+  };
   return sourceOrder[a.source] - sourceOrder[b.source];
 }
 
