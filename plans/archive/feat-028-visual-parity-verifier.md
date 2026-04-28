@@ -1,9 +1,11 @@
 ---
 id: feat-028-visual-parity-verifier
 type: feature
-status: in-progress
+status: completed
+outcome: shipped-with-followup
 approved-at: 2026-04-28
 approved-by: human
+completed-at: 2026-04-28
 author-agent: claude-opus-4-7
 created: 2026-04-28
 updated: 2026-04-28
@@ -199,12 +201,63 @@ In `feat-026`'s loop: visual-parity bugs sort AFTER reachability + runtime-error
 
 ## Attempt Log
 
-<!-- Populated automatically by agents.
+### Attempt 1 — Implementation (background agent af7d49883c984d904, completed 2026-04-28)
 
-RETRY POLICY:
-  Attempt 1-2: Try different approaches
-  Attempt 3: Run /plan-investigation
-  Attempt 4: Try investigation's recommendation
-  Attempt 5: STOP and escalate to human
-  NEVER exceed 5 attempts on the same error
--->
+All 4 phases (0-4 in plan numbering, 1-4 in execution) shipped in single
+pass. Phase 0 ui-kit retrofit shipped as documentation-only change to
+`stylesheet/SKILL.md` — actual code retrofit deferred (PROJECT-side ui-kit
+lives in separate git repos; future projects pick up the contract via
+`/new-project` clone of updated factory skills).
+
+One race during shared-file edit (`bugs-yaml.ts` enum) — parallel agent
+clobbered visual-parity addition once; re-applied. Final state has both
+sets of enum entries coexisting cleanly.
+
+Test counts: orchestrator 415→483 (+68), contracts 278→324 (+46), total
+693→807 (+114). My contributions: ~88 tests (26 contracts + 45
+differ/wrapper + 17 integration/bug-author).
+
+## Outcome
+
+**Status: completed (shipped 2026-04-28; commit 9622ad3) — with one
+known follow-up gap (see below)**
+
+Spot-check on kanban-10: ran `diffAndClassify` against
+`projects/kanban-webapp-10/docs/screens/webapp/home.html` (48 kit nodes)
+versus stub built page (0 nodes — primitives don't yet forward
+data-kit-\* attrs). Output: shell-stripping pattern (P0, 2 missing —
+`AppShell` + nested `AppShell`) + layout-regrouping (P1, 46 missing) —
+matches expected classification.
+
+## Lessons learned
+
+- **Documentation-only Phase 0 is a legitimate shipping pattern when code
+  lives in downstream-cloned repos**: the kit-attribute retrofit can't
+  ship to existing projects' actual `packages/ui-kit/src/primitives/` (those
+  are separate git repos per the orchestrator's hard constraint). Updating
+  the `stylesheet` SKILL is the right move — future projects' `/stylesheet`
+  pass picks up the contract; existing projects need a code-mod or regen
+  to retrofit (deferred).
+- **ESM CLI guard pattern**: `import.meta.url ===` checks crashed under
+  `node -e` invocation (no `process.argv[1]`). Both .mjs scripts (
+  diff-kit-skeleton + audit-computed-styles) needed defensive guards.
+- **Backtick-in-template-literal escaping**: a template literal containing
+  backticks broke vite/rollup ssrTransform parse. Required `\\`` escape.
+- **One bug per (screen, pattern) cluster, not per individual divergence**:
+  a "shell-stripping on home" bug describes 5+ missing primitives in its
+  body — filing 5 separate bugs would be noise.
+
+## Follow-ups (gap noted)
+
+- **`.claude/skills/parity-verify/SKILL.md` was NOT created** despite being
+  listed in the affected-files of the plan. The implementing agent missed
+  it. **feat-029 implementation will create this file** as part of its
+  scope (it documents the differ + the new fixture system together, so
+  bundling makes sense). Tracking: feat-029.
+- **Empirical style-tolerance tuning** deferred to first 3 projects with
+  feat-028 active (per Open questions).
+- **Mobile/tablet viewports** deferred per Non-goals; revisit after desktop
+  catch rate is validated on 3+ projects.
+- **Pixel screenshot diff** deferred per Non-goals; cutover criteria
+  documented (≥3 divergences ship past v1 in a single project, OR a
+  project requires brand-identity assets).

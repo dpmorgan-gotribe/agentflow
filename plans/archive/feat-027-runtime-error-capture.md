@@ -1,9 +1,11 @@
 ---
 id: feat-027-runtime-error-capture
 type: feature
-status: in-progress
+status: completed
+outcome: shipped
 approved-at: 2026-04-28
 approved-by: human
+completed-at: 2026-04-28
 author-agent: claude-opus-4-7
 created: 2026-04-28
 updated: 2026-04-28
@@ -231,13 +233,47 @@ This sequencing is critical: today's kanban-10 case would have shown 1 dev-serve
 
 ## Attempt Log
 
-<!-- Populated automatically by agents.
+### Attempt 1 — Implementation (background agent a365871e40595d362, completed 2026-04-28)
 
-RETRY POLICY:
-  Attempt 1-2: Try different approaches
-  Attempt 3: Run /plan-investigation
-  Attempt 4: Try investigation's recommendation
-  Attempt 5: STOP and escalate to human
-  NEVER exceed 5 attempts on the same error
--->
+All 4 phases (A/B/C/D) shipped in single pass. Cross-platform Windows tests
+clean. Coordinated with parallel feat-028 agent on shared schema additions
+(bugs-yaml.ts BugSourceSchema, BugPlanViolation discriminant, file-bug-plan
+dispatch) — disjoint regions, no conflicts.
+
+Test counts: orchestrator 415→470 (+55, mix mine + parallel agent),
+contracts 278→324 (+46).
+
+## Outcome
+
+**Status: completed (shipped 2026-04-28; commit 9622ad3)**
+
+Verified by:
+- 30+ new tests covering schema additions, runtime extraction with all 4
+  primaryCause classifications (compile/runtime/network/spec-mismatch),
+  malformed JSON handling, cascade-root routing FIRST, dependsOnBugId
+  tagging, back-compat preservation
+- All 807 combined tests passing (contracts + orchestrator)
+
+## Lessons learned
+
+- **Hybrid TDD pays off in shared-file scenarios**: parallel agents added
+  enum entries + discriminants to the same files (`bugs-yaml.ts`,
+  `build-to-spec-verify.ts`) without race because each owned distinct
+  positions/branches. The Zod discriminated union pattern (rather than
+  exhaustive switches) made the "additive only" boundary easy to hold.
+- **Inline `body` Playwright attachments beat `path`-on-disk for
+  cross-platform tests**: avoids Windows tmp-file fixture setup. Extraction
+  helper supports BOTH modes.
+- **Cascade-root routing is a substantive UX win**: a single missing CSS
+  import causes 6 flows to fail with timeout-no-evidence; filing 6 bugs is
+  noise. Filing 1 cascade-root bug + 5 `dependsOnBugId` dependents lets
+  feat-026 fix the root and re-verify the whole chain.
+
+## Follow-ups
+
+- `dependsOnBugId` is a free-form pass-through field today (BugEntrySchema
+  uses `.strip()`). Plan suggested `dependsOn`. Consider extending schema
+  for strict validation in a follow-up if cross-flow dedup logic grows.
+- Cross-flow runtime-error dedup (consolidate same error across N flows
+  into ONE bug listing all flows) was deferred per Open questions.
 ```
