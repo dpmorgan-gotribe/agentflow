@@ -24,6 +24,20 @@ export class BudgetExceededError extends Error {
 }
 
 /**
+ * feat-030 Phase D — per-model token + cost accumulator. Mirrors the
+ * SDK's `ModelUsage` shape (sdk.d.ts:1050) so the orchestrator can
+ * surface "Sonnet ate 86% of this run's spend" without summing token
+ * fields by hand. All fields are non-negative cumulative counters.
+ */
+export interface ModelBreakdown {
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+/**
  * Pipeline-wide cost accumulator. Reads `perPipelineMaxUsd` from the
  * merged model config at construction; callers `assertUnderBudget()`
  * before firing a `query()` and `record()` after the call returns.
@@ -34,6 +48,7 @@ export class BudgetExceededError extends Error {
  */
 export class BudgetTracker {
   private cumulativeUsd = 0;
+  private modelBreakdown: Record<string, ModelBreakdown> = {};
   private readonly caps: BudgetCaps;
 
   constructor(caps: BudgetCaps) {
@@ -95,12 +110,73 @@ export class BudgetTracker {
   }
 
   /**
+   * feat-030 Phase D — accumulate per-model token + cost from the SDK's
+   * `result.modelUsage` map. Called once per `runLlmAgent` after the
+   * terminal `result` message. Idempotent for the same call (caller
+   * passes the cumulative ModelUsage from the SDK; we add the delta
+   * implicitly because the SDK reports per-call totals, not running
+   * totals — so the `modelUsage` we receive IS the delta from this
+   * call).
+   *
+   * `modelUsage` is the shape from
+   * `@anthropic-ai/claude-agent-sdk::ModelUsage` (sdk.d.ts:1050) — but
+   * we accept a wider record type to stay version-tolerant.
+   */
+  recordModelBreakdown(
+    modelUsage: Record<
+      string,
+      {
+        costUSD?: number;
+        inputTokens?: number;
+        outputTokens?: number;
+        cacheReadInputTokens?: number;
+        cacheCreationInputTokens?: number;
+      }
+    >,
+  ): void {
+    for (const [model, usage] of Object.entries(modelUsage ?? {})) {
+      const existing = this.modelBreakdown[model] ?? {
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      };
+      this.modelBreakdown[model] = {
+        costUsd: existing.costUsd + (usage.costUSD ?? 0),
+        inputTokens: existing.inputTokens + (usage.inputTokens ?? 0),
+        outputTokens: existing.outputTokens + (usage.outputTokens ?? 0),
+        cacheReadInputTokens:
+          existing.cacheReadInputTokens + (usage.cacheReadInputTokens ?? 0),
+        cacheCreationInputTokens:
+          existing.cacheCreationInputTokens +
+          (usage.cacheCreationInputTokens ?? 0),
+      };
+    }
+  }
+
+  /** Read-only view of the per-model breakdown. */
+  getModelBreakdown(): Record<string, ModelBreakdown> {
+    return { ...this.modelBreakdown };
+  }
+
+  /**
    * Serializable snapshot. Used by state-persistence (Phase 4) to survive
    * crashes. Cap values are static (come from YAML) — persistence only
-   * needs cumulative.
+   * needs cumulative + per-model breakdown (feat-030 Phase D).
    */
-  toJSON(): { cumulativeUsd: number } {
-    return { cumulativeUsd: this.cumulativeUsd };
+  toJSON(): {
+    cumulativeUsd: number;
+    modelBreakdown?: Record<string, ModelBreakdown>;
+  } {
+    const out: {
+      cumulativeUsd: number;
+      modelBreakdown?: Record<string, ModelBreakdown>;
+    } = { cumulativeUsd: this.cumulativeUsd };
+    if (Object.keys(this.modelBreakdown).length > 0) {
+      out.modelBreakdown = this.modelBreakdown;
+    }
+    return out;
   }
 
   /** Restore cumulative from a persisted snapshot. */
@@ -111,5 +187,16 @@ export class BudgetTracker {
       );
     }
     this.cumulativeUsd = cumulativeUsd;
+  }
+
+  /**
+   * feat-030 Phase D — restore the per-model breakdown from a persisted
+   * snapshot. Tolerant of absence (back-compat with pre-feat-030
+   * counters.json files).
+   */
+  restoreModelBreakdown(
+    modelBreakdown: Record<string, ModelBreakdown> | undefined,
+  ): void {
+    this.modelBreakdown = modelBreakdown ? { ...modelBreakdown } : {};
   }
 }

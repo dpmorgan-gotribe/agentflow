@@ -105,7 +105,7 @@ describe("BudgetTracker — exhausted()", () => {
 });
 
 describe("BudgetTracker — persistence round-trip", () => {
-  it("toJSON() returns only cumulative (caps are static)", () => {
+  it("toJSON() returns only cumulative when no breakdown recorded", () => {
     const t = new BudgetTracker(defaultCaps);
     t.record(12.34);
     expect(t.toJSON()).toEqual({ cumulativeUsd: 12.34 });
@@ -121,5 +121,113 @@ describe("BudgetTracker — persistence round-trip", () => {
   it("restoreCumulative rejects negative", () => {
     const t = new BudgetTracker(defaultCaps);
     expect(() => t.restoreCumulative(-1)).toThrow(RangeError);
+  });
+});
+
+// feat-030 Phase D — per-model breakdown
+describe("BudgetTracker — modelBreakdown (feat-030 Phase D)", () => {
+  it("starts empty and toJSON omits the field when empty", () => {
+    const t = new BudgetTracker(defaultCaps);
+    expect(t.getModelBreakdown()).toEqual({});
+    expect(t.toJSON()).toEqual({ cumulativeUsd: 0 });
+  });
+
+  it("accumulates per-model token + cost across multiple recordModelBreakdown calls", () => {
+    const t = new BudgetTracker(defaultCaps);
+    t.recordModelBreakdown({
+      "claude-sonnet-4-6": {
+        costUSD: 0.42,
+        inputTokens: 1000,
+        outputTokens: 200,
+        cacheReadInputTokens: 500,
+        cacheCreationInputTokens: 100,
+      },
+    });
+    t.recordModelBreakdown({
+      "claude-sonnet-4-6": {
+        costUSD: 0.18,
+        inputTokens: 400,
+        outputTokens: 80,
+        cacheReadInputTokens: 200,
+        cacheCreationInputTokens: 0,
+      },
+      "claude-haiku-4-5": {
+        costUSD: 0.01,
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+    });
+    const bd = t.getModelBreakdown();
+    expect(bd["claude-sonnet-4-6"]).toEqual({
+      costUsd: 0.6,
+      inputTokens: 1400,
+      outputTokens: 280,
+      cacheReadInputTokens: 700,
+      cacheCreationInputTokens: 100,
+    });
+    expect(bd["claude-haiku-4-5"]).toEqual({
+      costUsd: 0.01,
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    });
+  });
+
+  it("tolerates partial ModelUsage shapes (missing fields default to 0)", () => {
+    const t = new BudgetTracker(defaultCaps);
+    t.recordModelBreakdown({ "claude-sonnet-4-6": { costUSD: 0.1 } });
+    expect(t.getModelBreakdown()["claude-sonnet-4-6"]).toEqual({
+      costUsd: 0.1,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    });
+  });
+
+  it("toJSON includes modelBreakdown when populated", () => {
+    const t = new BudgetTracker(defaultCaps);
+    t.record(0.5);
+    t.recordModelBreakdown({
+      "claude-haiku-4-5": {
+        costUSD: 0.5,
+        inputTokens: 500,
+        outputTokens: 100,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+    });
+    const json = t.toJSON();
+    expect(json.cumulativeUsd).toBe(0.5);
+    expect(json.modelBreakdown).toBeDefined();
+    expect(json.modelBreakdown?.["claude-haiku-4-5"]?.costUsd).toBe(0.5);
+  });
+
+  it("restoreModelBreakdown round-trips through toJSON", () => {
+    const t1 = new BudgetTracker(defaultCaps);
+    t1.recordModelBreakdown({
+      "claude-opus-4-7": {
+        costUSD: 1.23,
+        inputTokens: 5000,
+        outputTokens: 1200,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 800,
+      },
+    });
+    const snap = t1.toJSON();
+
+    const t2 = new BudgetTracker(defaultCaps);
+    t2.restoreModelBreakdown(snap.modelBreakdown);
+    expect(t2.getModelBreakdown()).toEqual(snap.modelBreakdown);
+  });
+
+  it("restoreModelBreakdown(undefined) clears (back-compat with pre-feat-030 files)", () => {
+    const t = new BudgetTracker(defaultCaps);
+    t.recordModelBreakdown({ "claude-sonnet-4-6": { costUSD: 0.5 } });
+    t.restoreModelBreakdown(undefined);
+    expect(t.getModelBreakdown()).toEqual({});
   });
 });

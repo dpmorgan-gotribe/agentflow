@@ -117,10 +117,20 @@ export interface CreateInvokeAgentConfig {
    * feat-024 Phase C — invoked when the SDK message stream surfaces a
    * Claude Max five-hour or seven-day rate limit. Default: not set →
    * orchestrator continues (the SDK will fail the call naturally).
+   *
+   * feat-030 Phase C — fires ONLY when rate_limit_info.status is
+   * "rejected". Warning-level events (status: "allowed_warning") are
+   * logged + written to rate-limit-events.ndjson but do NOT call this
+   * hook. Extended payload now includes utilization + overage state so
+   * pause messages can guide operator action ("base bucket rejected
+   * but overage available — your next call may auto-route").
    */
   onRateLimitPause?: (info: {
     rateLimitType: string;
     resetsAt?: number;
+    utilization?: number;
+    overageStatus?: "allowed" | "allowed_warning" | "rejected";
+    isUsingOverage?: boolean;
   }) => void | Promise<void>;
   /**
    * feat-024 Phase C — invoked when SDKAssistantMessage carries
@@ -171,6 +181,46 @@ function writeStallLogBreadcrumb(
   } catch {
     // Breadcrumb best-effort — never crash the orchestrator on a write
     // failure to .claude/state/.
+  }
+}
+
+/**
+ * feat-030 Phase B — append a rate-limit-event breadcrumb every time the
+ * SDK surfaces an `SDKRateLimitEvent`, regardless of severity. NDJSON
+ * append-only ledger at
+ * `<projectRoot>/.claude/state/<runId>/rate-limit-events.ndjson`.
+ *
+ * Closes investigate-010 §F7: the orchestrator was consuming these events
+ * inline + dropping them. Persisting all of them gives operators a
+ * historical record of `'allowed_warning'` events (early-warning surface
+ * that v1's pause-hook gate doesn't currently surface to humans).
+ *
+ * Silent no-op when `cfg.pipelineRunId` isn't set (back-compat with
+ * tests).
+ */
+function writeRateLimitEventBreadcrumb(
+  cfg: CreateInvokeAgentConfig,
+  entry: {
+    featureId: string;
+    agent: AgentSequenceMember;
+    rateLimitType: string;
+    status: string;
+    utilization?: number;
+    surpassedThreshold?: number;
+    resetsAt?: number;
+    overageStatus?: string;
+    isUsingOverage?: boolean;
+  },
+): void {
+  if (!cfg.pipelineRunId) return;
+  const dir = join(cfg.projectRoot, ".claude", "state", cfg.pipelineRunId);
+  try {
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "rate-limit-events.ndjson");
+    const line = `${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`;
+    appendFileSync(path, line, "utf8");
+  } catch {
+    /* best-effort */
   }
 }
 
@@ -1185,6 +1235,14 @@ async function runLlmAgent(
       // feat-024 Phase C: route Claude Max five-hour / seven-day rate
       // limits into the pause-trigger hook. We DO NOT abort the SDK here
       // — the hook decides (it'll typically pauseRun + propagate).
+      //
+      // feat-030 Phase B + C: ALL rate_limit_events are persisted to
+      // <runId>/rate-limit-events.ndjson regardless of status. The pause
+      // hook fires only on status === 'rejected' for hard-limit types
+      // (five_hour, seven_day, seven_day_opus, seven_day_sonnet).
+      // 'allowed_warning' events log a console warning but do not pause
+      // — they're the early-warning surface investigate-010 §F1 said
+      // we were dropping.
       if (msg.type === "rate_limit_event") {
         // Wide cast — the SDK's own type uses snake_case but we don't
         // import the type here to keep this layer SDK-version-tolerant.
@@ -1192,20 +1250,74 @@ async function runLlmAgent(
           rate_limit_info?: {
             rateLimitType?: string;
             resetsAt?: number;
-            status?: string;
+            status?: "allowed" | "allowed_warning" | "rejected";
+            utilization?: number;
+            surpassedThreshold?: number;
+            overageStatus?: "allowed" | "allowed_warning" | "rejected";
+            isUsingOverage?: boolean;
           };
         };
-        const rateLimitType = evt.rate_limit_info?.rateLimitType ?? "";
-        if (
-          (rateLimitType === "five_hour" || rateLimitType === "seven_day") &&
+        const info = evt.rate_limit_info ?? {};
+        const rateLimitType = info.rateLimitType ?? "";
+        const status = info.status ?? "";
+        const HARD_LIMITS = [
+          "five_hour",
+          "seven_day",
+          "seven_day_opus",
+          "seven_day_sonnet",
+        ];
+        const isHardLimit = HARD_LIMITS.includes(rateLimitType);
+
+        // Persist breadcrumb regardless of status — closes the F7 gap
+        // (no historical record of warning events).
+        writeRateLimitEventBreadcrumb(cfg, {
+          featureId: args.featureContext.id,
+          agent,
+          rateLimitType,
+          status,
+          ...(info.utilization !== undefined
+            ? { utilization: info.utilization }
+            : {}),
+          ...(info.surpassedThreshold !== undefined
+            ? { surpassedThreshold: info.surpassedThreshold }
+            : {}),
+          ...(info.resetsAt !== undefined ? { resetsAt: info.resetsAt } : {}),
+          ...(info.overageStatus ? { overageStatus: info.overageStatus } : {}),
+          ...(info.isUsingOverage !== undefined
+            ? { isUsingOverage: info.isUsingOverage }
+            : {}),
+        });
+
+        if (isHardLimit && status === "allowed_warning") {
+          const pct =
+            info.utilization !== undefined
+              ? `${Math.round(info.utilization * 100)}%`
+              : "?%";
+          console.warn(
+            `[runLlmAgent] rate-limit warning: ${rateLimitType} at ${pct} — pausing soon`,
+          );
+          // Breadcrumb only; do NOT pause.
+        } else if (
+          isHardLimit &&
+          status === "rejected" &&
           cfg.onRateLimitPause
         ) {
           try {
-            const pauseInfo: { rateLimitType: string; resetsAt?: number } = {
-              rateLimitType,
-            };
-            if (evt.rate_limit_info?.resetsAt !== undefined) {
-              pauseInfo.resetsAt = evt.rate_limit_info.resetsAt;
+            const pauseInfo: {
+              rateLimitType: string;
+              resetsAt?: number;
+              utilization?: number;
+              overageStatus?: "allowed" | "allowed_warning" | "rejected";
+              isUsingOverage?: boolean;
+            } = { rateLimitType };
+            if (info.resetsAt !== undefined) pauseInfo.resetsAt = info.resetsAt;
+            if (info.utilization !== undefined) {
+              pauseInfo.utilization = info.utilization;
+            }
+            if (info.overageStatus)
+              pauseInfo.overageStatus = info.overageStatus;
+            if (info.isUsingOverage !== undefined) {
+              pauseInfo.isUsingOverage = info.isUsingOverage;
             }
             await cfg.onRateLimitPause(pauseInfo);
           } catch (err) {
@@ -1335,6 +1447,17 @@ async function runLlmAgent(
   }
 
   cfg.budget.record(result.total_cost_usd);
+
+  // feat-030 Phase D: capture per-model breakdown for forecast telemetry.
+  // result.modelUsage shape matches @anthropic-ai/claude-agent-sdk::ModelUsage
+  // (sdk.d.ts:1050). Always-write — empty modelUsage is harmless (no-op).
+  if (result.modelUsage) {
+    cfg.budget.recordModelBreakdown(
+      result.modelUsage as unknown as Parameters<
+        typeof cfg.budget.recordModelBreakdown
+      >[0],
+    );
+  }
 
   if (result.subtype !== "success") {
     const failed: Record<string, "completed" | "failed"> = {};

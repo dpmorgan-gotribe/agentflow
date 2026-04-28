@@ -3727,9 +3727,12 @@ describe("invokeAgent — bug-022 PauseSignal propagation", () => {
     const budget = mkBudget();
     const queryFn = makeMessageScriptedQuery([
       // Rate-limit event arrives FIRST — the hook fires here.
+      // feat-030 Phase C: hook fires ONLY on status === "rejected" (the
+      // actual SDK enum value per sdk.d.ts:2924). Pre-feat-030 the gate
+      // didn't check status, so this test used a synthetic placeholder.
       {
         type: "rate_limit_event",
-        rate_limit_info: { rateLimitType: "five_hour", status: "exceeded" },
+        rate_limit_info: { rateLimitType: "five_hour", status: "rejected" },
       },
       // Then a successful result message — pre-bug-022, the loop would
       // process this and the agent would "complete" successfully despite
@@ -3922,5 +3925,282 @@ describe("invokeAgent — bug-022 PauseSignal propagation", () => {
       tasks: [task1],
     });
     expect(result.taskStatus).toEqual({ t1: "completed" });
+  });
+});
+
+// ─── feat-030 Phase B + C — rate-limit-events ledger + warning gate ──
+//
+// Closes investigate-010 §F1 + F7 + F8. The orchestrator now persists
+// EVERY rate_limit_event (regardless of status) to
+// `<runId>/rate-limit-events.ndjson` and only fires onRateLimitPause
+// when status === "rejected". 'allowed_warning' events log a console
+// warning (early surface) without pausing.
+describe("invokeAgent — feat-030 rate-limit ledger + warning gate", () => {
+  function makeMessageScriptedQuery(messages: ReadonlyArray<unknown>): QueryFn {
+    const fn: QueryFn = () => {
+      async function* gen(): AsyncGenerator<unknown, void> {
+        for (const m of messages) yield m;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return gen() as any;
+    };
+    return fn;
+  }
+
+  const successResult = {
+    type: "result",
+    subtype: "success",
+    duration_ms: 1,
+    duration_api_ms: 1,
+    is_error: false,
+    num_turns: 1,
+    result: "",
+    stop_reason: "end_turn",
+    total_cost_usd: 0.01,
+    usage: {},
+    modelUsage: {
+      "claude-sonnet-4-6": {
+        costUSD: 0.01,
+        inputTokens: 50,
+        outputTokens: 10,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+    },
+    permission_denials: [],
+    structured_output: { taskOutcomes: { t1: "completed" } },
+    uuid: "00000000-0000-0000-0000-000000000000",
+    session_id: "test-session",
+  };
+
+  it("writes a rate-limit-events.ndjson line for every rate_limit_event regardless of status", async () => {
+    const budget = mkBudget();
+    const queryFn = makeMessageScriptedQuery([
+      {
+        type: "rate_limit_event",
+        rate_limit_info: {
+          rateLimitType: "five_hour",
+          status: "allowed",
+          utilization: 0.5,
+        },
+      },
+      {
+        type: "rate_limit_event",
+        rate_limit_info: {
+          rateLimitType: "five_hour",
+          status: "allowed_warning",
+          utilization: 0.78,
+          surpassedThreshold: 0.75,
+        },
+      },
+      {
+        type: "rate_limit_event",
+        rate_limit_info: {
+          rateLimitType: "seven_day_sonnet",
+          status: "allowed",
+          utilization: 0.3,
+        },
+      },
+      successResult,
+    ]);
+
+    const pipelineRunId = "feat030-ledger-run";
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      pipelineRunId,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+
+    await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+
+    const ledgerPath = join(
+      projectRoot,
+      ".claude",
+      "state",
+      pipelineRunId,
+      "rate-limit-events.ndjson",
+    );
+    expect(existsSync(ledgerPath)).toBe(true);
+    const lines = readFileSync(ledgerPath, "utf8")
+      .split("\n")
+      .filter((l) => l.length > 0);
+    expect(lines.length).toBe(3);
+    const parsed = lines.map((l) => JSON.parse(l));
+    expect(parsed[0].rateLimitType).toBe("five_hour");
+    expect(parsed[0].status).toBe("allowed");
+    expect(parsed[0].utilization).toBe(0.5);
+    expect(parsed[1].status).toBe("allowed_warning");
+    expect(parsed[1].surpassedThreshold).toBe(0.75);
+    expect(parsed[2].rateLimitType).toBe("seven_day_sonnet");
+  });
+
+  it("does NOT call onRateLimitPause for status='allowed_warning'", async () => {
+    const budget = mkBudget();
+    const queryFn = makeMessageScriptedQuery([
+      {
+        type: "rate_limit_event",
+        rate_limit_info: {
+          rateLimitType: "five_hour",
+          status: "allowed_warning",
+          utilization: 0.85,
+        },
+      },
+      successResult,
+    ]);
+
+    const pauseCalls: unknown[] = [];
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      pipelineRunId: "feat030-warn-no-pause",
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+      onRateLimitPause: async (info) => {
+        pauseCalls.push(info);
+      },
+    });
+
+    const result = await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    expect(pauseCalls.length).toBe(0);
+    expect(result.taskStatus).toEqual({ t1: "completed" });
+  });
+
+  it("calls onRateLimitPause for status='rejected' and passes utilization + overage state", async () => {
+    const budget = mkBudget();
+    const queryFn = makeMessageScriptedQuery([
+      {
+        type: "rate_limit_event",
+        rate_limit_info: {
+          rateLimitType: "seven_day_sonnet",
+          status: "rejected",
+          utilization: 1.0,
+          resetsAt: 1777425600,
+          overageStatus: "allowed",
+          isUsingOverage: false,
+        },
+      },
+      successResult,
+    ]);
+
+    const pauseCalls: Array<{
+      rateLimitType: string;
+      resetsAt?: number;
+      utilization?: number;
+      overageStatus?: string;
+      isUsingOverage?: boolean;
+    }> = [];
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      pipelineRunId: "feat030-rejected-pause",
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+      onRateLimitPause: async (info) => {
+        pauseCalls.push(info);
+      },
+    });
+
+    await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+
+    expect(pauseCalls.length).toBe(1);
+    expect(pauseCalls[0].rateLimitType).toBe("seven_day_sonnet");
+    expect(pauseCalls[0].resetsAt).toBe(1777425600);
+    expect(pauseCalls[0].utilization).toBe(1.0);
+    expect(pauseCalls[0].overageStatus).toBe("allowed");
+    expect(pauseCalls[0].isUsingOverage).toBe(false);
+  });
+
+  it("does NOT call onRateLimitPause for non-hard-limit rateLimitTypes ('overage')", async () => {
+    const budget = mkBudget();
+    const queryFn = makeMessageScriptedQuery([
+      {
+        type: "rate_limit_event",
+        rate_limit_info: { rateLimitType: "overage", status: "rejected" },
+      },
+      successResult,
+    ]);
+
+    const pauseCalls: unknown[] = [];
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      pipelineRunId: "feat030-overage-no-pause",
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+      onRateLimitPause: async (info) => {
+        pauseCalls.push(info);
+      },
+    });
+
+    await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    // Overage is the £-balance tier, not a hard limit — log only.
+    expect(pauseCalls.length).toBe(0);
+  });
+
+  it("recordModelBreakdown is called with result.modelUsage from successful dispatch", async () => {
+    const budget = mkBudget();
+    const queryFn = makeMessageScriptedQuery([successResult]);
+
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+
+    await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+
+    const bd = budget.getModelBreakdown();
+    expect(bd["claude-sonnet-4-6"]).toBeDefined();
+    expect(bd["claude-sonnet-4-6"].costUsd).toBeCloseTo(0.01, 4);
+    expect(bd["claude-sonnet-4-6"].inputTokens).toBe(50);
+    expect(bd["claude-sonnet-4-6"].outputTokens).toBe(10);
   });
 });

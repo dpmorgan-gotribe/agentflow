@@ -10,7 +10,7 @@ import {
   FeatureGraphProgressSchema,
   type FeatureGraphProgress,
 } from "@repo/orchestrator-contracts";
-import { BudgetTracker } from "./budget-tracker.js";
+import { BudgetTracker, type ModelBreakdown } from "./budget-tracker.js";
 import { RetryCounters, type RetryCountersSnapshot } from "./retry-counters.js";
 
 /**
@@ -19,13 +19,19 @@ import { RetryCounters, type RetryCountersSnapshot } from "./retry-counters.js";
  * `--resume-from-stage` without losing retry ledger or budget ledger.
  *
  * Location: `<projectRoot>/.claude/state/{pipelineRunId}/counters.json`
+ *
+ * feat-030 Phase D: `budget.modelBreakdown` is optional for back-compat
+ * with counters.json files written before this field shipped.
  */
 export interface PipelineState {
   version: "1.0";
   pipelineRunId: string;
   lastUpdatedAt: string;
   retryCounters: RetryCountersSnapshot;
-  budget: { cumulativeUsd: number };
+  budget: {
+    cumulativeUsd: number;
+    modelBreakdown?: Record<string, ModelBreakdown>;
+  };
 }
 
 const STATE_VERSION = "1.0" as const;
@@ -101,6 +107,8 @@ export function loadState(
   const restoredSnapshot = RetryCounters.fromJSON(s.retryCounters).toJSON();
   retryCounters.restoreFromSnapshot(restoredSnapshot);
   budget.restoreCumulative(s.budget.cumulativeUsd);
+  // feat-030 Phase D: tolerate absence of modelBreakdown (pre-feat-030 files).
+  budget.restoreModelBreakdown(s.budget.modelBreakdown);
 
   return {
     version: STATE_VERSION,
