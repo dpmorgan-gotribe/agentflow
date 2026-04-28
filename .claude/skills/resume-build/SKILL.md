@@ -110,13 +110,47 @@ Investigate the diff or re-run with --ignore-master-drift to override.`.
 For each entry in `progress.inFlight[]`, inspect its worktree at
 `projects/<name>/.claude/worktrees/<worktree>/`:
 
-| Worktree state                                                                                  | Action                                                                                                 | Recovery class  |
-| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------- |
-| Directory missing                                                                               | Mark feature as failed → next orchestrator pass treats it as fresh                                     | `orphaned`      |
-| Branch DOESN'T exist anymore (`git rev-parse <branch>` fails)                                   | Mark feature aborted → surface to operator                                                             | `aborted`       |
-| Worktree clean (`git status --porcelain` empty)                                                 | Resume from `nextAgent` (or close-feature when nextAgent=null)                                         | `clean`         |
-| Worktree dirty + `lastAgent ∈ {backend-builder, web-frontend-builder, mobile-frontend-builder}` | Soft-reset (`git reset --hard <branch>`) → retry from `lastAgent`                                      | `dirty-builder` |
-| Worktree dirty + `lastAgent ∈ {tester, reviewer}`                                               | Stage + commit (`git add -A && git commit -m '<lastAgent>: resume snapshot'`) → advance to `nextAgent` | `dirty-meta`    |
+| Worktree state                                                | Action                                                                                                 | Recovery class  |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------- |
+| Directory missing                                             | Mark feature as failed → next orchestrator pass treats it as fresh                                     | `orphaned`      |
+| Branch DOESN'T exist anymore (`git rev-parse <branch>` fails) | Mark feature aborted → surface to operator                                                             | `aborted`       |
+| Worktree clean (`git status --porcelain` empty)               | Resume from `nextAgent` (or close-feature when nextAgent=null)                                         | `clean`         |
+| Worktree dirty + `nextAgent !== null`                         | Stage + commit (`git add -A && git commit -m '<lastAgent>: resume snapshot'`) → advance to `nextAgent` | `dirty-advance` |
+| Worktree dirty + `nextAgent === null`                         | Stage + commit (`git add -A && git commit -m '<lastAgent>: resume snapshot'`) → run close-feature next | `dirty-final`   |
+
+**bug-020:** the previous decision tree split dirty worktrees by
+`lastAgent`-tier — soft-resetting all dirty `backend-builder` /
+`web-frontend-builder` / `mobile-frontend-builder` outputs and
+preserving dirty `tester` / `reviewer` outputs. This was wrong for the
+empirical hit where backend-builder produced ~2300 LOC, returned
+successfully, and the orchestrator paused at the rate-limit BEFORE
+running its per-agent auto-commit. The dirty state IS the completed
+work; soft-reset destroys it.
+
+The new rule preserves work universally: any dirty worktree gets
+committed before advancing. Across the four scenarios that produce
+dirty state at pause time, three are completed-but-uncommitted and
+one — pause fires DURING agent execution — is mid-execution partial
+output. The latter is rare (rate-limit hits typically fire at SDK API
+boundaries, not mid-agent) and recoverable: tester runs against the
+partial output, fails, the per-task retry ladder routes back to the
+builder for a fix attempt.
+
+**Operator note — mid-execution edge case.** If you suspect the
+worktree's dirty state is partial output from an agent that was killed
+mid-execution (versus an agent that returned successfully but didn't
+commit), inspect the worktree before running `/resume-build`. If the
+output is clearly incomplete — e.g. only stub files, half-written
+imports, missing expected artefacts — manually `git -C
+projects/<name>/.claude/worktrees/<worktree> reset --hard <branch>`
+before resuming. The new commit-and-advance rule will then see a
+clean worktree and route to the `clean` recovery class instead.
+
+Future work: bug-020 Layer 3 (deferred) tracks a per-agent
+`lastAgentCompletedAt` timestamp on the in-flight snapshot so the
+classifier can distinguish completed-uncommitted vs mid-execution
+without operator inspection. Spawn a follow-up bug if the manual
+workaround proves insufficient.
 
 Build a `recoveryPlan[]` array with one entry per in-flight feature:
 
@@ -129,8 +163,8 @@ Build a `recoveryPlan[]` array with one entry per in-flight feature:
   },
   {
     "featureId": "feat-search",
-    "class": "dirty-builder",
-    "action": "soft-reset + retry web-frontend-builder"
+    "class": "dirty-advance",
+    "action": "commit + advance to web-frontend-builder"
   }
 ]
 ```
