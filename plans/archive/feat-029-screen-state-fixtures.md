@@ -1,7 +1,11 @@
 ---
 id: feat-029-screen-state-fixtures
 type: feature
-status: draft
+status: completed
+outcome: shipped
+approved-at: 2026-04-28
+approved-by: human
+completed-at: 2026-04-28
 author-agent: claude-opus-4-7
 created: 2026-04-28
 updated: 2026-04-28
@@ -198,12 +202,59 @@ Update `.claude/skills/parity-verify/SKILL.md` (drafted by feat-028) to document
 
 ## Attempt Log
 
-<!-- Populated automatically by agents.
+### Attempt 1 — Implementation (background agent a41792e2d1154522d, completed 2026-04-28)
 
-RETRY POLICY:
-  Attempt 1-2: Try different approaches
-  Attempt 3: Run /plan-investigation
-  Attempt 4: Try investigation's recommendation
-  Attempt 5: STOP and escalate to human
-  NEVER exceed 5 attempts on the same error
--->
+All 5 phases shipped in single pass. Also closed feat-028's
+`.claude/skills/parity-verify/SKILL.md` gap (created the file the prior
+agent skipped, documenting the differ + fixture system together).
+
+Test counts: contracts 324→344 (+20), orchestrator 483→544 (+61), total
+807→888 (+81 — exceeds the +49 dispatch estimate; coverage came in stronger
+than planned).
+
+## Outcome
+
+**Status: completed (shipped 2026-04-28; commit ce00f41)**
+
+Verified by:
+
+- 81 new tests (20 contracts + 19 derive-fixture + 28 seed-app-state +
+  7+7 resolveFixturePath in audit-cs/diff-kit)
+- Both `--help` invocations exit 0
+- `grep -c "data-kit-component" .claude/skills/agents/front-end/react-next/SKILL.md`
+  returns 5 (preserves feat-028 contract + adds fixture seed contract)
+
+## Lessons learned
+
+- **Phase 2 implementation pattern: full ready-to-paste snippets in builder
+  SKILLs beat abstract requirements**. The dispatch instruction said
+  "probably documented snippet inside SKILL files since we don't ship to
+  projects/\*". The agent took it literally and gave React+Svelte
+  implementations side-by-side with framework-specific guards
+  (`process.env.NODE_ENV` for Next, `import.meta.env.DEV` for Vite). When
+  the next builder runs against an updated SKILL, they paste verbatim and
+  pass the grep self-verify on first try.
+- **Conditional-load Playwright keeps unit tests deterministic**: the agent
+  loaded Playwright only inside the CLI branch + duck-typed `PageLike` in
+  unit tests via recording stubs. Avoids the cross-platform tmp-file +
+  browser-bin headache feat-028 hit.
+- **`@inherit-from:` convention** for cross-fixture composition (Pattern B
+  start-state inherits from Pattern A) is a clean way to keep `home` as
+  the canonical seeded-state and have `search-empty` etc. layer on top.
+- **ESM CLI guard pattern reuse**: the agent shipped a shared `isMainModule()`
+  helper across all 4 new CLI scripts (derive-fixture, seed-app-state +
+  the 2 feat-028 differ extensions). Same pattern; one mental model.
+
+## Follow-ups
+
+- **Auto-derive against non-kanban archetypes**: Phase 1 currently maps
+  `[data-kit-component="Board" / "Column" / "Card"]` to a kanban store
+  shape. Apps with different kit-primitive vocabulary (e.g. dashboards
+  with KPI cards, list views) will need archetype detection or per-app
+  mapping configs. Defer until a non-kanban project hits this.
+- **Multi-board variability**: open-question item resolved in favor of
+  exact (mockup shows 3 boards → fixture seeds 3 boards). Empirical
+  validation deferred to first kanban-11+ run.
+- **Modal-open states** (open question): Pattern B with preAction
+  `[click first card]` is the design; verify on first run.
+- **Localization**: deferred per Non-goals; v1 = single locale per project.
