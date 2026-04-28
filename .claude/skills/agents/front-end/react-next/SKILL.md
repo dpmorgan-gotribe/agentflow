@@ -163,6 +163,102 @@ grep -rE "data-kit-component" apps/web/src apps/web/components apps/web/app 2>/d
 
 A count of 0 in a feature whose mockups DO use kit primitives is a strong signal that the translation pass dropped the attributes — re-check each `page.tsx` against its mockup. The actual contract enforcement happens in `/build-to-spec-verify`'s parity stage which renders the built page + diffs against the mockup HTML; this self-verify only catches the most-egregious omissions before the orchestrator gets there.
 
+### 2c. Dev-only `__seedFromUrl` helper (feat-029 fixture seed contract)
+
+The post-build parity verifier (feat-028 + feat-029) navigates to `/?_seed=<screenId>` to populate the app with the same data shape the mockup depicts BEFORE diffing the rendered DOM. Without this, the built app renders empty (no boards, no cards, no settings) while the mockup shows populated state — every parity check fails for the wrong reason ("everything missing").
+
+Every project MUST ship a dev-only `__seedFromUrl` helper that:
+
+1. Reads `?_seed=<id>` from `window.location.search`
+2. Fetches `/docs/screens/webapp/fixtures/<id>.fixture.json`
+3. Applies the fixture's `storeState` to `localStorage` (or whichever persistence layer the store reads from on hydration)
+4. Strips the query param + reloads the page so the store rehydrates from seeded state
+5. Is a NO-OP in production builds (guarded by `process.env.NODE_ENV !== "production"`)
+
+Canonical implementation lives at `apps/web/src/lib/dev-seed.ts`:
+
+```ts
+// apps/web/src/lib/dev-seed.ts
+// Dev-only fixture seeder for the post-build parity verifier (feat-029).
+// In production this whole module compiles to a no-op via the NODE_ENV guard.
+"use client";
+
+import { useEffect } from "react";
+
+const STORAGE_KEY = "app-store"; // match your Zustand persist key
+
+export function useDevSeedOnMount(): void {
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const seedId = params.get("_seed");
+    if (!seedId) return;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/docs/screens/webapp/fixtures/${seedId}.fixture.json`,
+        );
+        if (!res.ok) {
+          console.warn(
+            `[dev-seed] fixture ${seedId} not found (${res.status})`,
+          );
+          return;
+        }
+        const fixture = await res.json();
+        window.localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ state: fixture.storeState, version: 0 }),
+        );
+        // Strip the query param + reload so the store rehydrates from seeded state.
+        const url = new URL(window.location.href);
+        url.searchParams.delete("_seed");
+        window.location.replace(url.toString());
+      } catch (err) {
+        console.warn("[dev-seed] failed to apply fixture:", err);
+      }
+    })();
+  }, []);
+}
+```
+
+Wire into the providers shell at `apps/web/components/providers.tsx`:
+
+```tsx
+// apps/web/components/providers.tsx
+"use client";
+
+import { useDevSeedOnMount } from "@/lib/dev-seed";
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  useDevSeedOnMount(); // no-op in production
+  return <>{children}</>;
+}
+```
+
+**Production-build exclusion contract:** the `process.env.NODE_ENV === "production"` guard is the FIRST statement inside the effect. Next.js inlines `process.env.NODE_ENV` at build time, so the production bundle compiles the entire fetch+localStorage block away as dead code. Verify with:
+
+```bash
+pnpm --filter @repo/web build
+grep -r "useDevSeedOnMount" apps/web/.next/static/chunks/ | wc -l
+# Expect: 0 (dead-code-eliminated)
+```
+
+**Self-verify command** (run before reporting `taskStatus: "completed"` for ANY feature that touches `apps/web/components/providers.tsx`):
+
+```bash
+# Confirm helper file exists + is wired into Providers
+test -f apps/web/src/lib/dev-seed.ts && echo "ok: dev-seed.ts present"
+grep -c "useDevSeedOnMount" apps/web/components/providers.tsx
+# Expect: ≥1
+grep -c "process.env.NODE_ENV" apps/web/src/lib/dev-seed.ts
+# Expect: ≥1 (production guard required)
+```
+
+A count of 0 on either grep is a feature-failing condition — the parity verifier downstream will produce no useful signal without the seed handler in place.
+
+**Storage-key alignment:** the `STORAGE_KEY` constant MUST match the `name` your Zustand `persist()` middleware uses (or equivalent for Jotai's `atomWithStorage` / Redux Persist's `key`). Mismatch = seeded data sits in localStorage but the store reads from a different key + ignores it. PM-emitted store-slice scaffold should hardcode the key as a re-exportable constant from `apps/web/src/store/index.ts` so dev-seed.ts and the store agree on a single source of truth.
+
 - **`cn()` from `@repo/ui-kit/lib/cn`** for className composition — not `clsx` directly, not hand-concatenated strings. Consistent merging of Tailwind class conflicts via `tailwind-merge`.
 - **Forms: React Hook Form + Zod.** Import Zod schemas from `@repo/types`; use `zodResolver`. Never re-declare the schema in the component.
 - **Loading + error UI** via `loading.tsx` + `error.tsx` co-located with each `page.tsx`. Use kit's `Skeleton` for loading.

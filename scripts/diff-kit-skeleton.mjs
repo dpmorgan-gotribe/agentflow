@@ -29,6 +29,7 @@
 //   prints JSON to stdout.
 
 import fs from "node:fs";
+import path from "node:path";
 
 // ─── Tiny HTML walker ────────────────────────────────────────────────────────
 //
@@ -396,36 +397,155 @@ export function diffAndClassify({ screenId, mockupHtml, builtHtml }) {
   };
 }
 
+// ─── Fixture resolution (feat-029 Phase 4) ───────────────────────────────────
+//
+// The Playwright wrapper that drives this differ needs to know which
+// `ScreenFixture` to apply via `?_seed=<screenId>` BEFORE snapshotting
+// the built page. Two routing modes:
+//
+//   1. Explicit `--fixture <path>` flag — operator/orchestrator passes
+//      the resolved path verbatim. Used when the orchestrator has
+//      already resolved a per-screen override (e.g. flow-context fixtures
+//      that don't match the auto-derived filename).
+//
+//   2. Auto-resolve — given `<projectDir>` + `<screenId>`, look for
+//      `<projectDir>/docs/screens/<platform>/fixtures/<screen>.fixture.json`
+//      (platform defaults to `webapp`). If present, return its absolute
+//      path; otherwise return null (the wrapper falls back to no-seed
+//      mode, which still surfaces useful divergences for static screens
+//      like marketing/auth that don't need data).
+//
+// The resolver is a pure function — it doesn't read or seed; just maps
+// the inputs to a path the orchestrator wrapper hands to
+// `seed-app-state.mjs`. Pure-Node + dependency-free.
+
+/**
+ * Resolve the fixture path for a given (projectDir, screenId) tuple.
+ * Returns null when no fixture exists at the canonical location AND the
+ * caller didn't provide an explicit override.
+ *
+ * @param {{
+ *   projectDir?: string,
+ *   screenId: string,
+ *   platform?: string,
+ *   explicitPath?: string|null,
+ * }} args
+ * @returns {string|null}
+ */
+export function resolveFixturePath({
+  projectDir,
+  screenId,
+  platform = "webapp",
+  explicitPath = null,
+}) {
+  if (explicitPath) {
+    const abs = path.resolve(explicitPath);
+    return fs.existsSync(abs) ? abs : null;
+  }
+  if (!projectDir) return null;
+  const auto = path.join(
+    path.resolve(projectDir),
+    "docs",
+    "screens",
+    platform,
+    "fixtures",
+    `${screenId}.fixture.json`,
+  );
+  return fs.existsSync(auto) ? auto : null;
+}
+
 // ─── CLI mode (debug only) ───────────────────────────────────────────────────
 
-if (
-  process.argv[1] &&
-  (import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}` ||
-    import.meta.url === `file:///${process.argv[1].replace(/\\/g, "/")}`)
-) {
-  const [, , mockupPath, builtPath, screenId = "unknown"] = process.argv;
-  if (!mockupPath || !builtPath) {
+function parseCliArgs(argv) {
+  const out = {
+    mockupPath: null,
+    builtPath: null,
+    screenId: "unknown",
+    fixture: null,
+    projectDir: null,
+    platform: "webapp",
+    help: false,
+    positional: [],
+  };
+  for (let i = 2; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--help" || a === "-h") out.help = true;
+    else if (a === "--fixture") out.fixture = argv[++i];
+    else if (a === "--project-dir") out.projectDir = argv[++i];
+    else if (a === "--platform") out.platform = argv[++i];
+    else if (a === "--screen") out.screenId = argv[++i];
+    else if (a.startsWith("--")) {
+      // Unknown flag; ignore
+    } else {
+      out.positional.push(a);
+    }
+  }
+  // Backwards-compat: positional <mockup> <built> [screenId]
+  if (out.positional[0] && !out.mockupPath) out.mockupPath = out.positional[0];
+  if (out.positional[1] && !out.builtPath) out.builtPath = out.positional[1];
+  if (out.positional[2] && out.screenId === "unknown")
+    out.screenId = out.positional[2];
+  return out;
+}
+
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  const argvUrl = `file://${process.argv[1].replace(/\\/g, "/")}`;
+  const argvUrlTriple = `file:///${process.argv[1].replace(/\\/g, "/")}`;
+  return import.meta.url === argvUrl || import.meta.url === argvUrlTriple;
+}
+
+if (isMainModule()) {
+  const args = parseCliArgs(process.argv);
+  if (args.help) {
+    console.log(
+      [
+        "diff-kit-skeleton.mjs — feat-028 + feat-029",
+        "",
+        "Usage:",
+        "  node scripts/diff-kit-skeleton.mjs <mockup.html> <built.html> [screenId] [--fixture <path>]",
+        "  node scripts/diff-kit-skeleton.mjs <mockup.html> <built.html> --screen <id> --project-dir <dir>",
+        "",
+        "Flags:",
+        "  --fixture <path>      explicit fixture override (overrides auto-resolve)",
+        "  --project-dir <path>  enables fixture auto-resolve from docs/screens/<platform>/fixtures/<screen>.fixture.json",
+        "  --platform <name>     default 'webapp'; used by auto-resolve",
+        "  --screen <id>         alternative way to pass screenId",
+        "",
+        "Output: JSON to stdout. Includes resolvedFixturePath when present.",
+      ].join("\n"),
+    );
+    process.exit(0);
+  }
+  if (!args.mockupPath || !args.builtPath) {
     console.error(
-      "usage: node scripts/diff-kit-skeleton.mjs <mockup.html> <built.html> [screenId]",
+      "usage: node scripts/diff-kit-skeleton.mjs <mockup.html> <built.html> [screenId] [--fixture <path>]",
     );
     process.exit(2);
   }
-  const mockupHtml = fs.readFileSync(mockupPath, "utf8");
-  const builtHtml = fs.readFileSync(builtPath, "utf8");
+  const mockupHtml = fs.readFileSync(args.mockupPath, "utf8");
+  const builtHtml = fs.readFileSync(args.builtPath, "utf8");
   const { diff, divergences } = diffAndClassify({
-    screenId,
+    screenId: args.screenId,
     mockupHtml,
     builtHtml,
+  });
+  const resolvedFixturePath = resolveFixturePath({
+    projectDir: args.projectDir,
+    screenId: args.screenId,
+    platform: args.platform,
+    explicitPath: args.fixture,
   });
   console.log(
     JSON.stringify(
       {
-        screenId,
+        screenId: args.screenId,
         mockupNodeCount: diff.mockupNodeCount,
         builtNodeCount: diff.builtNodeCount,
         missingCount: diff.missing.length,
         extraCount: diff.extra.length,
         variantDriftCount: diff.variantDrift.length,
+        resolvedFixturePath,
         divergences,
       },
       null,

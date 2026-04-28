@@ -28,6 +28,7 @@
 //   node scripts/audit-computed-styles.mjs <mockup-snap.json> <built-snap.json> [screenId]
 
 import fs from "node:fs";
+import path from "node:path";
 
 // ─── Curated property list ──────────────────────────────────────────────────
 //
@@ -315,35 +316,141 @@ export function auditAndClassify({ screenId, mockupSnapshot, builtSnapshot }) {
   };
 }
 
+// ─── Fixture resolution (feat-029 Phase 4) ───────────────────────────────────
+//
+// Mirror of `diff-kit-skeleton.mjs#resolveFixturePath`. The Playwright
+// wrapper that captures the built snapshot uses this to know which
+// `ScreenFixture` to seed via `?_seed=<screenId>` BEFORE
+// `getComputedStyle()` is sampled.
+//
+// Pure function — does NOT read or seed; just maps inputs to a path the
+// orchestrator wrapper hands to `seed-app-state.mjs`.
+
+/**
+ * Resolve the fixture path for a given (projectDir, screenId) tuple.
+ * Returns null when no fixture exists at the canonical location AND the
+ * caller didn't provide an explicit override.
+ *
+ * @param {{
+ *   projectDir?: string,
+ *   screenId: string,
+ *   platform?: string,
+ *   explicitPath?: string|null,
+ * }} args
+ * @returns {string|null}
+ */
+export function resolveFixturePath({
+  projectDir,
+  screenId,
+  platform = "webapp",
+  explicitPath = null,
+}) {
+  if (explicitPath) {
+    const abs = path.resolve(explicitPath);
+    return fs.existsSync(abs) ? abs : null;
+  }
+  if (!projectDir) return null;
+  const auto = path.join(
+    path.resolve(projectDir),
+    "docs",
+    "screens",
+    platform,
+    "fixtures",
+    `${screenId}.fixture.json`,
+  );
+  return fs.existsSync(auto) ? auto : null;
+}
+
 // ─── CLI mode (debug only) ───────────────────────────────────────────────────
 
-if (
-  process.argv[1] &&
-  (import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}` ||
-    import.meta.url === `file:///${process.argv[1].replace(/\\/g, "/")}`)
-) {
-  const [, , mockupSnapPath, builtSnapPath, screenId = "unknown"] =
-    process.argv;
-  if (!mockupSnapPath || !builtSnapPath) {
+function parseCliArgs(argv) {
+  const out = {
+    mockupSnapPath: null,
+    builtSnapPath: null,
+    screenId: "unknown",
+    fixture: null,
+    projectDir: null,
+    platform: "webapp",
+    help: false,
+    positional: [],
+  };
+  for (let i = 2; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--help" || a === "-h") out.help = true;
+    else if (a === "--fixture") out.fixture = argv[++i];
+    else if (a === "--project-dir") out.projectDir = argv[++i];
+    else if (a === "--platform") out.platform = argv[++i];
+    else if (a === "--screen") out.screenId = argv[++i];
+    else if (a.startsWith("--")) {
+      // Unknown flag; ignore
+    } else {
+      out.positional.push(a);
+    }
+  }
+  if (out.positional[0]) out.mockupSnapPath = out.positional[0];
+  if (out.positional[1]) out.builtSnapPath = out.positional[1];
+  if (out.positional[2] && out.screenId === "unknown")
+    out.screenId = out.positional[2];
+  return out;
+}
+
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  const argvUrl = `file://${process.argv[1].replace(/\\/g, "/")}`;
+  const argvUrlTriple = `file:///${process.argv[1].replace(/\\/g, "/")}`;
+  return import.meta.url === argvUrl || import.meta.url === argvUrlTriple;
+}
+
+if (isMainModule()) {
+  const args = parseCliArgs(process.argv);
+  if (args.help) {
+    console.log(
+      [
+        "audit-computed-styles.mjs — feat-028 + feat-029",
+        "",
+        "Usage:",
+        "  node scripts/audit-computed-styles.mjs <mockup-snap.json> <built-snap.json> [screenId] [--fixture <path>]",
+        "",
+        "Flags:",
+        "  --fixture <path>      explicit fixture override (overrides auto-resolve)",
+        "  --project-dir <path>  enables fixture auto-resolve",
+        "  --platform <name>     default 'webapp'",
+        "  --screen <id>         alternative way to pass screenId",
+        "",
+        "Output: JSON to stdout. Includes resolvedFixturePath when present.",
+      ].join("\n"),
+    );
+    process.exit(0);
+  }
+  if (!args.mockupSnapPath || !args.builtSnapPath) {
     console.error(
       "usage: node scripts/audit-computed-styles.mjs <mockup-snap.json> <built-snap.json> [screenId]",
     );
     process.exit(2);
   }
-  const mockupSnapshot = JSON.parse(fs.readFileSync(mockupSnapPath, "utf8"));
-  const builtSnapshot = JSON.parse(fs.readFileSync(builtSnapPath, "utf8"));
+  const mockupSnapshot = JSON.parse(
+    fs.readFileSync(args.mockupSnapPath, "utf8"),
+  );
+  const builtSnapshot = JSON.parse(fs.readFileSync(args.builtSnapPath, "utf8"));
   const { diff, divergences } = auditAndClassify({
-    screenId,
+    screenId: args.screenId,
     mockupSnapshot,
     builtSnapshot,
+  });
+  const resolvedFixturePath = resolveFixturePath({
+    projectDir: args.projectDir,
+    screenId: args.screenId,
+    platform: args.platform,
+    explicitPath: args.fixture,
   });
   console.log(
     JSON.stringify(
       {
-        screenId,
+        screenId: args.screenId,
         selectorsCompared: diff.selectorsCompared,
         missingInBuilt: diff.missingInBuilt,
         styleDriftCount: diff.styleDrift.length,
+        resolvedFixturePath,
         divergences,
       },
       null,

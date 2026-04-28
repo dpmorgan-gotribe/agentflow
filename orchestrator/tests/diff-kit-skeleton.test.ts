@@ -1,5 +1,8 @@
 // @ts-nocheck — testing a .mjs script via dynamic import; no type declarations.
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const importDiffer = async () =>
   (await import("../../scripts/diff-kit-skeleton.mjs")) as typeof import("../../scripts/diff-kit-skeleton.mjs");
@@ -219,5 +222,112 @@ describe("classifyDivergence", () => {
     const diff = diffKitSkeleton({ mockupHtml: html, builtHtml: html });
     const divs = classifyDivergence("home", diff);
     expect(divs).toEqual([]);
+  });
+});
+
+// ─── resolveFixturePath (feat-029 Phase 4) ───────────────────────────────
+
+describe("resolveFixturePath", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "diff-kit-fixture-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns the explicit path when --fixture is provided + file exists", async () => {
+    const { resolveFixturePath } = await importDiffer();
+    const fixturePath = path.join(tmpDir, "home.fixture.json");
+    fs.writeFileSync(fixturePath, "{}");
+    const resolved = resolveFixturePath({
+      screenId: "home",
+      explicitPath: fixturePath,
+    });
+    expect(resolved).toBe(path.resolve(fixturePath));
+  });
+
+  it("returns null when explicit path is provided but file does not exist", async () => {
+    const { resolveFixturePath } = await importDiffer();
+    const resolved = resolveFixturePath({
+      screenId: "home",
+      explicitPath: path.join(tmpDir, "missing.fixture.json"),
+    });
+    expect(resolved).toBeNull();
+  });
+
+  it("auto-resolves from <projectDir>/docs/screens/<platform>/fixtures/<screen>.fixture.json", async () => {
+    const { resolveFixturePath } = await importDiffer();
+    const fixturesDir = path.join(
+      tmpDir,
+      "docs",
+      "screens",
+      "webapp",
+      "fixtures",
+    );
+    fs.mkdirSync(fixturesDir, { recursive: true });
+    const fixturePath = path.join(fixturesDir, "home.fixture.json");
+    fs.writeFileSync(fixturePath, "{}");
+    const resolved = resolveFixturePath({
+      projectDir: tmpDir,
+      screenId: "home",
+    });
+    // Use path.resolve for cross-platform comparison (Windows backslashes)
+    expect(resolved).toBe(path.resolve(fixturePath));
+  });
+
+  it("returns null when projectDir given but no fixture exists for screen", async () => {
+    const { resolveFixturePath } = await importDiffer();
+    const resolved = resolveFixturePath({
+      projectDir: tmpDir,
+      screenId: "home",
+    });
+    expect(resolved).toBeNull();
+  });
+
+  it("returns null when neither projectDir nor explicitPath provided", async () => {
+    const { resolveFixturePath } = await importDiffer();
+    const resolved = resolveFixturePath({ screenId: "home" });
+    expect(resolved).toBeNull();
+  });
+
+  it("respects platform override for auto-resolve", async () => {
+    const { resolveFixturePath } = await importDiffer();
+    const fixturesDir = path.join(
+      tmpDir,
+      "docs",
+      "screens",
+      "mobile",
+      "fixtures",
+    );
+    fs.mkdirSync(fixturesDir, { recursive: true });
+    const fixturePath = path.join(fixturesDir, "home.fixture.json");
+    fs.writeFileSync(fixturePath, "{}");
+    const resolved = resolveFixturePath({
+      projectDir: tmpDir,
+      screenId: "home",
+      platform: "mobile",
+    });
+    expect(resolved).toBe(path.resolve(fixturePath));
+  });
+
+  it("explicit path takes precedence over auto-resolve when both available", async () => {
+    const { resolveFixturePath } = await importDiffer();
+    // Create a file at the auto-resolve location
+    const autoDir = path.join(tmpDir, "docs", "screens", "webapp", "fixtures");
+    fs.mkdirSync(autoDir, { recursive: true });
+    const autoPath = path.join(autoDir, "home.fixture.json");
+    fs.writeFileSync(autoPath, "{}");
+    // And a different explicit override
+    const explicitPath = path.join(tmpDir, "override.fixture.json");
+    fs.writeFileSync(explicitPath, "{}");
+    const resolved = resolveFixturePath({
+      projectDir: tmpDir,
+      screenId: "home",
+      explicitPath,
+    });
+    expect(resolved).toBe(path.resolve(explicitPath));
   });
 });

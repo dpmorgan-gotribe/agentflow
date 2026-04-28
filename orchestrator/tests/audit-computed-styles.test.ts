@@ -1,5 +1,8 @@
 // @ts-nocheck — testing a .mjs script via dynamic import; no type declarations.
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const importAudit = async () =>
   (await import("../../scripts/audit-computed-styles.mjs")) as typeof import("../../scripts/audit-computed-styles.mjs");
@@ -216,5 +219,92 @@ describe("classifyStyleDivergence", () => {
     });
     const patterns = out.map((d) => d.pattern).sort();
     expect(patterns).toEqual(["spacing-token-drift", "token-drift"]);
+  });
+});
+
+// ─── resolveFixturePath (feat-029 Phase 4) ───────────────────────────────
+
+describe("resolveFixturePath", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "audit-cs-fixture-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns the explicit path when provided + file exists", async () => {
+    const { resolveFixturePath } = await importAudit();
+    const fixturePath = path.join(tmpDir, "home.fixture.json");
+    fs.writeFileSync(fixturePath, "{}");
+    expect(
+      resolveFixturePath({ screenId: "home", explicitPath: fixturePath }),
+    ).toBe(path.resolve(fixturePath));
+  });
+
+  it("returns null when explicit path missing", async () => {
+    const { resolveFixturePath } = await importAudit();
+    expect(
+      resolveFixturePath({
+        screenId: "home",
+        explicitPath: path.join(tmpDir, "missing.json"),
+      }),
+    ).toBeNull();
+  });
+
+  it("auto-resolves at canonical project location", async () => {
+    const { resolveFixturePath } = await importAudit();
+    const dir = path.join(tmpDir, "docs", "screens", "webapp", "fixtures");
+    fs.mkdirSync(dir, { recursive: true });
+    const fixturePath = path.join(dir, "settings.fixture.json");
+    fs.writeFileSync(fixturePath, "{}");
+    expect(
+      resolveFixturePath({ projectDir: tmpDir, screenId: "settings" }),
+    ).toBe(path.resolve(fixturePath));
+  });
+
+  it("returns null when no fixture exists at canonical location", async () => {
+    const { resolveFixturePath } = await importAudit();
+    expect(
+      resolveFixturePath({ projectDir: tmpDir, screenId: "home" }),
+    ).toBeNull();
+  });
+
+  it("returns null when called with no projectDir + no explicitPath", async () => {
+    const { resolveFixturePath } = await importAudit();
+    expect(resolveFixturePath({ screenId: "home" })).toBeNull();
+  });
+
+  it("respects platform override", async () => {
+    const { resolveFixturePath } = await importAudit();
+    const dir = path.join(tmpDir, "docs", "screens", "mobile", "fixtures");
+    fs.mkdirSync(dir, { recursive: true });
+    const fixturePath = path.join(dir, "home.fixture.json");
+    fs.writeFileSync(fixturePath, "{}");
+    expect(
+      resolveFixturePath({
+        projectDir: tmpDir,
+        screenId: "home",
+        platform: "mobile",
+      }),
+    ).toBe(path.resolve(fixturePath));
+  });
+
+  it("explicit path takes precedence over auto-resolve", async () => {
+    const { resolveFixturePath } = await importAudit();
+    const autoDir = path.join(tmpDir, "docs", "screens", "webapp", "fixtures");
+    fs.mkdirSync(autoDir, { recursive: true });
+    fs.writeFileSync(path.join(autoDir, "home.fixture.json"), "{}");
+    const explicit = path.join(tmpDir, "override.fixture.json");
+    fs.writeFileSync(explicit, "{}");
+    expect(
+      resolveFixturePath({
+        projectDir: tmpDir,
+        screenId: "home",
+        explicitPath: explicit,
+      }),
+    ).toBe(path.resolve(explicit));
   });
 });
