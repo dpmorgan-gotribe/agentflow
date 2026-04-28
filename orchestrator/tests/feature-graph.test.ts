@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   Feature,
+  FeatureGraphProgress,
   GitAgentOutput,
   TasksV2,
 } from "@repo/orchestrator-contracts";
@@ -1808,7 +1809,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
     // Arrange: pretend a prior run got through backend-builder, paused
     // before tester. The on-disk snapshot has an inFlight entry with
     // lastAgent=backend-builder, nextAgent=tester.
-    const seedProgress = {
+    const seedProgress: FeatureGraphProgress = {
       version: "1.0",
       pipelineRunId: "pipe-test-001",
       lastUpdatedAt: NOW_ISO,
@@ -1827,7 +1828,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
           dispatchedAt: NOW_ISO,
         },
       ],
-    } as const;
+    };
 
     // Track which agents are dispatched. We expect: NO checkout-feature,
     // tester (the resume-from agent), reviewer, then close-feature.
@@ -1866,8 +1867,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
 
     const tasks: TasksV2 = {
       version: "2.0",
-      project: "test",
-      generatedAt: NOW_ISO,
+      warnings: [],
       features: [buildFeature()],
     };
 
@@ -1892,7 +1892,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
   it("skips agent_sequence walk entirely when nextAgent === null + goes straight to close-feature", async () => {
     // Arrange: prior run completed reviewer (the last agent in the
     // sequence) but paused before close-feature. Snapshot has nextAgent=null.
-    const seedProgress = {
+    const seedProgress: FeatureGraphProgress = {
       version: "1.0",
       pipelineRunId: "pipe-test-001",
       lastUpdatedAt: NOW_ISO,
@@ -1911,7 +1911,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
           dispatchedAt: NOW_ISO,
         },
       ],
-    } as const;
+    };
 
     const dispatched: string[] = [];
     const invokeAgent: InvokeAgentFn = async (args) => {
@@ -1946,8 +1946,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
 
     const tasks: TasksV2 = {
       version: "2.0",
-      project: "test",
-      generatedAt: NOW_ISO,
+      warnings: [],
       features: [buildFeature()],
     };
 
@@ -1963,7 +1962,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
     // Arrange: tasks.yaml was edited between pause + resume, removing the
     // agent that was the snapshot's nextAgent. Resume must NOT crash —
     // conservative fallback: walk from start.
-    const seedProgress = {
+    const seedProgress: FeatureGraphProgress = {
       version: "1.0",
       pipelineRunId: "pipe-test-001",
       lastUpdatedAt: NOW_ISO,
@@ -1983,7 +1982,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
           dispatchedAt: NOW_ISO,
         },
       ],
-    } as const;
+    };
 
     const dispatched: string[] = [];
     const invokeAgent: InvokeAgentFn = async (args) => {
@@ -2018,8 +2017,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
 
     const tasks: TasksV2 = {
       version: "2.0",
-      project: "test",
-      generatedAt: NOW_ISO,
+      warnings: [],
       features: [buildFeature()],
     };
 
@@ -2038,7 +2036,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
 
   it("skips features already in seed.completed[] without dispatching them", async () => {
     // Arrange: prior run merged feat-auth. New run should not re-dispatch.
-    const seedProgress = {
+    const seedProgress: FeatureGraphProgress = {
       version: "1.0",
       pipelineRunId: "pipe-test-001",
       lastUpdatedAt: NOW_ISO,
@@ -2047,7 +2045,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
       failed: [],
       aborted: [],
       inFlight: [],
-    } as const;
+    };
 
     let invocations = 0;
     const invokeAgent: InvokeAgentFn = async () => {
@@ -2061,8 +2059,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
 
     const tasks: TasksV2 = {
       version: "2.0",
-      project: "test",
-      generatedAt: NOW_ISO,
+      warnings: [],
       features: [buildFeature()],
     };
 
@@ -2077,7 +2074,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
   });
 
   it("skips features already in seed.failed[] + records carryover reason", async () => {
-    const seedProgress = {
+    const seedProgress: FeatureGraphProgress = {
       version: "1.0",
       pipelineRunId: "pipe-test-001",
       lastUpdatedAt: NOW_ISO,
@@ -2086,7 +2083,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
       failed: ["feat-auth"],
       aborted: [],
       inFlight: [],
-    } as const;
+    };
 
     let invocations = 0;
     const invokeAgent: InvokeAgentFn = async () => {
@@ -2096,8 +2093,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
 
     const tasks: TasksV2 = {
       version: "2.0",
-      project: "test",
-      generatedAt: NOW_ISO,
+      warnings: [],
       features: [buildFeature()],
     };
 
@@ -2160,8 +2156,7 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
 
     const tasks: TasksV2 = {
       version: "2.0",
-      project: "test",
-      generatedAt: NOW_ISO,
+      warnings: [],
       features: [buildFeature()],
     };
 

@@ -36,6 +36,7 @@ import type {
   InvokeAgentResult,
 } from "./feature-graph.js";
 import { readModelConfig, type ModelConfig } from "./model-config.js";
+import { PauseSignal } from "./pause.js";
 import type { QueryFn } from "./stage-runner.js";
 
 const execAsync = promisify(exec);
@@ -1207,7 +1208,15 @@ async function runLlmAgent(
               pauseInfo.resetsAt = evt.rate_limit_info.resetsAt;
             }
             await cfg.onRateLimitPause(pauseInfo);
-          } catch {
+          } catch (err) {
+            // bug-022: re-throw PauseSignal — it's the hook's success path,
+            // not a failure. Swallowing it would let the SDK loop continue
+            // past the rate-limit event, complete the agent, advance
+            // orchestrator state, and only halt at the NEXT iteration's
+            // sentinel poll — overwriting the original cause with
+            // reason="user-request". Other errors stay swallowed (a buggy
+            // hook shouldn't crash the SDK loop).
+            if (err instanceof PauseSignal) throw err;
             /* swallow — pause helper failures shouldn't crash the loop */
           }
         }
@@ -1220,7 +1229,9 @@ async function runLlmAgent(
         if (am.error === "authentication_failed" && cfg.onAuthFailedPause) {
           try {
             await cfg.onAuthFailedPause({ detail: am.error });
-          } catch {
+          } catch (err) {
+            // bug-022: re-throw PauseSignal — see onRateLimitPause catch.
+            if (err instanceof PauseSignal) throw err;
             /* same — never fail the loop on a pause-helper bug */
           }
         }
@@ -1232,6 +1243,16 @@ async function runLlmAgent(
       }
     }
   } catch (err) {
+    // bug-022: PauseSignal from a pause-hook re-throw bubbles up through
+    // this outer for-await catch. Without this re-throw, queryThrew swallows
+    // it and the agent appears to "fail" with the pause message, which
+    // hides the real cause AND lets runFeature treat it as a task failure
+    // (retry budget burn). PauseSignal must propagate to cli.ts for
+    // exit 0 + the original reason in paused.json.
+    if (err instanceof PauseSignal) {
+      clearTimers();
+      throw err;
+    }
     queryThrew = err instanceof Error ? err : new Error(String(err));
   } finally {
     clearTimers();
@@ -1262,7 +1283,9 @@ async function runLlmAgent(
           lastKeepAliveAt,
           dispatchedAt,
         });
-      } catch {
+      } catch (err) {
+        // bug-022: re-throw PauseSignal — see onRateLimitPause catch.
+        if (err instanceof PauseSignal) throw err;
         /* swallow */
       }
     }

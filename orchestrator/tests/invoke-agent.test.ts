@@ -19,6 +19,7 @@ import {
   type ShellExecFn,
   tryAutoResolveLockfileConflicts,
 } from "../src/invoke-agent.js";
+import { PauseSignal } from "../src/pause.js";
 import type { QueryFn } from "../src/stage-runner.js";
 
 /**
@@ -3681,5 +3682,245 @@ describe("runCloseFeature lockfile auto-resolve integration (bug-012)", () => {
     // pnpm was never invoked (strict gate bailed)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(((shellExec as any).calls as string[]).length).toBe(0);
+  });
+});
+
+// ─── bug-022 — PauseSignal must propagate through pause-hook catches ──
+//
+// Pre-bug-022, the catch around each pause-hook (onRateLimitPause,
+// onAuthFailedPause, onStallTimeoutPause) in runLlmAgent swallowed
+// PauseSignal. The agent's SDK loop continued past the rate-limit /
+// auth-failed / stall event, the agent "completed", and only the next
+// iteration's pause-sentinel poll halted the run — overwriting the
+// original pause reason with reason="user-request".
+//
+// Fix: re-throw PauseSignal from each catch. Other errors (genuinely
+// buggy hooks) stay swallowed so they don't crash the SDK loop.
+describe("invokeAgent — bug-022 PauseSignal propagation", () => {
+  /**
+   * Helper: build a queryFn that emits a sequence of fake SDK messages
+   * (rate_limit_event / assistant / result) so we can exercise the hook
+   * call sites without standing up a real SDK.
+   */
+  function makeMessageScriptedQuery(
+    messages: ReadonlyArray<unknown>,
+  ): QueryFn & { calls: Array<{ prompt: string; options: unknown }> } {
+    const calls: Array<{ prompt: string; options: unknown }> = [];
+    const fn: QueryFn = ({ prompt, options }) => {
+      calls.push({
+        prompt: typeof prompt === "string" ? prompt : "<streaming>",
+        options,
+      });
+      async function* gen(): AsyncGenerator<unknown, void> {
+        for (const m of messages) yield m;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return gen() as any;
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fn as any).calls = calls;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return fn as any;
+  }
+
+  it("onRateLimitPause throwing PauseSignal propagates out of invoke()", async () => {
+    const budget = mkBudget();
+    const queryFn = makeMessageScriptedQuery([
+      // Rate-limit event arrives FIRST — the hook fires here.
+      {
+        type: "rate_limit_event",
+        rate_limit_info: { rateLimitType: "five_hour", status: "exceeded" },
+      },
+      // Then a successful result message — pre-bug-022, the loop would
+      // process this and the agent would "complete" successfully despite
+      // the pause having been requested.
+      {
+        type: "result",
+        subtype: "success",
+        duration_ms: 1,
+        duration_api_ms: 1,
+        is_error: false,
+        num_turns: 1,
+        result: "",
+        stop_reason: "end_turn",
+        total_cost_usd: 0.01,
+        usage: {},
+        modelUsage: {},
+        permission_denials: [],
+        structured_output: { taskOutcomes: { t1: "completed" } },
+        uuid: "00000000-0000-0000-0000-000000000000",
+        session_id: "test-session",
+      },
+    ]);
+
+    const onRateLimitPause = async () => {
+      // Mimics what pauseRun() does in production: throw PauseSignal.
+      throw new PauseSignal({
+        version: "1.0",
+        pausedAt: "2026-04-28T22:01:00.000Z",
+        reason: "claude-max-five-hour-limit",
+        reasonDetail: "rate_limit_event during tester",
+        authProvider: "claude-max-subscription",
+        drainedInFlight: false,
+        pipelineRunId: "test-run",
+      });
+    };
+
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+      onRateLimitPause,
+    });
+
+    let caught: unknown;
+    try {
+      await invoke({
+        agent: "backend-builder",
+        cwd: projectRoot,
+        featureContext,
+        tasks: [task1],
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(PauseSignal);
+    if (caught instanceof PauseSignal) {
+      // The ORIGINAL reason propagates — not "user-request" from a
+      // downstream sentinel-poll overwrite.
+      expect(caught.state.reason).toBe("claude-max-five-hour-limit");
+    }
+  });
+
+  it("onAuthFailedPause throwing PauseSignal propagates out of invoke()", async () => {
+    const budget = mkBudget();
+    const queryFn = makeMessageScriptedQuery([
+      // Assistant message with auth-failed error — fires onAuthFailedPause.
+      {
+        type: "assistant",
+        error: "authentication_failed",
+      },
+      // Followed by what would otherwise be a successful result.
+      {
+        type: "result",
+        subtype: "success",
+        duration_ms: 1,
+        duration_api_ms: 1,
+        is_error: false,
+        num_turns: 1,
+        result: "",
+        stop_reason: "end_turn",
+        total_cost_usd: 0.01,
+        usage: {},
+        modelUsage: {},
+        permission_denials: [],
+        structured_output: { taskOutcomes: { t1: "completed" } },
+        uuid: "00000000-0000-0000-0000-000000000000",
+        session_id: "test-session",
+      },
+    ]);
+
+    const onAuthFailedPause = async () => {
+      throw new PauseSignal({
+        version: "1.0",
+        pausedAt: "2026-04-28T22:01:00.000Z",
+        reason: "auth-failed",
+        reasonDetail: "authentication_failed in assistant message",
+        authProvider: "claude-max-subscription",
+        drainedInFlight: false,
+        pipelineRunId: "test-run",
+      });
+    };
+
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+      onAuthFailedPause,
+    });
+
+    let caught: unknown;
+    try {
+      await invoke({
+        agent: "backend-builder",
+        cwd: projectRoot,
+        featureContext,
+        tasks: [task1],
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(PauseSignal);
+    if (caught instanceof PauseSignal) {
+      expect(caught.state.reason).toBe("auth-failed");
+    }
+  });
+
+  it("non-PauseSignal errors from a buggy hook stay swallowed (no crash)", async () => {
+    // The catch's original intent — a crashy hook shouldn't kill the SDK
+    // loop. After bug-022, only PauseSignal is special-cased. Other
+    // throws stay swallowed.
+    const budget = mkBudget();
+    const queryFn = makeMessageScriptedQuery([
+      {
+        type: "rate_limit_event",
+        rate_limit_info: { rateLimitType: "five_hour", status: "exceeded" },
+      },
+      {
+        type: "result",
+        subtype: "success",
+        duration_ms: 1,
+        duration_api_ms: 1,
+        is_error: false,
+        num_turns: 1,
+        result: "",
+        stop_reason: "end_turn",
+        total_cost_usd: 0.01,
+        usage: {},
+        modelUsage: {},
+        permission_denials: [],
+        structured_output: { taskOutcomes: { t1: "completed" } },
+        uuid: "00000000-0000-0000-0000-000000000000",
+        session_id: "test-session",
+      },
+    ]);
+
+    const onRateLimitPause = async () => {
+      throw new Error("buggy hook");
+    };
+
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+      onRateLimitPause,
+    });
+
+    // Should NOT throw — buggy hook's error stays swallowed, agent
+    // completes per the result message.
+    const result = await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    expect(result.taskStatus).toEqual({ t1: "completed" });
   });
 });
