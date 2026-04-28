@@ -50,6 +50,49 @@ Runs in one of two modes. The orchestrator (task-035) controls invocation positi
 
 ## mode=tasks steps
 
+### 0. Mandatory output fields (bug-018)
+
+Before doing ANY authoring work, read `schemas/feature.schema.json` from disk
+to confirm the field shape — DO NOT rely on memory:
+
+```bash
+head -120 schemas/feature.schema.json | grep -A 4 "^    \"\(affects_files\|skip\|priority\|brief_reference\)\":"
+```
+
+The following fields MUST be populated on every feature, even when the value
+is the empty-list sentinel:
+
+| Field            | Required? | Empty allowed?                                                                           |
+| ---------------- | --------- | ---------------------------------------------------------------------------------------- |
+| `id`             | YES       | no                                                                                       |
+| `priority`       | YES       | no — pick P0-P3 explicitly                                                               |
+| `agent_sequence` | YES       | no — must have ≥1 entry                                                                  |
+| `tasks`          | YES       | no — must have ≥1 entry                                                                  |
+| `affects_files`  | YES       | yes (`[]`) ONLY when feature genuinely touches no shared files; otherwise populate fully |
+| `depends_on`     | YES       | yes (`[]`) when feature has no upstream deps                                             |
+| `skip`           | YES       | yes (`[]`) when feature touches all surfaces                                             |
+
+**Critical: `affects_files` is NOT optional in spirit even though Zod marks
+it `.default([])`.** The field is present in every project's
+`schemas/feature.schema.json` under `properties.affects_files` (regenerated
+from `packages/orchestrator-contracts/src/tasks.ts` FeatureSchema). If you
+catch yourself thinking "the schema doesn't expose this field" — STOP and
+re-grep the schema file. That claim has been wrong every time it's been
+made (per bug-018, 3 of 4 PM agents on 2026-04-28 falsely reported the
+field missing).
+
+**3-step heuristic for populating `affects_files`** (per step 4b):
+
+1. Walk each task's `summary` for file/module hints (e.g., "render
+   empty-no-board" → `apps/web/src/components/board/**`).
+2. Walk each task's `screens[]` and map to component paths
+   (`webapp/home` → `apps/web/app/page.tsx` + `apps/web/src/components/board/**`).
+3. Walk the feature's `integration_ref` for backend-side paths
+   (`integrations.api.database` → `apps/api/src/db/**`).
+
+Conservative bias: when in doubt, list MORE globs. False positives over-serialize
+(~5 min wall-clock cost); false negatives cause runtime merge conflicts (~$5+ each).
+
 ### 1. Argument + prereq gate
 
 - Verify `--mode=tasks` is set. Missing mode → abort with message.
@@ -156,13 +199,15 @@ Before writing:
 4. For each integration in architecture.yaml with `requiredNow: true`, confirm at least one `P0` task references it via `integration_ref`. If not, bump the corresponding task to P0 or emit a warning.
 5. **Screens ownership (feat-012)**. Non-frontend tasks (`backend-builder` / `tester` / `reviewer` / `security` / `devops`) MUST have `screens: []`. Zod superRefine rejects otherwise at validation time; catch earlier by refusing to populate the field. Frontend tasks on a non-skipped surface SHOULD have ≥1 screen entry; zero-screen frontend tasks emit a warning (see step 2b).
 
-### 4b. File-affinity check (bug-015 Phase 2)
+### 4b. File-affinity check (bug-015 Phase 2 — MANDATORY per bug-018)
 
 After step 4 invariants pass, populate `feature.affects_files[]` and serialize features that share files. **This pushes parallel-feature merge conflicts back to the PM stage where they're a one-line dependency edit, instead of letting them surface at runtime in close-feature where they cost $5+ per conflict (per kanban-webapp-08 incident).**
 
+**bug-018 enforcement: this step is NON-NEGOTIABLE.** Three of four PM agents on 2026-04-28 fabricated reasons to skip it ("affects_files not in schema" — false in every case). Before claiming the field is unavailable, run the §0 grep. If you genuinely believe the schema is broken, that's a separate bug — file it via /plan-bug; do NOT silently skip the field.
+
 Algorithm, per feature:
 
-1. **Author `affects_files[]`** — a glob list of files this feature is expected to mutate. Derive conservatively from task summaries + screens. For a `feat-board-core` with tasks "render-empty-no-board", "dnd-kit-cards-and-columns", "inline-card-edit", expected globs include:
+1. **MUST author `affects_files[]`** — a glob list of files this feature is expected to mutate. Derive conservatively from task summaries + screens. For a `feat-board-core` with tasks "render-empty-no-board", "dnd-kit-cards-and-columns", "inline-card-edit", expected globs include:
    - `apps/web/src/components/board/**` (component scope)
    - `apps/web/src/store/board.ts` OR `apps/web/src/store/index.ts` (state scope — pick whichever the architect chose; see Phase 3 below)
    - `apps/web/app/page.tsx` (route scope, if the home route changes)
