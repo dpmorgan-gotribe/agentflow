@@ -31,7 +31,12 @@
     },
     "priority": {
       "type": "string",
-      "enum": ["P0", "P1", "P2", "P3"],
+      "enum": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ],
       "description": "P0 = critical path, P1 = important, P2 = nice-to-have, P3 = polish / deferrable."
     },
     "depends_on": {
@@ -46,7 +51,11 @@
       "type": "array",
       "items": {
         "type": "string",
-        "enum": ["web", "mobile", "backend"]
+        "enum": [
+          "web",
+          "mobile",
+          "backend"
+        ]
       },
       "description": "Surfaces the feature does NOT touch. If skip contains 'mobile', the mobile-frontend-builder is skipped even if listed in agent_sequence. Allows tasks.yaml schema to remain uniform while feature scope varies."
     },
@@ -70,7 +79,9 @@
     },
     "tasks": {
       "type": "array",
-      "items": { "$ref": "#/definitions/task" },
+      "items": {
+        "$ref": "#/definitions/task"
+      },
       "minItems": 1,
       "description": "Concrete work units inside this feature. Each task has an 'agent' field that must match one of the entries in agent_sequence — otherwise the task never runs."
     },
@@ -82,12 +93,22 @@
     "brief_reference": {
       "type": "string",
       "description": "Reference into brief.md (e.g., 'brief.md §12 auth flow') or a flow ID from docs/analysis/{platform}/flows.md. Lets builders cross-check feature scope against the brief."
+    },
+    "affects_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "bug-015 Phase 2: glob list of files this feature is expected to mutate. PM authors at task-graph emission time. Orchestrator uses overlap detection to serialize features that share files (auto-add depends_on). Conservative — when in doubt, list more globs."
     }
   },
   "definitions": {
     "task": {
       "type": "object",
-      "required": ["id", "agent"],
+      "required": [
+        "id",
+        "agent"
+      ],
       "additionalProperties": false,
       "properties": {
         "id": {
@@ -110,17 +131,26 @@
         },
         "depends_on": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Task IDs within the SAME feature that must complete before this task runs. Cross-feature deps are expressed at feature.depends_on level, not task level."
         },
         "skills": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Skill IDs the agent should load when executing this task (from .claude/skills/). Example: ['stripe-connect', 'zod-refinement']."
         },
         "priority": {
           "type": "string",
-          "enum": ["P0", "P1", "P2", "P3"],
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3"
+          ],
           "description": "Inherits from parent feature if omitted."
         },
         "integration_ref": {
@@ -129,7 +159,13 @@
         },
         "status": {
           "type": "string",
-          "enum": ["pending", "in-progress", "completed", "blocked", "skipped"],
+          "enum": [
+            "pending",
+            "in-progress",
+            "completed",
+            "blocked",
+            "skipped"
+          ],
           "description": "Updated by orchestrator + executing agents. Initial value: pending."
         },
         "estimated_screens": {
