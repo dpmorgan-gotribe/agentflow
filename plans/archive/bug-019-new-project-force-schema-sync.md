@@ -1,7 +1,7 @@
 ---
 id: bug-019-new-project-force-schema-sync
 type: bug
-status: draft
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-04-28
 updated: 2026-04-28
@@ -154,3 +154,27 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+---
+
+# COMPLETION RECORD (appended on archive)
+
+completed: 2026-04-28
+outcome: success
+actual-files-changed:
+
+- scripts/sync-project-schemas.mjs (created)
+- .claude/skills/new-project/SKILL.md (modified)
+- .claude/skills/pm/SKILL.md (modified)
+  commits:
+- hash: f73e5f0
+  message: "bug-019: schema-sync mechanism for /new-project --force + ad-hoc operator"
+  attempts: 1
+  lessons:
+- "When a refresh-mode SKILL doesn't enumerate every category that needs sync, drift is silent. The /new-project --force overlay table never listed schemas/ — projects scaffolded before bug-015 Phase 2 stayed stale forever. Lesson: every project-resident factory artifact needs an explicit entry in the refresh-overlay list, with a guard that flags new factory categories at validation time."
+- "Initial dry-run against all 12 projects revealed the actual drift was much wider than the bug-018 framing suggested: 4-6 newer schemas missing per project (brief-capabilities, bugs-yaml, build-to-spec-verify-output, parity-verify-output, screen-fixture, tasks-coverage) plus several validators stale or missing. Always dry-run-then-fix scripts that can't easily be reverted."
+- "Idempotency via byte-compare (not mtime / hash) is the right choice for sync scripts that may be invoked repeatedly during operator triage. Re-runs just confirm no-op without spurious updates."
+  test-results:
+  unit: smoke-tested via --dry-run against 12 projects + --all run (idempotent on second invocation)
+  integration: confirmed all 12 project schemas now match factory byte-for-byte
+  duration-minutes: 50

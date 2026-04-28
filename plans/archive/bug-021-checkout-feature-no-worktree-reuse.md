@@ -1,7 +1,7 @@
 ---
 id: bug-021-checkout-feature-no-worktree-reuse
 type: bug
-status: draft
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-04-28
 updated: 2026-04-28
@@ -235,3 +235,29 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+---
+
+# COMPLETION RECORD (appended on archive)
+
+completed: 2026-04-28
+outcome: success
+actual-files-changed:
+
+- orchestrator/src/feature-graph.ts (modified)
+- orchestrator/src/cli-runner.ts (modified)
+- orchestrator/tests/feature-graph.test.ts (modified)
+- orchestrator/tests/cli-runner.test.ts (modified)
+- .claude/skills/resume-build/SKILL.md (modified)
+  commits:
+- hash: 3561240
+  message: "bug-021: orchestrator resume-aware checkout — skip in-flight worktrees"
+  attempts: 1
+  lessons:
+- "Three-gap fix when one was hypothesized: (1) the progress tracker had no hydration path on resume, so even if runFeature checked inFlight[] it would always be empty; (2) cli-runner's --resume-feature-graph branch never read feature-graph-progress.json from disk; (3) runFeature always called checkout-feature unconditionally."
+- "Trace the end-to-end resume path and audit each hop for state preservation, not just the visible failure mode (stale-worktree). The visible error is often the last symptom in a chain of broken contracts."
+- "Layer 2 (defensive `reuseExisting` flag) was deliberately skipped — Layer 1 (skip checkout entirely on resume) obviates it. When two layers solve the same problem, ship the cleaner one and document the tradeoff in the commit."
+  test-results:
+  unit: 552/552 orchestrator + 344/344 contracts (added 8 new tests; was 544+344)
+  integration: covered via runFeatureGraph + runCli wired-fixture tests
+  duration-minutes: 90

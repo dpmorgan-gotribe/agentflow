@@ -1,7 +1,7 @@
 ---
 id: bug-020-recovery-discards-completed-builder-work
 type: bug
-status: draft
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-04-28
 updated: 2026-04-28
@@ -214,3 +214,25 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+---
+
+# COMPLETION RECORD (appended on archive)
+
+completed: 2026-04-28
+outcome: partial
+actual-files-changed:
+
+- .claude/skills/resume-build/SKILL.md (modified)
+  commits:
+- hash: afb7dee
+  message: "bug-020: recovery preserves completed builder work (commit-and-advance)"
+  attempts: 1
+  lessons:
+- "The original plan proposed `lastAgent === nextAgent` as the discriminator between mid-execution and completed dirty state. In practice this discriminator never fires — the dispatch breadcrumb sets lastAgent=firstAgent, nextAgent=secondAgent BEFORE any agent runs, so pre-execution and post-execution snapshots look identical. Re-reasoning from the snapshot semantics (not the proposed rule) is essential before implementing."
+- "When the proposed discriminator fails, the practical fallback is to bias for work-preservation: always commit-and-advance dirty state. The mid-execution-kill case (rare; usually requires SIGKILL not SIGINT/rate-limit) is recoverable via the per-task retry ladder. Documented an operator note for the edge case."
+- "Layer 2 (per-agent commit) already shipped via feat-018 Phase A. The empirical gap is the narrow window between agent return and that commit firing — which is what Layer 1 covers. Layer 3 (per-agent timestamp sentinel) deferred; spawn a follow-up bug if the manual workaround proves insufficient."
+  test-results:
+  unit: existing 552/552 orchestrator + 344/344 contracts unchanged (doc-only change)
+  integration: validated via end-to-end resume on repo-health-dashboard-01 (deferred to next session)
+  duration-minutes: 25
