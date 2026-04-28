@@ -1,7 +1,9 @@
 ---
 id: feat-027-runtime-error-capture
 type: feature
-status: draft
+status: in-progress
+approved-at: 2026-04-28
+approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-04-28
 updated: 2026-04-28
