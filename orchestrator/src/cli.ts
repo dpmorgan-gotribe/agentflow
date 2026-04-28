@@ -50,6 +50,10 @@ program
     "--pipeline-run-id <id>",
     "feat-024 Phase D — explicit pipeline run id (used by /resume-build to target the right state dir)",
   )
+  .option(
+    "--bugs-yaml-mode <mode>",
+    "feat-026 Phase E — fresh|append (default: fresh on /start-build, append on standalone /fix-bugs)",
+  )
   .action(
     async (
       projectName: string | undefined,
@@ -61,6 +65,7 @@ program
         autoMergeAfterReviewer?: boolean;
         maxConcurrent?: number;
         pipelineRunId?: string;
+        bugsYamlMode?: string;
       },
     ) => {
       const optsForRunner: Parameters<typeof runCli>[0] = { flags: opts.flags };
@@ -74,8 +79,10 @@ program
         optsForRunner.autoMergeAfterReviewer = opts.autoMergeAfterReviewer;
       if (opts.maxConcurrent && opts.maxConcurrent > 0)
         optsForRunner.maxConcurrent = opts.maxConcurrent;
-      if (opts.pipelineRunId)
-        optsForRunner.pipelineRunId = opts.pipelineRunId;
+      if (opts.pipelineRunId) optsForRunner.pipelineRunId = opts.pipelineRunId;
+      if (opts.bugsYamlMode === "fresh" || opts.bugsYamlMode === "append") {
+        optsForRunner.bugsYamlMode = opts.bugsYamlMode;
+      }
 
       // feat-024 Phase C: SIGINT handler — first Ctrl+C → graceful pause
       // request via the in-process sentinel-write hook; second Ctrl+C

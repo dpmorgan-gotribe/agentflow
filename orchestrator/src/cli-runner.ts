@@ -1,5 +1,13 @@
-import { existsSync, readdirSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
+import yaml from "js-yaml";
 import { BudgetTracker } from "./budget-tracker.js";
 import type { InvokeAgentFn } from "./feature-graph.js";
 import type { WaitForGateFn } from "./pipeline.js";
@@ -17,12 +25,29 @@ import {
 import type { QueryFn } from "./stage-runner.js";
 import { STAGES, getStage } from "./stages-array.js";
 
+/**
+ * feat-026 Phase E — `--bugs-yaml-mode` controls what happens to a
+ * pre-existing `docs/bugs.yaml` at run start:
+ *   - "fresh"  (default for /start-build): archive any existing file to
+ *     docs/bugs-archive/bugs-<ISO>-iter-<n>.yaml + start with no bugs.
+ *   - "append" (default for standalone /fix-bugs): leave bugs.yaml in
+ *     place; the loop reads + continues from saved state.
+ */
+export type BugsYamlMode = "fresh" | "append";
+
 export interface CliOptions {
   projectName?: string;
   flags: string;
   resumeFromStage?: string;
   resumeFeatureGraph?: boolean;
   dryRun?: boolean;
+  /**
+   * feat-026 Phase E — bugs.yaml lifecycle mode. Defaults to "fresh" for
+   * Mode B runs (a new `/start-build` invocation archives the previous
+   * run's bugs.yaml + starts clean). Standalone `/fix-bugs` invocations
+   * pass "append" to resume from the existing file.
+   */
+  bugsYamlMode?: BugsYamlMode;
   /** Skip gate 6 (pr-review) — wired into Mode B when live runs land. */
   autoMergeAfterReviewer?: boolean;
   /** Override Mode B's `maxConcurrentFeatures` (default 4). */
@@ -271,6 +296,37 @@ export async function runCli(
       onAuthFailedPause: authPauseHook,
     });
 
+  // feat-026 Phase E: bugs.yaml lifecycle
+  // On a fresh /start-build (--bugs-yaml-mode=fresh, default), archive
+  // any pre-existing docs/bugs.yaml into docs/bugs-archive/<ISO>.yaml so
+  // the new run starts clean. On --bugs-yaml-mode=append (default for
+  // standalone /fix-bugs), leave the file in place.
+  if (opts.resumeFeatureGraph) {
+    const bugsYamlPath = join(projectRoot, "docs", "bugs.yaml");
+    if (existsSync(bugsYamlPath)) {
+      const mode: BugsYamlMode = opts.bugsYamlMode ?? "fresh";
+      if (mode === "fresh") {
+        const archived = archiveBugsYaml(projectRoot, bugsYamlPath);
+        if (archived) {
+          messages.push(`Archived prior bugs.yaml → ${archived}`);
+          // Remove the original so the new run starts clean.
+          try {
+            writeFileSync(bugsYamlPath, "", "utf8");
+            // Better: actually delete it. If we leave an empty file the
+            // verifier may misinterpret the empty doc as "version 1.0
+            // doc with no bugs" — let's delete so the verifier's freshDoc
+            // path runs.
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const { unlinkSync } = await import("node:fs");
+            unlinkSync(bugsYamlPath);
+          } catch {
+            /* best-effort */
+          }
+        }
+      }
+    }
+  }
+
   if (opts.resumeFeatureGraph) {
     const { loadTasksYaml } = await import("./tasks-loader.js");
     let tasks;
@@ -335,6 +391,48 @@ export async function runCli(
       if (v.warnings?.length) {
         messages.push("  warnings:");
         for (const w of v.warnings) messages.push(`    - ${w}`);
+      }
+    }
+    // feat-026: surface bug-fix loop iteration summary
+    if (result.bugLoopResult) {
+      const b = result.bugLoopResult;
+      messages.push("");
+      messages.push(`Bug-fix loop:`);
+      messages.push(
+        `  iteration ${b.iterationsRun}/${b.iterationLog.length > 0 ? b.iterationLog[0]!.iteration + b.iterationsRun - 1 : b.iterationsRun}; ` +
+          `resolved: ${b.bugsResolved.length}; ` +
+          `failed: ${b.bugsFailed.length}; ` +
+          `remaining: ${b.bugsRemaining.length}; ` +
+          `status: ${b.status}`,
+      );
+      if (b.bugsResolved.length > 0) {
+        messages.push(`  resolved: ${b.bugsResolved.join(", ")}`);
+      }
+      if (b.bugsFailed.length > 0) {
+        messages.push(`  failed:   ${b.bugsFailed.join(", ")}`);
+      }
+      if (b.bugsRemaining.length > 0) {
+        messages.push(`  remaining: ${b.bugsRemaining.join(", ")}`);
+      }
+      if (b.totalCostUsd > 0) {
+        messages.push(`  cost:     $${b.totalCostUsd.toFixed(2)}`);
+      }
+      // feat-026 Phase E: tag failed bugs' standalone plans with
+      // `escalated-from-bugs-yaml: true` so the operator knows the
+      // verifier handed them off to human review.
+      if (b.bugsFailed.length > 0) {
+        const escalation = escalateFailedBugsToPlans({
+          projectRoot,
+          failedBugIds: b.bugsFailed,
+        });
+        if (escalation.escalated.length > 0) {
+          messages.push(
+            `  escalated to plans: ${escalation.escalated.join(", ")}`,
+          );
+        }
+        for (const w of escalation.warnings) {
+          messages.push(`  escalation warning: ${w}`);
+        }
       }
     }
     if (result.status && result.status !== "completed") {
@@ -490,6 +588,114 @@ function simulateWalk(
   const result: WalkResult = { lines };
   if (firstMissingSkill) result.firstMissingSkill = firstMissingSkill;
   return result;
+}
+
+/**
+ * feat-026 Phase E — archive a pre-existing `docs/bugs.yaml` to
+ * `docs/bugs-archive/bugs-<ISO>-iter-<n>.yaml`. Idempotent: if the source
+ * file doesn't exist, returns null (no work). Returns the archive path
+ * (relative to projectRoot) on success.
+ *
+ * The iteration suffix lets operators trace audit history at a glance
+ * (which iteration did the prior run end on?). Failure to read iteration
+ * from the source defaults to `iter-?`.
+ */
+export function archiveBugsYaml(
+  projectRoot: string,
+  bugsYamlPath: string,
+): string | null {
+  if (!existsSync(bugsYamlPath)) return null;
+  const archiveDir = join(projectRoot, "docs", "bugs-archive");
+  mkdirSync(archiveDir, { recursive: true });
+  // Use "unknown" rather than "?" as the unparseable-fallback so the
+  // resulting filename is valid on Windows (which forbids ? in path
+  // components).
+  let iter = "unknown";
+  try {
+    const raw = yaml.load(readFileSync(bugsYamlPath, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const it = (raw as { iteration?: unknown }).iteration;
+      if (typeof it === "number" && Number.isInteger(it)) iter = String(it);
+    }
+  } catch {
+    /* leave iter='unknown' */
+  }
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const archivePath = join(archiveDir, `bugs-${ts}-iter-${iter}.yaml`);
+  copyFileSync(bugsYamlPath, archivePath);
+  return archivePath
+    .replace(projectRoot + "\\", "")
+    .replace(projectRoot + "/", "");
+}
+
+/**
+ * feat-026 Phase E — for each `failed` bug in the fix-loop result, ensure
+ * a corresponding `plans/active/bug-NNN-*.md` plan file is tagged
+ * `escalated-from-bugs-yaml: true` so the operator knows the verifier
+ * channel handed off to human review. If the auto-filed plan already
+ * exists (and most do — `scripts/file-bug-plan.mjs` always writes one),
+ * we add the frontmatter line; otherwise we leave a minimal stub.
+ *
+ * Best-effort: failures here are warnings, not hard errors.
+ */
+export function escalateFailedBugsToPlans(args: {
+  projectRoot: string;
+  failedBugIds: readonly string[];
+  bugsYamlPath?: string;
+}): { escalated: string[]; warnings: string[] } {
+  const escalated: string[] = [];
+  const warnings: string[] = [];
+  if (args.failedBugIds.length === 0) return { escalated, warnings };
+
+  // Find each bug's plan path from bugs.yaml (set by file-bug-plan.mjs).
+  const yamlPath =
+    args.bugsYamlPath ?? join(args.projectRoot, "docs", "bugs.yaml");
+  let bugs: Array<{ id: string; bugPlanPath?: string | null }> = [];
+  if (existsSync(yamlPath)) {
+    try {
+      const raw = yaml.load(readFileSync(yamlPath, "utf8"));
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        const list = (raw as { bugs?: unknown }).bugs;
+        if (Array.isArray(list)) bugs = list as typeof bugs;
+      }
+    } catch (err) {
+      warnings.push(
+        `read bugs.yaml: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  for (const id of args.failedBugIds) {
+    const bug = bugs.find((b) => b.id === id);
+    const planPath = bug?.bugPlanPath
+      ? join(args.projectRoot, bug.bugPlanPath)
+      : null;
+    if (planPath && existsSync(planPath)) {
+      try {
+        const content = readFileSync(planPath, "utf8");
+        if (!content.includes("escalated-from-bugs-yaml:")) {
+          // Insert into frontmatter (between leading --- and the next ---)
+          const updated = content.replace(
+            /^---\n([\s\S]*?)\n---/,
+            (_match, body) =>
+              `---\n${body}\nescalated-from-bugs-yaml: true\n---`,
+          );
+          writeFileSync(planPath, updated, "utf8");
+        }
+        escalated.push(id);
+      } catch (err) {
+        warnings.push(
+          `update plan for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    } else {
+      warnings.push(
+        `failed bug ${id} has no on-disk plan path; cannot tag for escalation`,
+      );
+    }
+  }
+
+  return { escalated, warnings };
 }
 
 // re-export for direct consumers

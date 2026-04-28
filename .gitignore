@@ -12,6 +12,10 @@
 # Pipeline stage outputs (regenerated each run)
 pipeline/
 
+# feat-026: orchestrator-managed bug tracking (per-project runtime artefacts)
+docs/bugs.yaml
+docs/bugs-archive/
+
 # Dependencies
 node_modules/
 .pnpm-store/

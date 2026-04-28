@@ -39,6 +39,14 @@ export interface BuildToSpecVerifyContext {
   factoryRoot?: string;
   /** When true, file bug plans for each violation. Default true. */
   autoFileBugPlans?: boolean;
+  /**
+   * feat-026 — pipelineRunId + iteration forwarded into bug entries
+   * appended to `docs/bugs.yaml`. Optional; defaults are "unknown" + 1
+   * when absent so standalone (non-orchestrator) verifier runs still
+   * write a usable file.
+   */
+  pipelineRunId?: string;
+  iteration?: number;
   /** Test seam — replaces the spawn() helper. Default uses `node`. */
   runScript?: (args: {
     script: string;
@@ -50,7 +58,9 @@ export interface BuildToSpecVerifyContext {
     projectDir: string;
     violation: BugPlanViolation;
     relatedOrphan?: OrphanComponent;
-  }) => Promise<{ planId: string; planPath: string }>;
+    pipelineRunId?: string;
+    iteration?: number;
+  }) => Promise<{ planId: string; planPath: string; bugYamlId?: string }>;
   /**
    * feat-025 Phase 3 — test seam for the flow-execution runner. Replaces
    * the `runSynthesizedFlows()` import from `scripts/run-synthesized-flows.mjs`.
@@ -253,20 +263,35 @@ export async function runBuildToSpecVerify(
   if (ctx.autoFileBugPlans !== false) {
     const fileBugPlan: NonNullable<BuildToSpecVerifyContext["fileBugPlan"]> =
       ctx.fileBugPlan ??
-      (async ({ projectDir: pd, violation, relatedOrphan }) => {
+      (async ({
+        projectDir: pd,
+        violation,
+        relatedOrphan,
+        pipelineRunId: prid,
+        iteration: it,
+      }) => {
         const specifier = `../../scripts/file-bug-plan.mjs`;
         const mod = (await import(specifier)) as unknown as {
           fileBugPlan: (args: {
             projectDir: string;
             violation: BugPlanViolation;
             relatedOrphan?: OrphanComponent;
-          }) => Promise<{ planId: string; planPath: string }>;
+            pipelineRunId?: string;
+            iteration?: number;
+          }) => Promise<{
+            planId: string;
+            planPath: string;
+            bugYamlId?: string;
+          }>;
         };
-        return mod.fileBugPlan(
-          relatedOrphan === undefined
-            ? { projectDir: pd, violation }
-            : { projectDir: pd, violation, relatedOrphan },
-        );
+        const callArgs: Parameters<typeof mod.fileBugPlan>[0] = {
+          projectDir: pd,
+          violation,
+        };
+        if (relatedOrphan !== undefined) callArgs.relatedOrphan = relatedOrphan;
+        if (prid !== undefined) callArgs.pipelineRunId = prid;
+        if (it !== undefined) callArgs.iteration = it;
+        return mod.fileBugPlan(callArgs);
       });
 
     // Track orphans already consumed by a consolidated flow-failure plan
@@ -282,22 +307,17 @@ export async function runBuildToSpecVerify(
           orphanComponents,
         );
         if (relatedOrphan) consumedOrphanPaths.add(relatedOrphan.path);
-        const args = relatedOrphan
-          ? {
-              projectDir,
-              violation: {
-                ...failure,
-                kind: "flow-failure" as const,
-              },
-              relatedOrphan,
-            }
-          : {
-              projectDir,
-              violation: {
-                ...failure,
-                kind: "flow-failure" as const,
-              },
-            };
+        const args: Parameters<typeof fileBugPlan>[0] = {
+          projectDir,
+          violation: {
+            ...failure,
+            kind: "flow-failure" as const,
+          },
+        };
+        if (relatedOrphan) args.relatedOrphan = relatedOrphan;
+        if (ctx.pipelineRunId !== undefined)
+          args.pipelineRunId = ctx.pipelineRunId;
+        if (ctx.iteration !== undefined) args.iteration = ctx.iteration;
         const { planId } = await fileBugPlan(args);
         bugPlansFiled.push(planId);
       } catch (err) {
@@ -311,10 +331,14 @@ export async function runBuildToSpecVerify(
     for (const orphan of orphanComponents) {
       if (consumedOrphanPaths.has(orphan.path)) continue;
       try {
-        const { planId } = await fileBugPlan({
+        const args: Parameters<typeof fileBugPlan>[0] = {
           projectDir,
           violation: { ...orphan, kind: "orphan-component" },
-        });
+        };
+        if (ctx.pipelineRunId !== undefined)
+          args.pipelineRunId = ctx.pipelineRunId;
+        if (ctx.iteration !== undefined) args.iteration = ctx.iteration;
+        const { planId } = await fileBugPlan(args);
         bugPlansFiled.push(planId);
       } catch (err) {
         warnings.push(
@@ -324,10 +348,14 @@ export async function runBuildToSpecVerify(
     }
     for (const route of orphanRoutes) {
       try {
-        const { planId } = await fileBugPlan({
+        const args: Parameters<typeof fileBugPlan>[0] = {
           projectDir,
           violation: { ...route, kind: "orphan-route" },
-        });
+        };
+        if (ctx.pipelineRunId !== undefined)
+          args.pipelineRunId = ctx.pipelineRunId;
+        if (ctx.iteration !== undefined) args.iteration = ctx.iteration;
+        const { planId } = await fileBugPlan(args);
         bugPlansFiled.push(planId);
       } catch (err) {
         warnings.push(

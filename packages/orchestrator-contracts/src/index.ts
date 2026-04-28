@@ -20,3 +20,4 @@ export * from "./brief-coverage.js";
 export * from "./build-to-spec-verify.js";
 export * from "./feature-graph-progress.js";
 export * from "./paused-state.js";
+export * from "./bugs-yaml.js";

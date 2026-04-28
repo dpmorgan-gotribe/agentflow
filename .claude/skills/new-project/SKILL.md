@@ -231,6 +231,9 @@ credentials.json
 *.jks
 .DS_Store
 Thumbs.db
+# feat-026: orchestrator-managed bug tracking (runtime artefacts)
+docs/bugs.yaml
+docs/bugs-archive/
 ```
 
 **Additional exclusions by mode:**

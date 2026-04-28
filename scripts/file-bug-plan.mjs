@@ -23,6 +23,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import yaml from "js-yaml";
 
 /**
  * @typedef OrphanViolation
@@ -254,11 +255,240 @@ function orphanRouteBody(v) {
   return lines.join("\n");
 }
 
+// ─── feat-026 Phase A: bugs.yaml writer ───────────────────────────────────
+//
+// In addition to writing the standalone bug-NNN-*.md plan, the verifier
+// channel ALSO appends a structured entry to `docs/bugs.yaml` so the
+// orchestrator's `runFixBugsLoop` can iterate over verifier-discovered
+// bugs WITHOUT re-parsing markdown plans. The plan file still exists +
+// stays the human-facing artefact; bugs.yaml is the machine-facing one.
+//
+// `/plan-bug` (user-only channel) is UNCHANGED + does NOT append here —
+// the two channels never overlap by design.
+
 /**
- * @param {{projectDir: string, violation: Violation, relatedOrphan?: OrphanViolation}} args
- * @returns {Promise<{planId: string, planPath: string}>}
+ * @param {Violation} violation
+ * @returns {"reachability-orphan"|"flow-execution-failure"}
  */
-export async function fileBugPlan({ projectDir, violation, relatedOrphan }) {
+function bugSourceFor(violation) {
+  if (violation.kind === "flow-failure") return "flow-execution-failure";
+  return "reachability-orphan"; // both orphan-component + orphan-route
+}
+
+/**
+ * Bug-id grammar enforced by `BugEntrySchema` in
+ * packages/orchestrator-contracts/src/bugs-yaml.ts is
+ * `bug-(flow|orphan|coverage)-<slug>`. The plan-file id from `bugIdFor`
+ * has the form `bug-NNN-<kind>-<slug>` (NNN is the sequential counter).
+ * For the bugs.yaml entry we strip the NNN prefix so the shorter id
+ * matches the schema regex.
+ */
+function shortBugIdFor(planId) {
+  return planId.replace(/^bug-\d+-/, "bug-");
+}
+
+function defaultAgentSequence(violation) {
+  // Per plan §Phase A: orphan/flow → web-frontend-builder, tester, reviewer.
+  // (Future: pm-coverage-omission → [pm, ...] — not emitted by file-bug-plan
+  // today; coverage gate fails earlier in Mode A.)
+  void violation;
+  return ["web-frontend-builder", "tester", "reviewer"];
+}
+
+function deriveAffectsFiles(violation, relatedOrphan) {
+  /** @type {string[]} */
+  const out = [];
+  if (violation.kind === "orphan-component") {
+    out.push(violation.path);
+    for (const i of (violation.suggestedImporters ?? []).slice(0, 3))
+      out.push(i);
+  } else if (violation.kind === "orphan-route") {
+    out.push(violation.path);
+  } else {
+    if (relatedOrphan?.path) out.push(relatedOrphan.path);
+    for (const i of (relatedOrphan?.suggestedImporters ?? []).slice(0, 3)) {
+      out.push(i);
+    }
+  }
+  // Dedup, preserve order.
+  return [...new Set(out)];
+}
+
+function buildBugEntry({
+  planId,
+  planPath,
+  violation,
+  relatedOrphan,
+  iteration,
+}) {
+  const id = shortBugIdFor(planId);
+  const source = bugSourceFor(violation);
+  const owningFeature =
+    violation.kind === "flow-failure"
+      ? (relatedOrphan?.owningFeature ?? null)
+      : (violation.owningFeature ?? null);
+
+  /** @type {Record<string, any>} */
+  const entry = {
+    id,
+    iteration,
+    source,
+    severity: "P0",
+    summary: summaryFor(violation),
+    correlatedOrphanPath: relatedOrphan?.path ?? null,
+    owningFeature,
+    affectsFiles: deriveAffectsFiles(violation, relatedOrphan),
+    agentSequence: defaultAgentSequence(violation),
+    status: "pending",
+    attempts: 0,
+    maxAttempts: 3,
+    flapResets: 0,
+    resolvedInIteration: null,
+    bugPlanPath: path
+      .relative(path.dirname(path.dirname(planPath)), planPath)
+      .replace(/\\/g, "/")
+      .replace(/^\.\.\//, ""),
+    errorLog: [],
+  };
+
+  if (violation.kind === "flow-failure") {
+    entry.flow = {
+      id: violation.flowId,
+      name: violation.flowName,
+      failedStep: violation.step,
+      expectedScreenId: violation.expectedScreenId,
+      actualScreenId: violation.actualScreenId ?? null,
+      selector: violation.selector ?? null,
+      screenshot: violation.screenshot ?? violation.screenshotPath ?? null,
+      htmlDump: violation.html ?? violation.htmlDumpPath ?? null,
+    };
+  } else if (violation.kind === "orphan-component") {
+    entry.orphan = {
+      componentPath: violation.path,
+      exportNames: violation.exportNames ?? [],
+      suggestedImporters: violation.suggestedImporters ?? [],
+    };
+  } else {
+    // orphan-route — still represent under `orphan` slot for downstream agents
+    entry.orphan = {
+      componentPath: violation.path,
+      exportNames: [],
+      suggestedImporters: violation.suggestedNavSurfaces ?? [],
+    };
+  }
+  return entry;
+}
+
+function summaryFor(violation) {
+  if (violation.kind === "flow-failure") {
+    const expected = violation.expectedScreenId;
+    const actual = violation.actualScreenId ?? "(no screen-id)";
+    return `Flow ${violation.flowId} (${violation.flowName}) failed at step ${violation.step}: expected ${expected}, landed on ${actual}`.slice(
+      0,
+      200,
+    );
+  }
+  if (violation.kind === "orphan-component") {
+    const name =
+      violation.exportNames?.[0] ??
+      path.basename(violation.path, path.extname(violation.path));
+    return `${name} (${violation.path}) exported but never imported in production`.slice(
+      0,
+      200,
+    );
+  }
+  return `Route ${violation.routePattern ?? violation.path} not referenced by any nav surface`.slice(
+    0,
+    200,
+  );
+}
+
+/**
+ * Append (or merge by id) a bug entry into `docs/bugs.yaml`. Idempotent:
+ * if the same id already exists, the entry is left in place (the
+ * orchestrator owns mutations to attempts / status / errorLog beyond
+ * initial filing).
+ *
+ * Returns the entry id. Caller is the verifier (single-process); we
+ * don't take a filesystem lock — the verifier emits violations
+ * sequentially in `runBuildToSpecVerify`.
+ *
+ * @param {{
+ *   projectDir: string,
+ *   entry: Record<string, unknown>,
+ *   pipelineRunId?: string,
+ *   iteration?: number,
+ * }} args
+ */
+export function appendBugToYaml({
+  projectDir,
+  entry,
+  pipelineRunId,
+  iteration,
+}) {
+  const bugsYamlPath = path.join(projectDir, "docs", "bugs.yaml");
+  fs.mkdirSync(path.dirname(bugsYamlPath), { recursive: true });
+
+  /** @type {{
+   *   version: string,
+   *   generated_at: string,
+   *   project_name: string,
+   *   source_run_id: string,
+   *   iteration: number,
+   *   iteration_cap: number,
+   *   bugs: Array<Record<string, unknown>>,
+   * }} */
+  let doc;
+  if (fs.existsSync(bugsYamlPath)) {
+    try {
+      const raw = yaml.load(fs.readFileSync(bugsYamlPath, "utf8"));
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        doc = /** @type {any} */ (raw);
+      } else {
+        doc = freshDoc({ projectDir, pipelineRunId, iteration });
+      }
+    } catch {
+      doc = freshDoc({ projectDir, pipelineRunId, iteration });
+    }
+  } else {
+    doc = freshDoc({ projectDir, pipelineRunId, iteration });
+  }
+  if (!Array.isArray(doc.bugs)) doc.bugs = [];
+
+  // Idempotent — skip when an entry with this id already exists.
+  if (!doc.bugs.some((b) => b && b.id === entry.id)) {
+    doc.bugs.push(entry);
+    doc.generated_at = new Date().toISOString();
+  }
+
+  fs.writeFileSync(bugsYamlPath, yaml.dump(doc, { lineWidth: 120 }));
+  return /** @type {string} */ (entry.id);
+}
+
+function freshDoc({ projectDir, pipelineRunId, iteration }) {
+  return {
+    version: "1.0",
+    generated_at: new Date().toISOString(),
+    project_name: path.basename(path.resolve(projectDir)),
+    source_run_id: pipelineRunId ?? "unknown",
+    iteration: iteration ?? 1,
+    iteration_cap: 5,
+    bugs: [],
+  };
+}
+
+/**
+ * @param {{projectDir: string, violation: Violation, relatedOrphan?: OrphanViolation, pipelineRunId?: string, iteration?: number, appendToYaml?: boolean}} args
+ * @returns {Promise<{planId: string, planPath: string, bugYamlId?: string}>}
+ */
+export async function fileBugPlan({
+  projectDir,
+  violation,
+  relatedOrphan,
+  pipelineRunId,
+  iteration,
+  appendToYaml,
+}) {
   const plansDir = path.join(projectDir, "plans");
   fs.mkdirSync(path.join(plansDir, "active"), { recursive: true });
   const seq = nextBugSeq(plansDir);
@@ -326,7 +556,42 @@ export async function fileBugPlan({ projectDir, violation, relatedOrphan }) {
   ].join("\n");
 
   fs.writeFileSync(planPath, frontmatter + body + "\n");
-  return { planId, planPath };
+
+  // ─── feat-026 Phase A: append to docs/bugs.yaml (verifier channel) ────────
+  // Default-on so the orchestrator's `runFixBugsLoop` finds the new bug
+  // immediately. Callers that explicitly pass `appendToYaml: false` (e.g.
+  // a future preview/dry-run mode) skip the append. NOTE: the standalone
+  // bug-NNN-*.md plan is ALWAYS written above — bugs.yaml is the
+  // additional machine-facing artefact, not a replacement.
+  let bugYamlId;
+  if (appendToYaml !== false) {
+    const entry = buildBugEntry({
+      planId,
+      planPath,
+      violation,
+      relatedOrphan,
+      iteration: iteration ?? 1,
+    });
+    try {
+      bugYamlId = appendBugToYaml({
+        projectDir,
+        entry,
+        pipelineRunId,
+        iteration: iteration ?? 1,
+      });
+    } catch (err) {
+      // Don't let a bugs.yaml write failure break the verifier — the
+      // standalone plan file still gives the operator a fix path.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[fileBugPlan] failed to append ${planId} to docs/bugs.yaml: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  return bugYamlId !== undefined
+    ? { planId, planPath, bugYamlId }
+    : { planId, planPath };
 }
 
 // CLI mode

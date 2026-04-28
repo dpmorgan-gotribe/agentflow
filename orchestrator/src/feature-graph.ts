@@ -15,6 +15,11 @@ import {
   runBuildToSpecVerify as defaultRunBuildToSpecVerify,
   type BuildToSpecVerifyContext,
 } from "./build-to-spec-verify.js";
+import {
+  runFixBugsLoop as defaultRunFixBugsLoop,
+  type FixBugsLoopContext,
+  type FixBugsLoopResult,
+} from "./fix-bugs-loop.js";
 import { waitForGateDecision } from "./gate-server-lifecycle.js";
 import {
   type CommitResult,
@@ -25,10 +30,7 @@ import {
 import type { RetryCounters } from "./retry-counters.js";
 import { existsSync } from "node:fs";
 import { pausedStatePath, pauseRun } from "./pause.js";
-import {
-  saveState,
-  writeFeatureGraphProgress,
-} from "./state-persistence.js";
+import { saveState, writeFeatureGraphProgress } from "./state-persistence.js";
 
 /**
  * Gate 6 (pr-review) waiter. Fires between the last agent in
@@ -201,6 +203,19 @@ export interface FeatureGraphContext {
    */
   factoryRoot?: string;
   /**
+   * feat-026 — skip the post-verify automated bug-fix loop. Default
+   * false in production (loop runs when verify produces bugs); existing
+   * tests default it to true via `makeCtx` so they don't trigger fix-loop
+   * dispatch on stub bug payloads.
+   */
+  skipFixBugsLoop?: boolean;
+  /**
+   * feat-026 — override the bug-fix loop runner. Default delegates to
+   * `runFixBugsLoop` from `fix-bugs-loop.ts`. Tests inject a stub to
+   * assert dispatch routing without running real agents.
+   */
+  runFixBugsLoop?: (ctx: FixBugsLoopContext) => Promise<FixBugsLoopResult>;
+  /**
    * feat-024 Phase A — progress checkpoint tracker. Default: a real
    * tracker that writes `feature-graph-progress.json` on every state
    * transition (dispatch / agent boundary / merge / fail / abort) so
@@ -322,7 +337,13 @@ export function createProgressTracker(args: {
   }
 
   const tracker: ProgressTracker = {
-    onFeatureDispatched({ featureId, worktree, branch, firstAgent, nextAgent }) {
+    onFeatureDispatched({
+      featureId,
+      worktree,
+      branch,
+      firstAgent,
+      nextAgent,
+    }) {
       removeInFlight(featureId);
       const now = new Date().toISOString();
       snapshot.inFlight.push({
@@ -422,7 +443,10 @@ export interface FeatureGraphResult {
    * `completed-with-integration-failures` outcome — Mode B reached
    * "all features merged" but the post-merge `/build-to-spec-verify`
    * stage surfaced reachability or flow violations and auto-filed bug
-   * plans. Caller chooses whether to dispatch retries or escalate.
+   * plans. feat-026 added the `bugLoopResult` channel — when the
+   * automated bug-fix loop achieves a clean re-verify, status flips
+   * back to `completed`; if the loop hits caps, it stays
+   * `completed-with-integration-failures`.
    */
   status?: "completed" | "completed-with-integration-failures" | "incomplete";
   /**
@@ -432,6 +456,13 @@ export interface FeatureGraphResult {
    * see which bug plans the stage created from violations.
    */
   verify?: BuildToSpecVerifyOutputType;
+  /**
+   * feat-026 — automated bug-fix loop result. Present iff verify
+   * produced bugs AND the loop wasn't suppressed via
+   * `ctx.skipFixBugsLoop`. Inspect `bugLoopResult.status` for
+   * clean / iteration-cap-hit / all-bugs-failed.
+   */
+  bugLoopResult?: FixBugsLoopResult;
 }
 
 /** Feature-graph-level seam for the post-merge verification stage. */
@@ -1116,6 +1147,8 @@ export async function runFeatureGraph(
       const verifyArgs: BuildToSpecVerifyContext = {
         projectDir: ctx.projectRoot,
         autoFileBugPlans: true,
+        pipelineRunId: ctx.pipelineRunId,
+        iteration: 1,
       };
       if (ctx.factoryRoot !== undefined)
         verifyArgs.factoryRoot = ctx.factoryRoot;
@@ -1147,6 +1180,64 @@ export async function runFeatureGraph(
     }
   }
 
+  // ── feat-026: automated bug-fix loop ────────────────────────────────────────
+  // Auto-invoked AFTER verify when verify produced bugs (bugPlansFiled
+  // non-empty OR ok=false). Loop iterates verify→fix→verify until either
+  // every bug resolves OR the iteration cap (default 5) hits OR every
+  // pending bug exhausts its per-bug attempt cap.
+  //
+  // Gated on three explicit conditions (all must be true):
+  //   1. The verify stage ran + returned a result (status !== "incomplete")
+  //   2. Verify produced at least one bug (verify.bugPlansFiled.length > 0
+  //      OR verify.ok === false — defensive: ok=false without filed plans
+  //      shouldn't happen in v1 but the loop's no-op exit handles it)
+  //   3. ctx.skipFixBugsLoop !== true (existing tests opt out via this)
+  //
+  // The auto-invocation is NEVER on by default for tests — every existing
+  // feature-graph test sets `skipFixBugsLoop: true` via makeCtx defaults.
+  // Production runs (cli-runner.ts) leave it undefined → loop fires.
+  let bugLoopResult: FixBugsLoopResult | undefined;
+  if (
+    verify !== undefined &&
+    !ctx.skipFixBugsLoop &&
+    (verify.bugPlansFiled.length > 0 || !verify.ok)
+  ) {
+    const fixRunner = ctx.runFixBugsLoop ?? defaultRunFixBugsLoop;
+    const factoryRootForLoop = ctx.factoryRoot ?? process.cwd();
+    try {
+      const loopCtx: FixBugsLoopContext = {
+        projectRoot: ctx.projectRoot,
+        pipelineRunId: ctx.pipelineRunId,
+        factoryRoot: factoryRootForLoop,
+        budget: ctx.budget,
+        invokeAgent: ctx.invokeAgent,
+        runBuildToSpecVerify:
+          ctx.runBuildToSpecVerify ?? defaultRunBuildToSpecVerify,
+      };
+      bugLoopResult = await fixRunner(loopCtx);
+      totalCostUsd += bugLoopResult.totalCostUsd;
+      // Status resolution per plan §Phase C:
+      //   clean         → flip status back to "completed"
+      //   any other     → leave at "completed-with-integration-failures"
+      if (bugLoopResult.status === "clean") {
+        status = "completed";
+      } else {
+        status = "completed-with-integration-failures";
+      }
+    } catch (err) {
+      // Loop failure must not crash the orchestrator. Surface as
+      // completed-with-integration-failures + log via the verify warnings
+      // channel.
+      status = "completed-with-integration-failures";
+      if (verify) {
+        verify.warnings = [
+          ...verify.warnings,
+          `runFixBugsLoop threw: ${(err as Error).message ?? String(err)}`,
+        ];
+      }
+    }
+  }
+
   return {
     completed: [...completed],
     failed: [...failed],
@@ -1154,6 +1245,7 @@ export async function runFeatureGraph(
     featureResults,
     status,
     ...(verify !== undefined ? { verify } : {}),
+    ...(bugLoopResult !== undefined ? { bugLoopResult } : {}),
   };
 }
 

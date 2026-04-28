@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -403,5 +411,328 @@ describe("runCli — live Mode A", () => {
     expect(result.exitCode).toBe(1);
     expect(joined).toContain("Stages failed:    1");
     expect(joined).toContain("Aborted at:       analyze");
+  });
+});
+
+// ─── feat-026 Phase E: bugs.yaml lifecycle helpers ─────────────────────────
+
+describe("archiveBugsYaml", () => {
+  it("returns null when no bugs.yaml exists", async () => {
+    scaffoldProject("alpha");
+    const projectRoot = join(factoryRoot, "projects", "alpha");
+    const bugsYamlPath = join(projectRoot, "docs", "bugs.yaml");
+    const { archiveBugsYaml } = await import("../src/cli-runner.js");
+    const result = archiveBugsYaml(projectRoot, bugsYamlPath);
+    expect(result).toBeNull();
+  });
+
+  it("copies bugs.yaml to docs/bugs-archive/ with iteration suffix", async () => {
+    scaffoldProject("alpha", {
+      "docs/bugs.yaml": [
+        "version: '1.0'",
+        "generated_at: 2026-04-26T00:00:00Z",
+        "project_name: alpha",
+        "source_run_id: run-1",
+        "iteration: 3",
+        "iteration_cap: 5",
+        "bugs: []",
+        "",
+      ].join("\n"),
+    });
+    const projectRoot = join(factoryRoot, "projects", "alpha");
+    const bugsYamlPath = join(projectRoot, "docs", "bugs.yaml");
+    const { archiveBugsYaml } = await import("../src/cli-runner.js");
+    const result = archiveBugsYaml(projectRoot, bugsYamlPath);
+    expect(result).not.toBeNull();
+    expect(result!).toContain("bugs-archive");
+    expect(result!).toContain("iter-3");
+    // The archived file should still exist on disk after the copy.
+    const archiveDir = join(projectRoot, "docs", "bugs-archive");
+    const archived = readdirSync(archiveDir);
+    expect(archived.length).toBe(1);
+    expect(archived[0]).toMatch(/^bugs-.*-iter-3\.yaml$/);
+  });
+
+  it("falls back to iter-? when bugs.yaml is malformed", async () => {
+    scaffoldProject("alpha", {
+      "docs/bugs.yaml": "not: valid: yaml: nested: nested: nested",
+    });
+    const projectRoot = join(factoryRoot, "projects", "alpha");
+    const bugsYamlPath = join(projectRoot, "docs", "bugs.yaml");
+    const { archiveBugsYaml } = await import("../src/cli-runner.js");
+    const result = archiveBugsYaml(projectRoot, bugsYamlPath);
+    expect(result).not.toBeNull();
+    expect(result!).toContain("iter-");
+  });
+});
+
+describe("escalateFailedBugsToPlans", () => {
+  it("returns empty when failedBugIds is empty", async () => {
+    scaffoldProject("alpha");
+    const projectRoot = join(factoryRoot, "projects", "alpha");
+    const { escalateFailedBugsToPlans } = await import("../src/cli-runner.js");
+    const result = escalateFailedBugsToPlans({
+      projectRoot,
+      failedBugIds: [],
+    });
+    expect(result.escalated).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("tags an existing plan file with `escalated-from-bugs-yaml: true`", async () => {
+    const planContent = [
+      "---",
+      "id: bug-001-orphan-foo",
+      "type: bug",
+      "status: draft",
+      "---",
+      "",
+      "# bug-001-orphan-foo",
+      "",
+    ].join("\n");
+    scaffoldProject("alpha", {
+      "plans/active/bug-001-orphan-foo.md": planContent,
+      "docs/bugs.yaml": [
+        "version: '1.0'",
+        "generated_at: 2026-04-26T00:00:00Z",
+        "project_name: alpha",
+        "source_run_id: run-1",
+        "iteration: 1",
+        "bugs:",
+        "  - id: bug-orphan-foo",
+        "    iteration: 1",
+        "    source: reachability-orphan",
+        "    summary: foo orphan",
+        "    agentSequence: [web-frontend-builder]",
+        "    bugPlanPath: plans/active/bug-001-orphan-foo.md",
+        "",
+      ].join("\n"),
+    });
+    const projectRoot = join(factoryRoot, "projects", "alpha");
+    const { escalateFailedBugsToPlans } = await import("../src/cli-runner.js");
+    const result = escalateFailedBugsToPlans({
+      projectRoot,
+      failedBugIds: ["bug-orphan-foo"],
+    });
+    expect(result.escalated).toEqual(["bug-orphan-foo"]);
+    const updated = readFileSync(
+      join(projectRoot, "plans/active/bug-001-orphan-foo.md"),
+      "utf8",
+    );
+    expect(updated).toContain("escalated-from-bugs-yaml: true");
+  });
+
+  it("warns when the failed bug has no on-disk plan", async () => {
+    scaffoldProject("alpha", {
+      "docs/bugs.yaml": [
+        "version: '1.0'",
+        "generated_at: 2026-04-26T00:00:00Z",
+        "project_name: alpha",
+        "source_run_id: run-1",
+        "iteration: 1",
+        "bugs:",
+        "  - id: bug-orphan-noplan",
+        "    iteration: 1",
+        "    source: reachability-orphan",
+        "    summary: noplan",
+        "    agentSequence: [web-frontend-builder]",
+        "    bugPlanPath: null",
+        "",
+      ].join("\n"),
+    });
+    const projectRoot = join(factoryRoot, "projects", "alpha");
+    const { escalateFailedBugsToPlans } = await import("../src/cli-runner.js");
+    const result = escalateFailedBugsToPlans({
+      projectRoot,
+      failedBugIds: ["bug-orphan-noplan"],
+    });
+    expect(result.escalated).toEqual([]);
+    expect(result.warnings.join(" ")).toContain("no on-disk plan path");
+  });
+});
+
+describe("runCli — bugs.yaml lifecycle (--bugs-yaml-mode)", () => {
+  it("archives existing bugs.yaml on fresh /start-build run (default)", async () => {
+    // Set up a project with all gates passed + a stale bugs.yaml from a
+    // prior run.
+    scaffoldProject("alpha", {
+      "docs/brief-summary.json": "{}",
+      "docs/mockups/manifest.json": "{}",
+      "docs/tasks.yaml": [
+        'version: "2.0"',
+        "features:",
+        "  - id: feat-auth",
+        "    worktree: feat-auth",
+        "    branch: feat/auth",
+        "    priority: P1",
+        "    depends_on: []",
+        "    skip: []",
+        "    agent_sequence: [backend-builder]",
+        "    tasks:",
+        "      - id: api",
+        "        agent: backend-builder",
+        "        depends_on: []",
+        "        skills: []",
+        "        screens: []",
+        "warnings: []",
+        "",
+      ].join("\n"),
+      "docs/bugs.yaml": [
+        "version: '1.0'",
+        "generated_at: 2026-04-26T00:00:00Z",
+        "project_name: alpha",
+        "source_run_id: prior-run",
+        "iteration: 2",
+        "bugs: []",
+        "",
+      ].join("\n"),
+    });
+
+    const projectRoot = join(factoryRoot, "projects", "alpha");
+    // Stub invokeAgent so the run completes immediately without real work.
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        if (args.gitOp?.op === "checkout-feature") {
+          return {
+            taskStatus: {},
+            errors: {},
+            gitAgentOutput: {
+              op: "checkout-feature",
+              success: true,
+              worktreePath: `.claude/worktrees/${args.gitOp.worktree}`,
+              lockfilePath: `.claude/worktrees/${args.gitOp.worktree}.lock`,
+              branch: args.gitOp.branch,
+              featureId: args.gitOp.featureId,
+            },
+            costUsd: 0,
+          };
+        }
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput: {
+            op: "close-feature",
+            success: true,
+            conflict: false,
+            mergeSha: "abc1234",
+            featureId: "feat-auth",
+          },
+          costUsd: 0,
+        };
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.05,
+      };
+    };
+
+    const result = await runCli(
+      {
+        flags: "",
+        projectName: "alpha",
+        resumeFeatureGraph: true,
+        bugsYamlMode: "fresh",
+        invokeAgentOverride: invokeAgent,
+      },
+      factoryRoot,
+    );
+    const joined = result.messages.join("\n");
+    expect(joined).toContain("Archived prior bugs.yaml");
+    // Original bugs.yaml should be removed; archive should exist.
+    expect(existsSync(join(projectRoot, "docs", "bugs.yaml"))).toBe(false);
+    expect(existsSync(join(projectRoot, "docs", "bugs-archive"))).toBe(true);
+  });
+
+  it("does NOT archive when --bugs-yaml-mode=append", async () => {
+    scaffoldProject("alpha", {
+      "docs/brief-summary.json": "{}",
+      "docs/mockups/manifest.json": "{}",
+      "docs/tasks.yaml": [
+        'version: "2.0"',
+        "features:",
+        "  - id: feat-auth",
+        "    worktree: feat-auth",
+        "    branch: feat/auth",
+        "    priority: P1",
+        "    depends_on: []",
+        "    skip: []",
+        "    agent_sequence: [backend-builder]",
+        "    tasks:",
+        "      - id: api",
+        "        agent: backend-builder",
+        "        depends_on: []",
+        "        skills: []",
+        "        screens: []",
+        "warnings: []",
+        "",
+      ].join("\n"),
+      "docs/bugs.yaml": [
+        "version: '1.0'",
+        "generated_at: 2026-04-26T00:00:00Z",
+        "project_name: alpha",
+        "source_run_id: prior-run",
+        "iteration: 2",
+        "bugs: []",
+        "",
+      ].join("\n"),
+    });
+
+    const projectRoot = join(factoryRoot, "projects", "alpha");
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        if (args.gitOp?.op === "checkout-feature") {
+          return {
+            taskStatus: {},
+            errors: {},
+            gitAgentOutput: {
+              op: "checkout-feature",
+              success: true,
+              worktreePath: `.claude/worktrees/${args.gitOp.worktree}`,
+              lockfilePath: `.claude/worktrees/${args.gitOp.worktree}.lock`,
+              branch: args.gitOp.branch,
+              featureId: args.gitOp.featureId,
+            },
+            costUsd: 0,
+          };
+        }
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput: {
+            op: "close-feature",
+            success: true,
+            conflict: false,
+            mergeSha: "abc1234",
+            featureId: "feat-auth",
+          },
+          costUsd: 0,
+        };
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.05,
+      };
+    };
+
+    const result = await runCli(
+      {
+        flags: "",
+        projectName: "alpha",
+        resumeFeatureGraph: true,
+        bugsYamlMode: "append",
+        invokeAgentOverride: invokeAgent,
+      },
+      factoryRoot,
+    );
+    const joined = result.messages.join("\n");
+    expect(joined).not.toContain("Archived prior bugs.yaml");
+    // bugs.yaml remains untouched.
+    expect(existsSync(join(projectRoot, "docs", "bugs.yaml"))).toBe(true);
   });
 });

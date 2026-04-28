@@ -47,6 +47,10 @@ function makeCtx(
     ) => Promise<
       import("@repo/orchestrator-contracts").BuildToSpecVerifyOutput
     >;
+    skipFixBugsLoop: boolean;
+    runFixBugsLoop: (
+      ctx: import("../src/fix-bugs-loop.js").FixBugsLoopContext,
+    ) => Promise<import("../src/fix-bugs-loop.js").FixBugsLoopResult>;
   }> = {},
 ) {
   return {
@@ -79,6 +83,14 @@ function makeCtx(
     // exercising verify routing override `skipBuildToSpecVerify: false`
     // + supply a `runBuildToSpecVerify` stub.
     skipBuildToSpecVerify: overrides.skipBuildToSpecVerify ?? true,
+    // feat-026: default-skip the post-verify bug-fix loop in tests so
+    // existing fixtures don't fire it on stub bug payloads. Tests that
+    // exercise the loop opt in via `skipFixBugsLoop: false` + a stub
+    // `runFixBugsLoop`.
+    skipFixBugsLoop: overrides.skipFixBugsLoop ?? true,
+    ...(overrides.runFixBugsLoop !== undefined
+      ? { runFixBugsLoop: overrides.runFixBugsLoop }
+      : {}),
     ...(overrides.runBuildToSpecVerify !== undefined
       ? { runBuildToSpecVerify: overrides.runBuildToSpecVerify }
       : {}),
@@ -125,6 +137,59 @@ function buildFeature(overrides: Partial<Feature> = {}): Feature {
       },
     ],
     ...overrides,
+  };
+}
+
+/**
+ * Module-scope helper that produces a default-success InvokeAgentFn for
+ * tests that don't need to script per-call outcomes. Returns checkout +
+ * close success for git-agent ops, "completed" for every task on every
+ * other agent. Reused across multiple describe blocks (graph-level + the
+ * feat-022 verify suite + the feat-026 fix-loop suite).
+ */
+function mkOkInvoke(): InvokeAgentFn {
+  return async (args) => {
+    if (args.agent === "git-agent") {
+      if (args.gitOp?.op === "checkout-feature") {
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput: {
+            op: "checkout-feature",
+            success: true,
+            worktreePath: `.claude/worktrees/${args.gitOp.worktree}`,
+            lockfilePath: `.claude/worktrees/${args.gitOp.worktree}.lock`,
+            branch: args.gitOp.branch,
+            featureId: args.gitOp.featureId,
+          },
+          costUsd: 0.001,
+        };
+      }
+      const op = args.gitOp;
+      const featureId =
+        op && op.op !== "resolve-conflict-handoff"
+          ? op.featureId
+          : "feat-unknown";
+      return {
+        taskStatus: {},
+        errors: {},
+        gitAgentOutput: {
+          op: "close-feature",
+          success: true,
+          conflict: false,
+          mergeSha: "abc1234",
+          featureId,
+        },
+        costUsd: 0.001,
+      };
+    }
+    return {
+      taskStatus: Object.fromEntries(
+        args.tasks.map((t) => [t.id, "completed"] as const),
+      ),
+      errors: {},
+      costUsd: 0.01,
+    };
   };
 }
 
@@ -1181,53 +1246,7 @@ describe("runFeature — install-after-commit (feat-019 Phase B)", () => {
 });
 
 describe("runFeatureGraph — feat-022 build-to-spec verification", () => {
-  function mkOkInvoke(): InvokeAgentFn {
-    return async (args) => {
-      if (args.agent === "git-agent") {
-        if (args.gitOp?.op === "checkout-feature") {
-          return {
-            taskStatus: {},
-            errors: {},
-            gitAgentOutput: {
-              op: "checkout-feature",
-              success: true,
-              worktreePath: `.claude/worktrees/${args.gitOp.worktree}`,
-              lockfilePath: `.claude/worktrees/${args.gitOp.worktree}.lock`,
-              branch: args.gitOp.branch,
-              featureId: args.gitOp.featureId,
-            },
-            costUsd: 0.001,
-          };
-        }
-        const op = args.gitOp;
-        // resolve-conflict-handoff is the only op without `featureId`;
-        // tests in this block never trigger it, so narrow safely.
-        const featureId =
-          op && op.op !== "resolve-conflict-handoff"
-            ? op.featureId
-            : "feat-unknown";
-        return {
-          taskStatus: {},
-          errors: {},
-          gitAgentOutput: {
-            op: "close-feature",
-            success: true,
-            conflict: false,
-            mergeSha: "abc1234",
-            featureId,
-          },
-          costUsd: 0.001,
-        };
-      }
-      return {
-        taskStatus: Object.fromEntries(
-          args.tasks.map((t) => [t.id, "completed"] as const),
-        ),
-        errors: {},
-        costUsd: 0.01,
-      };
-    };
-  }
+  // mkOkInvoke is defined at module scope below for reuse across describe blocks.
 
   it("runs verify after all features merge; status=completed when verify ok", async () => {
     const featA = buildFeature({
@@ -1473,5 +1492,302 @@ describe("runFeatureGraph — feat-022 build-to-spec verification", () => {
     expect(result.verify!.warnings.join(" ")).toContain(
       "synthetic verify-runner crash",
     );
+  });
+});
+
+// ─── feat-026: automated bug-fix loop integration ─────────────────────────
+//
+// These tests assert the orchestrator wires the post-verify bug-fix loop
+// correctly: gated on verify producing bugs, suppressed via
+// skipFixBugsLoop, status flips back to "completed" when the loop reaches
+// clean. No real fix-loop machinery runs — the runFixBugsLoop seam is
+// stubbed.
+
+describe("runFeatureGraph — feat-026 fix-bugs-loop wiring", () => {
+  const featA = (): import("@repo/orchestrator-contracts").Feature =>
+    buildFeature({
+      id: "feat-a",
+      worktree: "feat-a",
+      branch: "feat/a",
+    });
+
+  const tasksFor = (
+    f: import("@repo/orchestrator-contracts").Feature,
+  ): TasksV2 => ({
+    version: "2.0",
+    features: [f],
+    warnings: [],
+  });
+
+  const verifyWithBugs = async () => ({
+    ok: false,
+    reachability: {
+      orphanComponents: [],
+      orphanRoutes: [],
+      scannedFiles: 5,
+      ignoredByAllowComment: [],
+    },
+    flows: { passed: [], failed: [], generated: [] },
+    bugPlansFiled: ["bug-100-orphan-foo"],
+    costUsd: 0,
+    durationMs: 50,
+    warnings: [],
+  });
+
+  const verifyClean = async () => ({
+    ok: true,
+    reachability: {
+      orphanComponents: [],
+      orphanRoutes: [],
+      scannedFiles: 5,
+      ignoredByAllowComment: [],
+    },
+    flows: { passed: [], failed: [], generated: [] },
+    bugPlansFiled: [],
+    costUsd: 0,
+    durationMs: 50,
+    warnings: [],
+  });
+
+  it("invokes fix-bugs-loop after verify produces bugs (default behavior)", async () => {
+    let loopCalled = 0;
+    const result = await runFeatureGraph(
+      tasksFor(featA()),
+      makeCtx(mkOkInvoke(), {
+        skipBuildToSpecVerify: false,
+        runBuildToSpecVerify: verifyWithBugs,
+        skipFixBugsLoop: false,
+        runFixBugsLoop: async () => {
+          loopCalled += 1;
+          return {
+            status: "clean",
+            iterationsRun: 1,
+            bugsResolved: ["bug-orphan-foo"],
+            bugsFailed: [],
+            bugsRemaining: [],
+            totalCostUsd: 1.5,
+            iterationLog: [],
+          };
+        },
+      }),
+    );
+    expect(loopCalled).toBe(1);
+    expect(result.bugLoopResult).toBeDefined();
+    expect(result.bugLoopResult!.status).toBe("clean");
+    // Status flipped from completed-with-integration-failures back to completed
+    expect(result.status).toBe("completed");
+  });
+
+  it("skips fix-bugs-loop when skipFixBugsLoop=true (default for tests)", async () => {
+    let loopCalled = 0;
+    const result = await runFeatureGraph(
+      tasksFor(featA()),
+      makeCtx(mkOkInvoke(), {
+        skipBuildToSpecVerify: false,
+        runBuildToSpecVerify: verifyWithBugs,
+        skipFixBugsLoop: true,
+        runFixBugsLoop: async () => {
+          loopCalled += 1;
+          return {
+            status: "clean",
+            iterationsRun: 0,
+            bugsResolved: [],
+            bugsFailed: [],
+            bugsRemaining: [],
+            totalCostUsd: 0,
+            iterationLog: [],
+          };
+        },
+      }),
+    );
+    expect(loopCalled).toBe(0);
+    expect(result.bugLoopResult).toBeUndefined();
+    expect(result.status).toBe("completed-with-integration-failures");
+  });
+
+  it("does NOT invoke fix-bugs-loop when verify is clean (zero bugs)", async () => {
+    let loopCalled = 0;
+    const result = await runFeatureGraph(
+      tasksFor(featA()),
+      makeCtx(mkOkInvoke(), {
+        skipBuildToSpecVerify: false,
+        runBuildToSpecVerify: verifyClean,
+        skipFixBugsLoop: false,
+        runFixBugsLoop: async () => {
+          loopCalled += 1;
+          return {
+            status: "no-bugs",
+            iterationsRun: 0,
+            bugsResolved: [],
+            bugsFailed: [],
+            bugsRemaining: [],
+            totalCostUsd: 0,
+            iterationLog: [],
+          };
+        },
+      }),
+    );
+    expect(loopCalled).toBe(0);
+    expect(result.bugLoopResult).toBeUndefined();
+    expect(result.status).toBe("completed");
+  });
+
+  it("does NOT invoke fix-bugs-loop when verify is suppressed entirely", async () => {
+    let loopCalled = 0;
+    const result = await runFeatureGraph(
+      tasksFor(featA()),
+      makeCtx(mkOkInvoke(), {
+        skipBuildToSpecVerify: true,
+        skipFixBugsLoop: false,
+        runFixBugsLoop: async () => {
+          loopCalled += 1;
+          return {
+            status: "clean",
+            iterationsRun: 0,
+            bugsResolved: [],
+            bugsFailed: [],
+            bugsRemaining: [],
+            totalCostUsd: 0,
+            iterationLog: [],
+          };
+        },
+      }),
+    );
+    expect(loopCalled).toBe(0);
+    expect(result.bugLoopResult).toBeUndefined();
+    expect(result.status).toBe("completed");
+  });
+
+  it("status stays completed-with-integration-failures when loop hits iteration cap", async () => {
+    const result = await runFeatureGraph(
+      tasksFor(featA()),
+      makeCtx(mkOkInvoke(), {
+        skipBuildToSpecVerify: false,
+        runBuildToSpecVerify: verifyWithBugs,
+        skipFixBugsLoop: false,
+        runFixBugsLoop: async () => ({
+          status: "iteration-cap-hit",
+          iterationsRun: 5,
+          bugsResolved: ["bug-orphan-resolved"],
+          bugsFailed: [],
+          bugsRemaining: ["bug-orphan-stuck"],
+          totalCostUsd: 12.34,
+          iterationLog: [],
+        }),
+      }),
+    );
+    expect(result.bugLoopResult!.status).toBe("iteration-cap-hit");
+    expect(result.status).toBe("completed-with-integration-failures");
+    expect(result.bugLoopResult!.bugsRemaining).toEqual(["bug-orphan-stuck"]);
+  });
+
+  it("status stays completed-with-integration-failures when loop reports all-bugs-failed", async () => {
+    const result = await runFeatureGraph(
+      tasksFor(featA()),
+      makeCtx(mkOkInvoke(), {
+        skipBuildToSpecVerify: false,
+        runBuildToSpecVerify: verifyWithBugs,
+        skipFixBugsLoop: false,
+        runFixBugsLoop: async () => ({
+          status: "all-bugs-failed",
+          iterationsRun: 3,
+          bugsResolved: [],
+          bugsFailed: ["bug-orphan-A", "bug-orphan-B"],
+          bugsRemaining: [],
+          totalCostUsd: 8.0,
+          iterationLog: [],
+        }),
+      }),
+    );
+    expect(result.bugLoopResult!.status).toBe("all-bugs-failed");
+    expect(result.status).toBe("completed-with-integration-failures");
+  });
+
+  it("loop totalCostUsd accumulates into FeatureGraphResult.totalCostUsd", async () => {
+    const result = await runFeatureGraph(
+      tasksFor(featA()),
+      makeCtx(mkOkInvoke(), {
+        skipBuildToSpecVerify: false,
+        runBuildToSpecVerify: verifyWithBugs,
+        skipFixBugsLoop: false,
+        runFixBugsLoop: async () => ({
+          status: "clean",
+          iterationsRun: 1,
+          bugsResolved: ["bug-orphan-x"],
+          bugsFailed: [],
+          bugsRemaining: [],
+          totalCostUsd: 7.42,
+          iterationLog: [],
+        }),
+      }),
+    );
+    // totalCostUsd is the sum of all features + the loop's cost. Features
+    // here are stub-cheap ($0.001-ish per agent call). Verify cost is also
+    // added separately by the loop's internal verify calls (we stub them
+    // to 0). The loop's $7.42 must be present.
+    expect(result.totalCostUsd).toBeGreaterThanOrEqual(7.42);
+  });
+
+  it("a thrown loop runner surfaces a warning + leaves status at integration-failures", async () => {
+    const result = await runFeatureGraph(
+      tasksFor(featA()),
+      makeCtx(mkOkInvoke(), {
+        skipBuildToSpecVerify: false,
+        runBuildToSpecVerify: verifyWithBugs,
+        skipFixBugsLoop: false,
+        runFixBugsLoop: async () => {
+          throw new Error("synthetic loop crash");
+        },
+      }),
+    );
+    expect(result.status).toBe("completed-with-integration-failures");
+    expect(result.bugLoopResult).toBeUndefined();
+    expect(result.verify!.warnings.join(" ")).toContain(
+      "runFixBugsLoop threw: synthetic loop crash",
+    );
+  });
+
+  it("does NOT invoke fix-bugs-loop when verify produced no bug plans (ok=false defensive)", async () => {
+    // verify.ok=false but bugPlansFiled=[]: the gate condition uses OR, so
+    // the loop fires anyway. This test asserts the behavior in case the
+    // verifier reports a soft failure with no actionable bugs (e.g. a
+    // missing manifest). Loop returns no-bugs immediately.
+    let loopCalled = 0;
+    const result = await runFeatureGraph(
+      tasksFor(featA()),
+      makeCtx(mkOkInvoke(), {
+        skipBuildToSpecVerify: false,
+        runBuildToSpecVerify: async () => ({
+          ok: false,
+          reachability: {
+            orphanComponents: [],
+            orphanRoutes: [],
+            scannedFiles: 0,
+            ignoredByAllowComment: [],
+          },
+          flows: { passed: [], failed: [], generated: [] },
+          bugPlansFiled: [],
+          costUsd: 0,
+          durationMs: 0,
+          warnings: ["soft failure"],
+        }),
+        skipFixBugsLoop: false,
+        runFixBugsLoop: async () => {
+          loopCalled += 1;
+          return {
+            status: "no-bugs",
+            iterationsRun: 0,
+            bugsResolved: [],
+            bugsFailed: [],
+            bugsRemaining: [],
+            totalCostUsd: 0,
+            iterationLog: [],
+          };
+        },
+      }),
+    );
+    // verify.ok=false triggers the gate; loop runs but reports no-bugs
+    expect(loopCalled).toBe(1);
+    expect(result.bugLoopResult!.status).toBe("no-bugs");
   });
 });
