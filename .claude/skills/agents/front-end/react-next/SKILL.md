@@ -114,6 +114,24 @@ The mockup's `<body data-screen-id="...">` (see screens skill §4e.1) is the sou
 - **tRPC for API.** Mutations + queries via `@repo/api-client` hooks in client components; direct tRPC caller in server components for streaming initial data.
 - **`@repo/ui-kit` is the ONLY component source.** Never inline a `<Button>` — import from `@repo/ui-kit`. Kit primitives carry their own `data-kit-*` attributes from HTML translation; builders must preserve those attrs when converting screens.
 
+### 2.5. Routing Contract (bug-025) — read screens.json before authoring nav code
+
+Before writing ANY navigation code (`<Link href="…">`, `router.push("…")`, `router.replace("…")`, `redirect("…")`, `<Form action="…">`), read `docs/screens-manifest.json` (or the per-app `docs/analysis/{platform}/screens.json` if not yet manifest-ified) to find the **canonical `routePattern`** of the target screen. Use it verbatim — do NOT invent a shorter or "cleaner" URL.
+
+If you're authoring a NEW screen (route owner), the Next.js file location MUST match its screens.json `routePattern`:
+
+```
+screens.json routePattern:  /report/:owner/:repo
+Next.js file location:       app/report/[owner]/[repo]/page.tsx
+
+screens.json routePattern:  /compare/:slugs*       (catch-all)
+Next.js file location:       app/compare/[[...slugs]]/page.tsx
+```
+
+If two builders disagree on a URL, the screens.json value wins. If you believe screens.json is wrong, file a kit-change-request via `docs/screens/kit-change-requests/` — do NOT silently re-invent.
+
+Empirical motivation: repo-health-dashboard-01 (2026-04-29) — feat-home authored `router.push('/r/${owner}/${repo}')` while feat-report independently created `app/report/[owner]/[repo]/page.tsx`. The home form's submit went to a 404 route. screens.json had no routePattern field at the time; bug-025 added it. Both features should have read the same `/report/:owner/:repo` value.
+
 ### 2a. HTML → JSX translation: `data-kit-*` pass-through (feat-028 visual-parity contract)
 
 When translating a screen mockup at `docs/screens/webapp/{screen-id}.html` into a React page (`apps/web/app/**/page.tsx` + supporting `apps/web/components/**`), every `data-kit-*` attribute on the source HTML element MUST survive translation.

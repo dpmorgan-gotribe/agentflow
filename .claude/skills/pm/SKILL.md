@@ -158,6 +158,21 @@ Non-frontend tasks (backend-builder / tester / reviewer / security / devops) MUS
 
 **Empty-screens warning.** If a frontend task on a non-skipped surface has `screens.length === 0`, emit `tasks.yaml.warnings[]`: `frontend-task-zero-screens: feat-X task-Y — kit-only or routing-only work, or missing flow mapping`. Warning only; some UI work is kit-scaffolding and doesn't touch named screens.
 
+### 2c. Surface routePattern per frontend task (bug-025)
+
+For each frontend task whose `screens[]` includes screens whose `screens.json` entry has a `routePattern` field, surface that mapping in the task's `summary` so the builder reads it as part of its dispatch context. This prevents two builders from independently inventing different URLs for the same screen:
+
+```yaml
+- id: feat-home
+  tasks:
+    - id: home-screen
+      agent: web-frontend-builder
+      screens: [webapp/home]
+      summary: "Home page (route: /). Form submit navigates to /report/:owner/:repo per webapp/report.routePattern."
+```
+
+If the screens.json entry lacks `routePattern` (older project pre-bug-025), emit a `tasks.yaml.warnings[]`: `missing-route-pattern: webapp/{screenId} — re-run /screens to populate routePattern, OR add it to docs/screens-manifest.json`. Builders without an authoritative routePattern fall back to `/{screen-id}` heuristic which is wrong for dynamic routes.
+
 ### 3. Compose tasks.yaml structure
 
 ```yaml

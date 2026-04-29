@@ -107,6 +107,21 @@ The mockup's `<body data-screen-id="...">` (see screens skill §4e.1) is the sou
 - **Loading skeletons** via the kit's `data-kit-component="Skeleton"` CSS + Svelte's `#await` block for promise resolution.
 - **data-kit-\* attrs preserved.** Svelte primitives match the kit's React contract: every Svelte `<Button>` emits `data-kit-component="Button"` + `data-kit-variant="primary|..."` for HTML-structure parity with React builds.
 
+### 2.5. Routing Contract (bug-025) — read screens.json before authoring nav code
+
+Before writing ANY navigation code (`<a href>`, `goto()` from `$app/navigation`, `redirect()` from `@sveltejs/kit`), read `docs/screens-manifest.json` to find the **canonical `routePattern`** for the target screen. Use it verbatim — don't invent a "cleaner" URL.
+
+If you're authoring a NEW screen (route owner), the SvelteKit file location MUST match its `routePattern`:
+
+```
+screens.json routePattern:  /report/:owner/:repo
+SvelteKit file location:     src/routes/report/[owner]/[repo]/+page.svelte
+```
+
+screens.json wins when two builders disagree. File a kit-change-request via `docs/screens/kit-change-requests/` if you believe screens.json is wrong — don't silently re-invent.
+
+Empirical motivation: see `plans/active/bug-025-cross-feature-url-contract.md` (repo-health-dashboard-01 2026-04-29 — feat-home + feat-report disagreed on `/r/...` vs `/report/...` and produced a 404 on form submit).
+
 ### 2a. HTML → Svelte translation: `data-kit-*` pass-through (feat-028 visual-parity contract)
 
 When translating a screen mockup at `docs/screens/webapp/{screen-id}.html` into a Svelte page (`src/routes/.../+page.svelte` + supporting `src/lib/components/**`), every `data-kit-*` attribute on the source HTML element MUST survive translation.
