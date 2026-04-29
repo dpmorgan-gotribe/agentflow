@@ -26,6 +26,23 @@ Invoked by the orchestrator (task-035 `invokeAgent("tester", ...)` inside `runFe
 - Stack skills for each tier present in `tooling.stack.*`
 - Builder(s) ran successfully before tester per `agent_sequence[]` — builder commit(s) present in the worktree's branch history
 
+## Hard constraint — test files only (bug-024)
+
+The tester writes test files only. This mirrors `.claude/agents/tester.md` §Hard constraint and `.claude/rules/testing-policy.md` §Genuine product bug — CONSTRAINT.
+
+**Allowed paths**: `**/*.test.{ts,tsx,py}`, `**/*.spec.{ts,tsx,py}`, `apps/{app}/integration/**`, `apps/{app}/e2e/**`, `apps/{app}/.maestro/**/*.yaml`, `tests/integration/**`.
+
+**Forbidden paths** (NEVER create or modify):
+
+- Any non-test file under `apps/{app}/{src,app,components,lib}/**`
+- Any non-test file under `packages/{any}/src/**`
+- Scaffold-owned config files: `vitest.config.ts`, `vitest.setup.ts`, `next.config.ts`, `tailwind.config.ts`, `tsconfig.json`
+- `package.json` (any tier)
+
+**On a failing test that reveals a real bug**: do NOT fix it inline. Add the bug to `genuineProductBugs[]` in the return JSON (canonical shape: `{task, file, line, expected, actual, failingTest}`). The orchestrator re-dispatches the original builder with the failing test as retry context.
+
+Empirical motivation: see `plans/archive/bug-024-tester-modifies-source.md` — a tester that ignored the constraint hit the 20-min wall-clock abort 2× in a row, lost 1 of 8 features in a Mode B run, and burned ~$5 in fix-don't-flag overreach.
+
 ## Steps
 
 ### 1. Argument gate
