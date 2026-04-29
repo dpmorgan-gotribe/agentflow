@@ -1,10 +1,11 @@
 ---
 id: feat-032-dag-status-skill
 type: feature
-status: draft
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-04-29
 updated: 2026-04-29
+completed-at: 2026-04-29
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -142,3 +143,32 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+---
+
+# COMPLETION RECORD (appended at archive time)
+
+completed: 2026-04-29
+outcome: success
+actual-files-changed:
+
+- orchestrator/scripts/dag-status.mjs (created)
+- orchestrator/package.json (modified — dag-status script entry)
+- .claude/skills/dag-status/SKILL.md (created)
+  commits:
+- hash: ae0d19f
+  message: "plans: queue feat-032 (dag-status skill) + feat-033 (idea bucket)"
+- hash: 33974be
+  message: "feat-032 Phase A: /dag-status skill — feature DAG state + spend snapshot"
+  attempts: 1
+  duration-minutes: 25
+  test-results:
+  unit: n/a (script + skill markdown only — no orchestrator src changes)
+  integration: live-validated against repo-health-dashboard-01 mid-run
+  lessons:
+- "DAG observability is dirt-cheap when you already have feature-graph-progress.json + tasks.yaml in well-defined schemas. ~250 LOC pure read + render. The hard part wasn't the data, it was just nobody had built the renderer."
+- "Phase B ETA forecast deferred — the historical-archive walker needs ≥3 completed Mode B runs to be useful. We'll naturally accumulate that as projects ship; no need to engineer historical-data-collection upfront."
+- "Cross-linking related skills (/dag-status mentions /quota-status; both mention feat-024/030/031) makes operator discovery easier than centralized docs. Operators bounce between commands and natural cross-refs help them find adjacent capabilities."
+  recommendation-implemented-by: feat-032 (this plan); Phase B ETA forecast deferred
+
+---

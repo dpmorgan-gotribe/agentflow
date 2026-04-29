@@ -1,10 +1,11 @@
 ---
 id: feat-033-idea-bucket
 type: feature
-status: draft
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-04-29
 updated: 2026-04-29
+completed-at: 2026-04-29
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -140,3 +141,32 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+---
+
+# COMPLETION RECORD (appended at archive time)
+
+completed: 2026-04-29
+outcome: success
+actual-files-changed:
+
+- .claude/skills/idea/SKILL.md (created)
+- .claude/skills/idea-list/SKILL.md (created)
+- .claude/skills/idea-promote/SKILL.md (created)
+  commits:
+- hash: ae0d19f
+  message: "plans: queue feat-032 (dag-status skill) + feat-033 (idea bucket)"
+- hash: 0dd2446
+  message: "feat-033: /idea + /idea-list + /idea-promote skills"
+  attempts: 1
+  duration-minutes: 15
+  test-results:
+  unit: n/a (skill markdown only — no orchestrator src changes)
+  integration: smoke-test deferred (no docs/ideas.md created yet — first /idea call will validate)
+  lessons:
+- "Skill markdown can be entirely declarative when the skill's logic is simple file I/O. /idea, /idea-list, /idea-promote needed no helper scripts — Claude reads + executes the SKILL.md steps directly via Read/Write/Edit/Bash. Saved ~150 LOC of Node helpers vs. the original plan's instinct."
+- "Phase D periodic review nudge (the weekly stale-idea reminder) deferred — premature without empirical signal that operators forget to review. Add later if /idea-list traffic suggests a hands-off pile is accumulating."
+- "The /idea-promote design (interactive prompt for plan-type + auto-tick on success) was intentional — promotion is the friction point where operators actually decide if an idea is real. Making it cheap-to-resurface but explicit-to-graduate matches the someday/maybe pattern."
+  recommendation-implemented-by: feat-033 (this plan); Phase D nudge deferred
+
+---
