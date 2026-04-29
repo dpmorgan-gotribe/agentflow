@@ -448,6 +448,57 @@ packages/ui-kit/src/primitives/{kebab-name}/
 
 Then `packages/ui-kit/src/primitives/index.ts` barrel re-exports every primitive directory's index.
 
+#### 9b.1 Mandatory `data-kit-*` attribute forwarding (bug-029 — Phase 0 retrofit, automatic)
+
+**Every primitive's root rendered element MUST forward these attributes**, with no exceptions:
+
+```tsx
+data-kit-component="{ComponentName}"   // PascalCase, matches the export name
+data-kit-variant={variant}             // when the primitive has a `variant` prop
+data-kit-size={size}                   // when the primitive has a `size` prop
+data-kit-props={...}                   // serialized non-styling props (optional, advanced)
+```
+
+Pattern every primitive must follow:
+
+```tsx
+export interface ButtonProps {
+  variant?: "primary" | "secondary" | "ghost" | "destructive";
+  size?: "sm" | "md" | "lg";
+  // ...
+}
+
+export function Button({ variant, size, className, ...rest }: ButtonProps) {
+  return (
+    <button
+      data-kit-component="Button"
+      data-kit-variant={variant}
+      data-kit-size={size}
+      className={cn(buttonVariants({ variant, size }), className)}
+      {...rest}
+    />
+  );
+}
+```
+
+**Why mandatory**: feat-028 visual-parity-verifier extracts component identity by `data-kit-component` attribute. Without forwarding, the verifier reports the primitive as "missing" even when it renders fine — the diff is blind to attribute-less DOM nodes. Six projects pre-bug-029 shipped without retrofit; parity-verify Phase B (feat-035) reported 39+ false-positive "missing primitive" rows on the first run that hit them.
+
+**Same rule applies to layouts** (`packages/ui-kit/src/layouts/{name}/{name}.tsx`) — `AppShell`, `AuthShell`, `MarketingShell`, etc. Layouts are kit-component too.
+
+**Tests must assert presence**:
+
+```tsx
+test("forwards data-kit-component", () => {
+  render(<Button>click</Button>);
+  expect(screen.getByRole("button")).toHaveAttribute(
+    "data-kit-component",
+    "Button",
+  );
+});
+```
+
+This is also added to the §18 self-verify gate (below) — primitives missing the attribute fail the stage.
+
 #### 9c. Core mandatory roster (12 primitives — hard-gate by step 18)
 
 The subagent MUST author a `.tsx` + `.test.tsx` for each of these 12. Skipping any fails the stage.
