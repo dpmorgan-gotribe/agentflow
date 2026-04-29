@@ -1,10 +1,11 @@
 ---
 id: bug-028-audit-reachability-misses-router-push
 type: bug
-status: draft
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-04-29
 updated: 2026-04-29
+completed-at: 2026-04-29
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -168,3 +169,29 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+---
+
+# COMPLETION RECORD (appended at archive time)
+
+completed: 2026-04-29
+outcome: success
+actual-files-changed:
+
+- scripts/audit-app-reachability.mjs (modified — template-literal handling + SCAN_ROOTS expansion)
+  commits:
+- hash: 236afad
+  message: "bug-028: audit-app-reachability — template-literal + expanded SCAN_ROOTS"
+  attempts: 1
+  duration-minutes: 25
+  test-results:
+  unit: 567/567 passed (orchestrator)
+  integration: live-validated against repo-health-dashboard-01 — 3 false-positive orphan-routes → 0
+  lessons:
+- "The original AST-visitor hypothesis was partly wrong. The regex at line 480 ALREADY matched router.push/redirect/etc. The real bug was: (a) regex used the route's literal pattern (with `[owner]/[repo]`), but production code uses template literals (`/report/${owner}/${repo}`) that don't match the literal; and (b) SCAN_ROOTS only walked apps/{web,mobile}/{src,app} + apps/api/src — modern Next.js layouts put components in apps/web/components/ outside src/, so <Link href> declarations were invisible. Either bug alone causes false-positive orphans; both fixed for cleanliness."
+- "Recursive dynamic-segment stripping (regex `(?:\\/\\[\\[?\\.{0,3}[^\\]]+\\]\\]?)+$`) handles both `/[id]` and catch-all `/[[...slugs]]` syntax in one pattern."
+- "Test that exposed the bug: `repo-health-dashboard-01` after the bug-fix loop's iteration 1 fix. The loop changed `/r/...` → `/report/...` correctly but the audit kept flapping the route as orphan because of the template-literal mismatch. Confirmed empirically that the fix cleared 3/3 false positives."
+- "Investigation pattern: when a fix LOOKS like it should work but the verifier still flags the bug, inspect the regex literal vs the production code form. Template literals + dynamic-segment expansion are the typical mismatch surface."
+  recommendation-implemented-by: bug-028 (this plan)
+
+---

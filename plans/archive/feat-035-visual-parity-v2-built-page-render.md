@@ -1,10 +1,11 @@
 ---
 id: feat-035-visual-parity-v2-built-page-render
 type: feature
-status: draft
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-04-29
 updated: 2026-04-29
+completed-at: 2026-04-29
 parent-plan: feat-028-visual-parity-verifier
 supersedes: null
 superseded-by: null
@@ -192,3 +193,32 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+---
+
+# COMPLETION RECORD (appended at archive time)
+
+completed: 2026-04-29
+outcome: success
+actual-files-changed:
+
+- orchestrator/src/parity-verify.ts (modified — Phase B Playwright driver)
+- orchestrator/scripts/parity-verify.ts (created — standalone CLI)
+- orchestrator/package.json (modified — playwright devDep + script entry)
+- pnpm-lock.yaml (modified)
+  commits:
+- hash: (pending squash) feat-035: ship Phase B of visual-parity (built-page render via Playwright)
+  attempts: 1
+  duration-minutes: 60
+  test-results:
+  unit: 567/567 passed
+  integration: live-validated against repo-health-dashboard-01 — 4 real divergences caught
+  lessons:
+- "Tier 1 ships in ~150 LOC by leveraging existing diffAndClassify from scripts/diff-kit-skeleton.mjs. The TS wrapper just needs to launch Playwright + capture page.content() + feed both HTMLs in. Don't reinvent extraction."
+- "Dynamic-import path for playwright (graceful degradation when absent) is still useful even with playwright as devDep — chromium binary install is a separate operator step."
+- "URL resolution for dynamic routes is the friction point. Heuristic (`/{id}` for static, skip-with-warning for dynamic) gets 80%; the remaining 20% needs explicit operator-supplied screenUrlMap."
+- "Phase 0 retrofit gap (data-kit-\* on primitives) became visible the moment Phase B ran. Without the retrofit, parity-verify reports 'missing primitives' when they're actually rendered. Spawned bug-029."
+- "Standalone CLI (orchestrator/scripts/parity-verify.ts via tsx) gives operators a fast feedback loop without re-running the full orchestrator chain. Pattern worth replicating for other verifier stages."
+  recommendation-implemented-by: feat-035 (this plan); deferred items: multi-viewport (per §Non-goals), computed-style audit (per §Non-goals), auto-boot dev-server (per §Rejected Alternatives), fixture-driven URL map (per §Rejected Alternatives — gated on feat-029 fixture system being present)
+
+---
