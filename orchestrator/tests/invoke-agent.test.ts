@@ -4132,11 +4132,13 @@ describe("invokeAgent — feat-030 rate-limit ledger + warning gate", () => {
     });
 
     expect(pauseCalls.length).toBe(1);
-    expect(pauseCalls[0].rateLimitType).toBe("seven_day_sonnet");
-    expect(pauseCalls[0].resetsAt).toBe(1777425600);
-    expect(pauseCalls[0].utilization).toBe(1.0);
-    expect(pauseCalls[0].overageStatus).toBe("allowed");
-    expect(pauseCalls[0].isUsingOverage).toBe(false);
+    const call = pauseCalls[0];
+    if (!call) throw new Error("expected pause call");
+    expect(call.rateLimitType).toBe("seven_day_sonnet");
+    expect(call.resetsAt).toBe(1777425600);
+    expect(call.utilization).toBe(1.0);
+    expect(call.overageStatus).toBe("allowed");
+    expect(call.isUsingOverage).toBe(false);
   });
 
   it("does NOT call onRateLimitPause for non-hard-limit rateLimitTypes ('overage')", async () => {
@@ -4198,9 +4200,81 @@ describe("invokeAgent — feat-030 rate-limit ledger + warning gate", () => {
     });
 
     const bd = budget.getModelBreakdown();
-    expect(bd["claude-sonnet-4-6"]).toBeDefined();
-    expect(bd["claude-sonnet-4-6"].costUsd).toBeCloseTo(0.01, 4);
-    expect(bd["claude-sonnet-4-6"].inputTokens).toBe(50);
-    expect(bd["claude-sonnet-4-6"].outputTokens).toBe(10);
+    const sonnet = bd["claude-sonnet-4-6"];
+    if (!sonnet) throw new Error("expected sonnet breakdown");
+    expect(sonnet.costUsd).toBeCloseTo(0.01, 4);
+    expect(sonnet.inputTokens).toBe(50);
+    expect(sonnet.outputTokens).toBe(10);
+  });
+});
+
+// ─── feat-031 — systemPrompt with excludeDynamicSections (cross-agent
+// cacheable prefix). Closes investigate-010 §F3 — buildAgentOptions was
+// passing no systemPrompt at all, so the SDK fell back to the default
+// claude_code preset with full per-user dynamic injection per call,
+// guaranteeing zero cross-dispatch caching.
+describe("invokeAgent — feat-031 systemPrompt prompt-cache wiring", () => {
+  function makeCapturingQuery(messages: ReadonlyArray<unknown>) {
+    const calls: Array<{ prompt: unknown; options: unknown }> = [];
+    const fn: QueryFn = ({ prompt, options }) => {
+      calls.push({ prompt, options });
+      async function* gen(): AsyncGenerator<unknown, void> {
+        for (const m of messages) yield m;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return gen() as any;
+    };
+    return { fn, calls };
+  }
+
+  it("passes systemPrompt with preset='claude_code' + excludeDynamicSections=true", async () => {
+    const budget = mkBudget();
+    const { fn: queryFn, calls } = makeCapturingQuery([
+      {
+        type: "result",
+        subtype: "success",
+        duration_ms: 1,
+        duration_api_ms: 1,
+        is_error: false,
+        num_turns: 1,
+        result: "",
+        stop_reason: "end_turn",
+        total_cost_usd: 0.01,
+        usage: {},
+        modelUsage: {},
+        permission_denials: [],
+        structured_output: { taskOutcomes: { t1: "completed" } },
+        uuid: "00000000-0000-0000-0000-000000000000",
+        session_id: "test",
+      },
+    ]);
+
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+
+    await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+
+    expect(calls.length).toBe(1);
+    const call = calls[0];
+    if (!call) throw new Error("expected one query call");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sp = (call.options as any).systemPrompt;
+    expect(sp).toBeDefined();
+    expect(sp.type).toBe("preset");
+    expect(sp.preset).toBe("claude_code");
+    expect(sp.excludeDynamicSections).toBe(true);
   });
 });

@@ -1575,6 +1575,20 @@ function buildAgentOptions(
     cwd: args.cwd,
     env,
     maxBudgetUsd: modelConfig.budgetUsd,
+    // feat-031 — wire SDK's documented "cross-agent cacheable" pattern.
+    // Without this option the SDK falls back to the default Claude Code
+    // preset with full per-user dynamic injection (cwd / memory / git
+    // status) — which guarantees no cache-prefix-match across the 24-28
+    // dispatches in a typical Mode B run. With excludeDynamicSections
+    // the dynamic content moves to the first user message and the prefix
+    // stays byte-identical cross-agent, so dispatches 2-N hit the
+    // prompt cache (visible via result.modelUsage.cacheReadInputTokens
+    // captured by feat-030 §D modelBreakdown). Per sdk.d.ts:1626-1633.
+    systemPrompt: {
+      type: "preset" as const,
+      preset: "claude_code" as const,
+      excludeDynamicSections: true,
+    },
     ...(abortController ? { abortController } : {}),
     ...(auth.forceLoginMethod
       ? { forceLoginMethod: auth.forceLoginMethod }
