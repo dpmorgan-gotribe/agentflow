@@ -1,10 +1,11 @@
 ---
 id: bug-025-cross-feature-url-contract
 type: bug
-status: draft
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-04-29
 updated: 2026-04-29
+completed-at: 2026-04-29
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -215,3 +216,32 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+---
+
+# COMPLETION RECORD (appended at archive time)
+
+completed: 2026-04-29
+outcome: success
+actual-files-changed:
+
+- schemas/screens.schema.json (modified — added optional routePattern field)
+- .claude/skills/agents/front-end/react-next/SKILL.md (modified — §2.5 Routing Contract)
+- .claude/skills/agents/front-end/svelte-kit/SKILL.md (modified — §2.5 Routing Contract mirror)
+- .claude/agents/web-frontend-builder.md (modified — §Hard rules nav-URL guard)
+- .claude/skills/pm/SKILL.md (modified — §2c Surface routePattern per frontend task)
+  commits:
+- hash: d4f3a58
+  message: "bug-025: cross-feature URL contract via screens.json routePattern"
+  attempts: 1
+  duration-minutes: 30
+  test-results:
+  unit: n/a (schema + markdown only)
+  integration: live-validated symptom on repo-health-dashboard-01 (commit ce53027 was the bug-fix loop's manual repair); no fresh smoke project run yet to validate prevention
+  lessons:
+- "Optional schema field (`routePattern`) lets pre-bug-025 projects keep working while new projects benefit. PM warns when missing."
+- "Four layers of prevention (schema, two stack-skills, builder rule, PM surfacer) ensure the contract reaches the dispatch context regardless of which surface the agent reads."
+- "Framework-specific examples (Next.js bracket syntax vs SvelteKit) in stack-skills prevent stack-agnostic contract drift — each stack's translation table is the binding form for that builder."
+  recommendation-implemented-by: bug-025 (this plan)
+
+---

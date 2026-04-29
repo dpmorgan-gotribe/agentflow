@@ -1,10 +1,11 @@
 ---
 id: bug-023-vitest-config-merge-thrash
 type: bug
-status: draft
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-04-29
 updated: 2026-04-29
+completed-at: 2026-04-29
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -213,3 +214,30 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+---
+
+# COMPLETION RECORD (appended at archive time)
+
+completed: 2026-04-29
+outcome: success
+actual-files-changed:
+
+- .claude/skills/agents/front-end/react-next/SKILL.md (modified — §6.5 Files NOT to modify + §3 SCAFFOLD-OWNED comment header)
+- .claude/skills/agents/front-end/svelte-kit/SKILL.md (modified — §6.5 Files NOT to modify mirror)
+- .claude/agents/web-frontend-builder.md (modified — §Hard rules guard)
+  commits:
+- hash: 5443598
+  message: "bug-023: scaffold-owned config files protection"
+  attempts: 1
+  duration-minutes: 25
+  test-results:
+  unit: n/a (markdown only)
+  integration: empirical motivation already captured from repo-health-dashboard-01
+  lessons:
+- "Layered prevention works better than a single-point fix. Three layers (stack-skill section, builder hard-rule, scaffold comment header) catch the same lane violation from three different angles. Agents that miss one layer still hit another."
+- "The comment header pattern (`// SCAFFOLD-OWNED — DO NOT MODIFY per feature.`) is inline guidance that survives even when SKILL.md isn't read. Cheap insurance."
+- "Tester is already covered by bug-024's hard-constraint listing vitest.config.ts as forbidden. Don't duplicate."
+  recommendation-implemented-by: bug-023 (this plan)
+
+---

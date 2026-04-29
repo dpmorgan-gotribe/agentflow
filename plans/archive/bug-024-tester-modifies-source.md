@@ -1,10 +1,11 @@
 ---
 id: bug-024-tester-modifies-source
 type: bug
-status: draft
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-04-29
 updated: 2026-04-29
+completed-at: 2026-04-29
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -244,4 +245,31 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+---
+# COMPLETION RECORD (appended at archive time)
+completed: 2026-04-29
+outcome: success
+actual-files-changed:
+  - .claude/agents/tester.md (modified — §Hard constraint section, Phase A in commit 6ea3e4b)
+  - .claude/rules/testing-policy.md (modified — §Genuine product bug — CONSTRAINT upgrade, Phase B)
+  - .claude/skills/tester/SKILL.md (modified — §Hard constraint mirror, Phase C)
+commits:
+  - hash: 6ea3e4b
+    message: "bug-024 Phase A: tester.md hard-constraint section — write tests only"
+  - hash: ed2a11f
+    message: "bug-024 Phases B+C: testing-policy.md upgrade + tester SKILL.md mirror"
+attempts: 1
+duration-minutes: 50
+test-results:
+  unit: n/a (markdown + agent prompts)
+  integration: empirically validated on repo-health-dashboard-01 launch 7 retry — tester wrote ONLY test files (3 files: edge-test, e2e spec, vitest.config.ts touch); pre-fix run had 5 source/scaffold violations
+lessons:
+  - "Phase A (system prompt) was the load-bearing fix; Phases B + C reinforce on different surfaces (factory rule doc + skill-driven dispatch context). Three layers ensure constraint reaches the agent regardless of which surface it loads first."
+  - "Empirical motivation in policy text matters: linking to the actual incident (repo-health-dashboard-01 launch 7 cost ~$5 + 1 lost feature) gives future agents a concrete reason to comply, not just abstract rule."
+  - "The forbidden-paths whitelist is more useful than the allowed-paths whitelist for testers — testers naturally know what test files are; what they need is the explicit list of OFF-LIMITS surfaces."
+  - "Phase E (PreToolUse hook for tool-level enforcement) deferred. Phase A's prompt-level constraint proved sufficient empirically. Revisit only if a future tester ignores the constraint."
+recommendation-implemented-by: bug-024 (this plan)
+---
+
 ```

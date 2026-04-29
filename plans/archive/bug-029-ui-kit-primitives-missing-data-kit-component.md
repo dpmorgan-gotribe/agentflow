@@ -1,10 +1,11 @@
 ---
 id: bug-029-ui-kit-primitives-missing-data-kit-component
 type: bug
-status: draft
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-04-29
 updated: 2026-04-29
+completed-at: 2026-04-29
 parent-plan: feat-028-visual-parity-verifier
 supersedes: null
 superseded-by: null
@@ -173,3 +174,31 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+---
+
+# COMPLETION RECORD (appended at archive time)
+
+completed: 2026-04-29
+outcome: partial
+actual-files-changed:
+
+- .claude/skills/stylesheet/SKILL.md (modified — §9b.1 Mandatory data-kit-\* attribute forwarding)
+- .claude/agents/web-frontend-builder.md (modified — §Hard rules ui-kit retrofit flag-don't-fix note)
+- projects/repo-health-dashboard-01/packages/ui-kit/src/layouts/app-shell/app-shell.tsx (project — one-line retrofit on AppShell, commit 8ca9da0)
+  commits:
+- hash: ffada94 (factory) — "bug-029 Phases A+D: stylesheet auto-retrofit + builder defensive note"
+- hash: 8ca9da0 (project) — "fix(ui-kit): add data-kit-component to AppShell root"
+  attempts: 1
+  duration-minutes: 35
+  test-results:
+  unit: n/a (markdown + 1-line project edit)
+  integration: live-validated on repo-health-dashboard-01 — parity-verify P0 shell-stripping cleared (4 → 2 divergences after AppShell retrofit)
+  lessons:
+- "Phase B (bulk retrofit script `scripts/retrofit-ui-kit-data-attrs.mjs`) DEFERRED. Robust AST-based primitive root-element rewriting is non-trivial; regex-based version risks breaking complex JSX. Manual procedure documented: operator adds the attribute to each primitive's root element (one line per file)."
+- "Phase C (bug-fix loop routing for visual-parity bugs) DEFERRED. Relates to feat-021 generic agent-availability mechanism; will be addressed when feat-021 ships."
+- "Phase A (stylesheet auto-retrofit on new projects) is the load-bearing fix — future projects ship retrofit-baked from scaffold."
+- "For repo-health-dashboard-01 specifically: 1 of ~16 primitives retrofitted (AppShell). Remaining 15 are a follow-up retrofit pass — track as project-side housekeeping or wait for Phase B script."
+  recommendation-implemented-by: bug-029 Phases A + D (this plan); Phases B + C deferred
+
+---

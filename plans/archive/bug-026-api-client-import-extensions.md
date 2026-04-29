@@ -1,10 +1,11 @@
 ---
 id: bug-026-api-client-import-extensions
 type: bug
-status: draft
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-04-29
 updated: 2026-04-29
+completed-at: 2026-04-29
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -242,3 +243,31 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+---
+
+# COMPLETION RECORD (appended at archive time)
+
+completed: 2026-04-29
+outcome: success
+actual-files-changed:
+
+- projects/repo-health-dashboard-01/packages/api-client/src/index.ts (project-side hotfix — drop .js extensions)
+- .claude/skills/agents/back-end/python-fastapi/SKILL.md (modified — §6.5 Cross-tier package conventions)
+- .claude/skills/agents/back-end/node-trpc-nest/SKILL.md (modified — §6.5 Cross-tier package conventions mirror)
+- .claude/agents/web-frontend-builder.md (modified — §Hard rules flag-don't-fix note for @repo/\* package imports)
+  commits:
+- hash: 7d8435f (project) — "fix(api-client): drop .js extensions from index.ts"
+- hash: c346ac3 (factory) — "bug-026: factory-side cross-tier package conventions"
+  attempts: 1
+  duration-minutes: 30
+  test-results:
+  unit: n/a (markdown + project hotfix)
+  integration: live-validated symptom on repo-health-dashboard-01 — pre-fix dev server failed compile; post-fix booted cleanly on :3001
+  lessons:
+- "Stack-skill should explicitly call out cross-consumer conventions when a package is consumed by a different bundler tier. Backend-builders default to NodeNext; web consumers use Webpack — silent mismatch unless documented."
+- "Phase C (per-package consumer profile in package.json) deferred — Phase B documentation is sufficient if shipped consistently across stack-skills. Add Phase C only if drift recurs."
+- "Defensive flag-don't-fix note pattern (in web-frontend-builder.md) keeps lane-discipline tight even when bug surfaces in cross-package context. Same pattern as bug-024 + bug-029."
+  recommendation-implemented-by: bug-026 (this plan)
+
+---
