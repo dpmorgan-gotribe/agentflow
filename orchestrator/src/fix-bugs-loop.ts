@@ -166,28 +166,42 @@ function closeFixupWorktree(args: {
 }): { ok: true } | { ok: false; reason: string } {
   if (!existsSync(args.worktreePath)) return { ok: true };
   try {
+    // bug-027: remove worktree FIRST. Empirically observed: when the
+    // fixup worktree has the fix branch checked out, `git merge --no-ff
+    // <branch>` from projectRoot fails with "branch is checked out
+    // elsewhere" — silently swallowed by the prior try/catch, leaving
+    // master without the fixes. Removing the worktree releases the
+    // branch and lets the merge succeed.
+    execSync(`git worktree remove --force ${shellQuote(args.worktreePath)}`, {
+      cwd: args.projectRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     if (args.mergeFirst) {
-      // Attempt to merge fixup branch back to master before removal.
+      // Attempt to merge fixup branch back to master after worktree release.
       try {
         execSync(
           `git merge --no-ff ${shellQuote(args.branch)} -m "merge ${args.branch} (fix-bugs-loop)"`,
           { cwd: args.projectRoot, stdio: ["ignore", "pipe", "pipe"] },
         );
-      } catch {
-        // Conflict or no commits — non-fatal. Warning surfaced upstream.
+      } catch (mergeErr) {
+        // Conflict or no commits — surface as warning instead of silent
+        // (bug-027 root cause: prior code swallowed merge errors entirely,
+        // operators only noticed when checking master HEAD post-run).
+        const detail =
+          mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+        process.stderr.write(
+          `[fix-bugs-loop] WARNING: auto-merge of ${args.branch} failed; fixes remain on the branch. Run \`git merge --no-ff ${args.branch}\` manually. Detail: ${detail}\n`,
+        );
       }
     }
-    execSync(`git worktree remove --force ${shellQuote(args.worktreePath)}`, {
-      cwd: args.projectRoot,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
     try {
       execSync(`git branch -D ${shellQuote(args.branch)}`, {
         cwd: args.projectRoot,
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch {
-      /* branch may have been merged + auto-cleaned */
+      /* branch may have been merged + auto-cleaned, or merge failed and
+       operator wants to keep it for manual recovery */
     }
     return { ok: true };
   } catch (err) {
