@@ -292,6 +292,20 @@ Binds to `feat-004-builder-tdd-hybrid` policy.
 
 - **Playwright E2E** (tester-owned, not builder): specs at `apps/web/e2e/*.spec.ts`; runner `pnpm playwright test`.
 
+- **`apps/web/vitest.config.ts` initial scaffold** (bug-023): when authoring the initial config (only on the scaffold-fastapi / scaffold-next-app task or equivalent), include the SCAFFOLD-OWNED comment header at the top — gives downstream features inline guidance even if they don't read the SKILL.md:
+
+  ```ts
+  // SCAFFOLD-OWNED — DO NOT MODIFY per feature.
+  // Test discovery is glob-based; new test files match the existing
+  // `**/*.test.{ts,tsx}` + `**/*.spec.{ts,tsx}` patterns automatically.
+  // Changes to this file go through a kit-change-request, NOT inline
+  // edits during a feature's builder/tester dispatch. Per bug-023.
+  import { defineConfig } from "vitest/config";
+  ...
+  ```
+
+  Same comment header on `vitest.setup.ts` and `tsconfig.json` (with appropriate phrasing). This is in addition to the §6.5 Files NOT to modify section that documents the contract for builders/testers.
+
 ### 3a. Playwright runtime self-verify (feat-025 install-discipline)
 
 Authoring `*.spec.ts` files without the runtime installed produces **unrunnable specs that silently fool downstream verification** (the post-Mode-B `/build-to-spec-verify` flow-execution stage will skip them, no failures surface, the builder thinks it's green). Discovery: kanban-webapp-10 shipped with 5+ `e2e/*.spec.ts` files but no `@playwright/test` in devDependencies — the project literally couldn't run any of them.
@@ -408,6 +422,20 @@ Workspace packages:
 @repo/api-client       workspace:*
 @repo/utils            workspace:*
 ```
+
+## 6.5. Files NOT to modify (bug-023 + bug-024)
+
+These files are **scaffold-owned**: configured at scaffold time and intentionally NOT edited per feature. New test files match the existing globs automatically; nav-target lists are auto-discovered; tsconfig paths are architect-owned. If you believe one MUST change, that's a kit-change-request — emit one via `docs/screens/kit-change-requests/` instead of modifying inline.
+
+- `apps/web/vitest.config.ts` — globs (`**/*.test.{ts,tsx}`, `**/e2e/**` exclude) auto-discover all features' test files
+- `apps/web/vitest.setup.ts` — global test setup; per-test setup goes in the test file itself
+- `apps/web/next.config.ts` — only architect or kit-change-request flow modifies this
+- `apps/web/tailwind.config.ts` — kit-bump only
+- `apps/web/tsconfig.json` — paths are architect-owned
+
+Empirical motivation: parallel features each touching `vitest.config.ts` cause merge conflicts on close-feature (~3-5 min/conflict via reviewer-mediated resolution). On a high-fan-out 8-feature DAG that's 10-30 min wasted wall-clock per run. Verified via repo-health-dashboard-01 (commits 87e86c7 + ba36d2f resolved two of these conflicts manually).
+
+If your worktree's `git status --porcelain` shows any of the files above as modified, your task is over-scoped. Revert the change + add the actual edit you needed somewhere in the allowed surface (test file, source file under `apps/web/components`, etc.).
 
 ## 7. Anti-patterns
 

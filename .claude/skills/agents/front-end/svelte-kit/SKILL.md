@@ -386,6 +386,18 @@ Workspace packages:
 @repo/utils            workspace:*
 ```
 
+## 6.5. Files NOT to modify (bug-023 + bug-024)
+
+These files are **scaffold-owned**: configured at scaffold time and intentionally NOT edited per feature. If you believe one MUST change, emit a kit-change-request via `docs/screens/kit-change-requests/` instead of modifying inline.
+
+- `apps/web/vitest.config.ts` — test discovery is glob-based; new test files match automatically
+- `apps/web/vitest.setup.ts` — global test setup
+- `apps/web/svelte.config.js` — kit-bump only
+- `apps/web/tailwind.config.ts` — kit-bump only
+- `apps/web/tsconfig.json` — paths are architect-owned
+
+Same merge-conflict cost rationale as react-next §6.5 (parallel features each modifying `vitest.config.ts` produce close-feature conflicts).
+
 ## 7. Anti-patterns
 
 - **Never import `@repo/ui-kit` component exports in Svelte code.** They are React-only. Use `@repo/ui-kit/globals.css` + `@repo/ui-kit/tokens.css` for the CSS surface; author Svelte primitives locally under `src/lib/components/` that match the kit's visual + `data-kit-*` contract.
