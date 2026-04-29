@@ -1,10 +1,11 @@
 ---
 id: feat-030-quota-observability
 type: feature
-status: draft
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-04-28
-updated: 2026-04-28
+updated: 2026-04-29
+completed-at: 2026-04-29
 parent-plan: investigate-010-rate-limit-observability-and-reduction
 supersedes: null
 superseded-by: null
@@ -236,3 +237,44 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+---
+
+# COMPLETION RECORD (appended at archive time)
+
+completed: 2026-04-29
+outcome: success
+actual-files-changed:
+
+- .claude/skills/quota-status/SKILL.md (created)
+- orchestrator/scripts/probe-quota.mjs (created)
+- orchestrator/package.json (modified — probe-quota script entry)
+- packages/orchestrator-contracts/src/quota-status.ts (created)
+- packages/orchestrator-contracts/src/index.ts (modified — export)
+- orchestrator/src/invoke-agent.ts (modified — Phase B+C+D)
+- orchestrator/src/budget-tracker.ts (modified — Phase D)
+- orchestrator/src/state-persistence.ts (modified — Phase D)
+- orchestrator/tests/budget-tracker.test.ts (modified — +6 Phase D tests)
+- orchestrator/tests/invoke-agent.test.ts (modified — +5 Phase B+C+D tests, bug-022 status fix)
+  commits:
+- hash: c4e6c0f
+  message: "plans: archive investigate-010, queue feat-030 + feat-031"
+- hash: 8b8351d
+  message: "feat-030 Phase A: /quota-status skill + probe + QuotaStatusReport contract"
+- hash: 1c05176
+  message: "feat-030 Phase B+C+D: rate-limit ledger + warning gate + per-model breakdown"
+  attempts: 1
+  duration-minutes: 90
+  test-results:
+  unit: 567/567 passed (orchestrator)
+  integration: n/a (factory-internal feature)
+  lessons:
+- "SDK prompt-cache primitives + rate-limit metadata are first-class typed surface — read sdk.d.ts FIRST when integrating Anthropic SDK features. Halved investigate-010 + feat-030 implementation time."
+- "The five_hour bucket is a recoverable rolling window, not an anchored full-refill. After 23:07Z rejection, by 23:51Z all 3 model classes (Haiku, Sonnet, Opus) reported status='allowed' — the resetsAt epoch represents full-refill, not allow-traffic-again. Operators can usually retry within 30-60 min of a rejection without waiting for the full reset."
+- "Probe must be model-class-aware: SDK only emits rate_limit_event for buckets the probed model exercises. Haiku probe shows five_hour only; Sonnet probe surfaces seven_day_sonnet; Opus surfaces seven_day_opus. --all flag (~$0.018) is the right pre-flight default for Mode B."
+- "Phase B (ndjson ledger) was the highest-leverage piece of feat-030 — within the first 30s of the resume launch, rate-limit-events.ndjson captured the live SDK event we'd been blind to before. Cheap (~10 LOC) + permanent (closes the F7 visibility gap forever)."
+- "Phase C gate-split removed a subtle bug: pre-feat-030 the orchestrator paused on ANY rate_limit_event with rateLimitType=five_hour|seven_day, regardless of status. Empirically the SDK only emitted these on rejections so it didn't manifest, but the gate's spec was sloppy. New gate is whitelist-by-status."
+- "TypeScript strict-null with noUncheckedIndexedAccess catches `array[0].x` patterns vitest doesn't enforce at runtime. Always re-run typecheck after adding tests, not just `pnpm test`."
+  recommendation-implemented-by: feat-030 (this plan)
+
+---

@@ -1,10 +1,11 @@
 ---
 id: feat-031-prompt-cache-systemprompt
 type: feature
-status: draft
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-04-28
-updated: 2026-04-28
+updated: 2026-04-29
+completed-at: 2026-04-29
 parent-plan: investigate-010-rate-limit-observability-and-reduction
 supersedes: null
 superseded-by: null
@@ -215,3 +216,29 @@ RETRY POLICY:
   Attempt 5: STOP and escalate to human
   NEVER exceed 5 attempts on the same error
 -->
+
+---
+
+# COMPLETION RECORD (appended at archive time)
+
+completed: 2026-04-29
+outcome: partial
+actual-files-changed:
+
+- orchestrator/src/invoke-agent.ts (modified — buildAgentOptions now passes systemPrompt)
+- orchestrator/tests/invoke-agent.test.ts (modified — +1 test asserting systemPrompt wired correctly)
+  commits:
+- hash: fd71257
+  message: "feat-031: wire SDK prompt-cache via systemPrompt + excludeDynamicSections"
+  attempts: 1
+  duration-minutes: 15
+  test-results:
+  unit: 567/567 passed
+  integration: n/a (validation deferred — see Phase D)
+  lessons:
+- "Mode B agents read their SKILL.md via tool calls at runtime, NOT pre-loaded into the system prompt. So the cacheable prefix is just the SDK preset (no skill-pack content needed in systemPrompt). Phase A's elaborate buildSystemPromptArray() helper from the plan was overkill — the documented preset+excludeDynamicSections pattern is ~5 LOC and sufficient."
+- "Always re-run pnpm typecheck after adding tests with strict-null patterns. The `pauseCalls[0].x` direct-access pattern passes vitest at runtime but trips noUncheckedIndexedAccess at typecheck."
+- "Phase D A/B validation deferred — needs a Mode B run on a project not currently mid-flight to baseline against. Telemetry already in place via feat-030 §D modelBreakdown.cacheReadInputTokens — first post-feat-031 Mode B run will surface the cache-hit ratio automatically without an explicit A/B."
+  recommendation-implemented-by: feat-031 (this plan); A/B validation pending
+
+---
