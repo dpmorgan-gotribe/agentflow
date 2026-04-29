@@ -203,12 +203,18 @@ function printPlainText(report) {
   if (report.modelBreakdown && Object.keys(report.modelBreakdown).length > 0) {
     console.log("Models:");
     for (const [model, m] of Object.entries(report.modelBreakdown)) {
+      // SDK reports inputTokens (fresh), cacheReadInputTokens (read from
+      // prefix cache), and cacheCreationInputTokens (paid 25% premium to
+      // create the cacheable prefix) as DISJOINT counters. Total tokens
+      // the model saw = sum of all three. Cache-hit % = read / total.
+      const totalIn =
+        m.inputTokens + m.cacheReadInputTokens + m.cacheCreationInputTokens;
       const cacheRatio =
-        m.inputTokens > 0
-          ? ((m.cacheReadInputTokens / m.inputTokens) * 100).toFixed(1)
+        totalIn > 0
+          ? ((m.cacheReadInputTokens / totalIn) * 100).toFixed(1)
           : "0.0";
       console.log(
-        `  ${model.padEnd(22)} $${m.costUsd.toFixed(4)}  in:${m.inputTokens}  out:${m.outputTokens}  cache-hit:${cacheRatio}%`,
+        `  ${model.padEnd(22)} $${m.costUsd.toFixed(4)}  in:${m.inputTokens}  cache-read:${m.cacheReadInputTokens}  out:${m.outputTokens}  cache-hit:${cacheRatio}%`,
       );
     }
   }
