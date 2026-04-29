@@ -18,7 +18,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "start": "tsx src/cli.ts",
-    "probe-quota": "node scripts/probe-quota.mjs"
+    "probe-quota": "node scripts/probe-quota.mjs",
+    "dag-status": "node scripts/dag-status.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.0",
