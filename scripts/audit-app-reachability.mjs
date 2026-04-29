@@ -35,13 +35,32 @@ if (!fs.existsSync(projectDir)) {
 
 // ─── 1. Walk source files ────────────────────────────────────────────────────
 
+// bug-028: SCAN_ROOTS expanded. Prior list only walked
+// `apps/{web,mobile}/{src,app}` + `apps/api/src` — missed
+// `apps/web/components`, `apps/web/lib`, and every `packages/*/src`.
+// For modern Next.js layouts that put components alongside app/
+// instead of under src/, `<Link href="/about">` and similar refs
+// were invisible to the audit → false-positive orphan-route reports.
 const SCAN_ROOTS = [
-  "apps/web/src",
-  "apps/web/app", // Next.js app router (lives outside src/ in some setups)
-  "apps/mobile/src",
-  "apps/mobile/app",
+  "apps/web", // walks the entire web app (filter applied below)
+  "apps/mobile",
   "apps/api/src",
+  "apps/api/app",
+  "packages",
 ];
+
+// Sub-paths inside SCAN_ROOTS that should be skipped (large + non-source).
+const SCAN_ROOT_EXCLUDES = new Set([
+  "node_modules",
+  ".next",
+  ".turbo",
+  "dist",
+  "build",
+  "coverage",
+  ".vercel",
+  ".cache",
+  "out",
+]);
 
 const SOURCE_EXT = new Set([".ts", ".tsx", ".js", ".jsx"]);
 const TEST_RE = /\.(test|spec|edge|edge-cases|a11y)\.[tj]sx?$/i;
@@ -62,7 +81,11 @@ function walk(root) {
       continue;
     }
     for (const entry of entries) {
-      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+      // bug-028: extended exclusion list to cover modern Next.js
+      // / Turborepo build artefact dirs (.next, .turbo, dist, etc.)
+      // not just node_modules + dotfiles.
+      if (SCAN_ROOT_EXCLUDES.has(entry.name)) continue;
+      if (entry.name.startsWith(".")) continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         stack.push(full);
@@ -511,11 +534,41 @@ for (const pageFile of allPageFiles) {
   // Also check the parent route — `/board/[id]` is reachable if anyone
   // refs `/board/`
   const parentRe = ROUTE_REF_RE(route.replace(/\/\[[^\]]+\]$/, ""));
+  // bug-028: production code typically navigates dynamic routes via
+  // template literals — `router.push(\`/report/${owner}/${repo}\`)`.
+  // The literal regex `/report/[owner]/[repo]` never matches that,
+  // and the parent-route fallback above only strips ONE trailing
+  // dynamic segment. For nested-dynamic routes (`/report/[owner]/[repo]`,
+  // `/board/[id]/lane/[laneId]`, etc.) we need to strip ALL trailing
+  // `[*]` and `[[...*]]` (catch-all) segments to expose the true
+  // static prefix, then check whether any production string OR template
+  // literal starts with that prefix followed by `/${`, `/`, `?`, or `"`.
+  const staticPrefix = route.replace(/(?:\/\[\[?\.{0,3}[^\]]+\]\]?)+$/, "");
+  const staticPrefixRe =
+    staticPrefix && staticPrefix !== "/" && staticPrefix !== route
+      ? new RegExp(
+          // Match any string/template literal that starts with the
+          // static prefix followed by a path-segment continuation:
+          //   "/report/foo"            (literal)
+          //   `/report/${owner}/...`   (template literal — `\`` opener,
+          //                             then static prefix, then `/${`)
+          //   "/report/" + something   (concat — matches "/report/")
+          // Escape regex meta in the prefix; the `[]` from page-router
+          // dynamic routes is already gone.
+          `["'\\\`]${staticPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}` +
+            `(?:/[\\w$.{}\\-]*)*` +
+            `(?:["'\\\`]|\\?|\\$\\{)`,
+        )
+      : null;
   let referenced = false;
   for (const f of sourceFiles) {
     if (f === pageFile) continue;
     const ftext = readText(f);
     if (routeRe.test(ftext) || parentRe.test(ftext)) {
+      referenced = true;
+      break;
+    }
+    if (staticPrefixRe && staticPrefixRe.test(ftext)) {
       referenced = true;
       break;
     }
