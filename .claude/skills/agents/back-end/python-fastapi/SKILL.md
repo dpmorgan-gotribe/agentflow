@@ -223,6 +223,40 @@ dev = [
 
 Python version pinned in `.python-version`: `3.13` (current stable at factory-authoring time).
 
+## 6.5. Cross-tier package conventions (bug-026)
+
+When you author a `packages/<name>/` workspace package consumed by the web frontend (typed clients, shared schemas, error utilities, etc.), use the **frontend-compatible import convention** — NOT NodeNext's explicit `.js` extensions.
+
+The factory's web tier consumes workspace packages via Next.js `transpilePackages`, which uses Webpack 5's resolver. Webpack does NOT rewrite `.js` extensions to find `.ts` source files (that's a NodeNext behavior, not Webpack's). Authoring `packages/api-client/src/index.ts` with `from "./client.js"` produces:
+
+```
+Module not found: Can't resolve './client.js'
+```
+
+The fix is the **bare-specifier convention** — works in BOTH Webpack AND Node ESM:
+
+```ts
+// packages/api-client/src/index.ts — CORRECT
+export { fetchReport } from "./client"; // no .js
+export type { ApiClientOptions } from "./client";
+
+// INCORRECT — breaks Webpack
+export { fetchReport } from "./client.js";
+```
+
+### Rules for workspace packages consumed cross-tier
+
+1. **No `.js` extensions in imports.** Use bare specifiers: `from "./client"`, `from "./types"`.
+2. **`package.json.main` and `.types` point at TS source** (not a `dist/` build) — `"main": "./src/index.ts"`. The web app's `transpilePackages` config compiles on demand. No build step required.
+3. **Don't add a build step.** Adds CI complexity + the orchestrator doesn't run package-level builds per feature. Source-only packages are the factory pattern.
+4. **`type: "module"` in package.json is fine** — the bare-specifier convention works under ESM resolution too.
+
+### Empirical motivation
+
+Discovered live during repo-health-dashboard-01 (2026-04-29): backend-builder authored `packages/api-client/src/index.ts` with NodeNext-style `.js` imports. The web app consumed it via `transpilePackages` and threw `Module not found` on every page that imported from `@repo/api-client`. The dev server's compile failed → flow E2E checker timed out → verify pipeline downgraded to "dev-server-not-ready" warning instead of filing a bug. Hotfix on the project: drop the `.js` extensions (commit 7d8435f).
+
+If you're tempted to use `.js` because the IDE marks the import path as missing — that's an IDE/tsconfig limitation, not a runtime requirement. The Webpack-driven web consumer cares about `transpilePackages` resolving `./client.ts`, NOT about the import statement matching any literal file on disk.
+
 ## 7. Anti-patterns
 
 - **Never mix sync + async in the same endpoint.** An `async def` with `requests.get()` blocks the loop — use `httpx.AsyncClient` instead.

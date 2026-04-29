@@ -200,6 +200,31 @@ Workspace packages:
 @repo/orchestrator-contracts workspace:*
 ```
 
+## 6.5. Cross-tier package conventions (bug-026)
+
+When you author a `packages/<name>/` workspace package consumed by the web frontend (typed clients, shared schemas, error utilities), use the **frontend-compatible import convention** — bare specifiers, NOT NodeNext's explicit `.js` extensions.
+
+The factory's web tier consumes workspace packages via Next.js `transpilePackages` (Webpack 5). Webpack does NOT rewrite `.js` to `.ts` like NodeNext does. Authoring with `from "./client.js"` produces `Module not found: Can't resolve './client.js'` at the consumer.
+
+```ts
+// packages/api-client/src/index.ts — CORRECT
+export { fetchReport } from "./client"; // bare specifier
+export type { ApiClientOptions } from "./client";
+
+// INCORRECT — breaks Webpack consumer
+export { fetchReport } from "./client.js";
+```
+
+Rules:
+
+1. No `.js` extensions in workspace-package imports. Bare specifiers only.
+2. `package.json.main` and `.types` point at TS source (`"./src/index.ts"`). No build step.
+3. `type: "module"` is fine; bare specifiers work under ESM too.
+
+For the same-tier case (NodeNext-only consumers like a sibling backend package), the `.js` convention IS correct. The issue is specifically when a package crosses the back-end / web tier boundary. When in doubt, check `apps/web/next.config.ts.transpilePackages` — packages listed there must use bare specifiers internally.
+
+Empirical motivation: see `plans/active/bug-026-api-client-import-extensions.md` (repo-health-dashboard-01 2026-04-29: api-client authored with `.js` extensions; dev server compile failed; hotfix at commit 7d8435f).
+
 ## 7. Anti-patterns
 
 - **Never re-declare Zod schemas in the API.** Import from `@repo/types`. Web + mobile + API consume the same schemas; divergence is a correctness bug.

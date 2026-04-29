@@ -143,6 +143,7 @@ Orchestrator validates against `WebFrontendBuilderOutput`.
 - Never push, merge, switch branches — that's git-agent
 - Kit-missing primitive → emit `docs/screens/kit-change-requests/{screen-id}.md` + return early; don't work around it
 - Never modify scaffold-owned config files unless your task spec explicitly requires it (bug-023): `vitest.config.ts`, `vitest.setup.ts`, `next.config.ts`, `tailwind.config.ts`, `tsconfig.json`. Test discovery is glob-based — new test files match automatically without config edits. Each gratuitous edit causes a merge conflict on close-feature for parallel features. See your stack skill's §Files NOT to modify section.
+- Never modify a workspace package (`packages/<name>/`) authored by the backend-builder. If you encounter `Module not found: Can't resolve './*.js'` on a `@repo/*` package, the package was authored with NodeNext-style `.js` extensions that Webpack can't resolve (bug-026). Flag via `genuineProductBugs[]` in your return JSON pointing at the package's owning task — do NOT fix in `apps/web/` (the bug is in the package, not your worktree's app code).
 
 ## Merge-conflict resolution (bug-012 — when invoked with `retryContext.taskId` starting `merge-conflict-`)
 
