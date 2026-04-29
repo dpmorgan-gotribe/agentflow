@@ -50,6 +50,7 @@ export interface ParityVerifyContext {
     projectDir: string;
     factoryRoot: string;
     screen: ScreenEntry;
+    ctx: ParityVerifyContext;
   }) => Promise<ScreenComparisonResult>;
   /**
    * When false, skip the entire stage and return `ok:true,
@@ -57,6 +58,25 @@ export interface ParityVerifyContext {
    * or callers want a smoke-only verify pass). Default true.
    */
   enabled?: boolean;
+  /**
+   * feat-035 — base URL for the running dev server. The Phase B Playwright
+   * driver navigates to `${devServerUrl}${url-for-screen}`. Operator must
+   * boot the dev server separately; lifecycle is intentionally NOT
+   * managed here (per feat-035 §Rejected Alternatives).
+   * Default: `http://localhost:3000`.
+   */
+  devServerUrl?: string;
+  /**
+   * feat-035 — explicit screen-id → built-URL override map. Required for
+   * dynamic routes (e.g. `/report/:owner/:repo`) where there's no
+   * default heuristic. Static routes fall back to `/{screen.id}` (or `/`
+   * when id === "home").
+   *
+   * Example:
+   *   { "report": "/report/facebook/react",
+   *     "compare": "/compare/facebook/react/preactjs/preact" }
+   */
+  screenUrlMap?: Record<string, string>;
 }
 
 export interface ScreenEntry {
@@ -110,14 +130,54 @@ function defaultLoadScreenList(projectDir: string): Promise<ScreenEntry[]> {
  * Until then the verifier surfaces "playwright-unavailable" warnings,
  * never produces false-positive divergences.
  */
+/**
+ * feat-035 — resolve a screen's built-page URL.
+ *
+ * Priority: explicit `screenUrlMap[id]` → "home" alias for "/" →
+ * `/{id}` fallback. Dynamic routes (those whose mockup id implies
+ * URL params) MUST be in `screenUrlMap` or they're rejected with
+ * a "needs URL fixture" warning instead of a misleading 404 diff.
+ */
+function resolveBuiltUrl(
+  screen: ScreenEntry,
+  ctx: { devServerUrl?: string; screenUrlMap?: Record<string, string> },
+): { url: string } | { skipReason: string } {
+  const base = (ctx.devServerUrl ?? "http://localhost:3000").replace(/\/$/, "");
+  const explicit = ctx.screenUrlMap?.[screen.id];
+  if (explicit) return { url: `${base}${explicit}` };
+  if (screen.id === "home") return { url: `${base}/` };
+  // Heuristic: dynamic-route mockups typically have ids with sub-states
+  // ("compare-half-empty", "report-loading", "report-network-error",
+  // "report-not-found", "report-private", "report-rate-limited"). They
+  // need fixture URLs to render meaningfully.
+  if (
+    screen.id.includes("loading") ||
+    screen.id.includes("error") ||
+    screen.id.includes("rate-limited") ||
+    screen.id.includes("private") ||
+    screen.id.includes("not-found") ||
+    screen.id.includes("half-empty") ||
+    screen.id === "report" ||
+    screen.id === "compare"
+  ) {
+    return {
+      skipReason: `dynamic route — needs ctx.screenUrlMap['${screen.id}'] (e.g. '/report/facebook/react')`,
+    };
+  }
+  // Static-route fallback: `/{id}` (e.g. "about" → "/about").
+  return { url: `${base}/${screen.id}` };
+}
+
 async function defaultCompareScreen({
   projectDir,
   factoryRoot,
   screen,
+  ctx,
 }: {
   projectDir: string;
   factoryRoot: string;
   screen: ScreenEntry;
+  ctx: ParityVerifyContext;
 }): Promise<ScreenComparisonResult> {
   // Load mockup HTML from disk
   let mockupHtml: string;
@@ -126,43 +186,102 @@ async function defaultCompareScreen({
   } catch (err) {
     return {
       divergences: [],
-      warnings: [
-        `screen ${screen.id}: failed to read mockup: ${(err as Error).message}`,
-      ],
+      warnings: [`failed to read mockup: ${(err as Error).message}`],
     };
   }
-  // Try to dynamic-import Playwright. If absent, soft-fail.
-  let chromium: { launch: (...args: unknown[]) => Promise<unknown> } | null;
+
+  // Resolve built-page URL. Skip dynamic routes without explicit fixtures.
+  const urlResult = resolveBuiltUrl(screen, ctx);
+  if ("skipReason" in urlResult) {
+    return { divergences: [], warnings: [urlResult.skipReason] };
+  }
+  const builtUrl = urlResult.url;
+
+  // feat-035 Phase A — Playwright as a hard devDep. Dynamic import keeps
+  // graceful degradation when chromium binary isn't downloaded yet.
+  type PWChromium = {
+    launch: (opts?: unknown) => Promise<{
+      newPage: (opts?: unknown) => Promise<{
+        goto: (url: string, opts?: unknown) => Promise<unknown>;
+        content: () => Promise<string>;
+      }>;
+      close: () => Promise<void>;
+    }>;
+  };
+  let chromium: PWChromium;
   try {
     const mod = (await import("playwright")) as unknown as {
-      chromium: { launch: (...args: unknown[]) => Promise<unknown> };
+      chromium: PWChromium;
     };
     chromium = mod.chromium;
   } catch {
     return {
       divergences: [],
       warnings: [
-        `screen ${screen.id}: playwright not installed — visual-parity stage skipped (install via 'pnpm add -D playwright' to enable)`,
+        `playwright not installed — visual-parity stage skipped (run 'pnpm install' + 'pnpm exec playwright install chromium')`,
       ],
     };
   }
-  // Reaching here means a real Playwright run would happen. v1 has the
-  // hooks in place but the actual headless-chromium driver (dual-server
-  // setup, viewport sizing, getComputedStyle iteration) is shipped in
-  // the factory at v2 — we surface a "v2-enables-playwright-driver"
-  // warning + fall through to the diff using mockup-only HTML so the
-  // schema + bug-author paths stay exercised. Defensive: do not
-  // accidentally produce divergence rows from a one-sided diff.
-  void chromium;
-  void mockupHtml;
-  void projectDir;
-  void factoryRoot;
-  return {
-    divergences: [],
-    warnings: [
-      `screen ${screen.id}: playwright driver pending v2 — DOM-skeleton extracted from mockup; built-page render deferred`,
-    ],
+
+  // feat-035 Phase B — actually render the built page + extract HTML.
+  let browser: Awaited<ReturnType<PWChromium["launch"]>> | undefined;
+  let builtHtml: string;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({
+      viewport: { width: 1440, height: 900 },
+    });
+    await page.goto(builtUrl, { waitUntil: "networkidle", timeout: 30_000 });
+    builtHtml = await page.content();
+  } catch (err) {
+    if (browser) await browser.close().catch(() => {});
+    return {
+      divergences: [],
+      warnings: [
+        `built-page render failed at ${builtUrl}: ${(err as Error).message}`,
+      ],
+    };
+  }
+  await browser.close().catch(() => {});
+
+  // feat-035 — diff via existing scripts/diff-kit-skeleton.mjs.
+  // Resolve the script path relative to factoryRoot so test seams +
+  // alternate factory layouts still resolve correctly.
+  type DiffAndClassify = (args: {
+    screenId: string;
+    mockupHtml: string;
+    builtHtml: string;
+  }) => {
+    diff: unknown;
+    divergences: ParityDivergence[];
   };
+  let diffAndClassify: DiffAndClassify;
+  try {
+    const scriptUrl = new URL(
+      `file://${factoryRoot.replace(/\\/g, "/")}/scripts/diff-kit-skeleton.mjs`,
+    ).href;
+    const mod = (await import(scriptUrl)) as unknown as {
+      diffAndClassify: DiffAndClassify;
+    };
+    diffAndClassify = mod.diffAndClassify;
+  } catch (err) {
+    return {
+      divergences: [],
+      warnings: [
+        `failed to import diff-kit-skeleton: ${(err as Error).message}`,
+      ],
+    };
+  }
+
+  // Run the diff. Each divergence is already shaped as ParityDivergence
+  // (per scripts/diff-kit-skeleton.mjs:299-309).
+  void projectDir; // reserved for future fixture-resolution
+  const result = diffAndClassify({
+    screenId: screen.id,
+    mockupHtml,
+    builtHtml,
+  });
+  return { divergences: result.divergences ?? [], warnings: [] };
 }
 
 /**
@@ -211,7 +330,12 @@ export async function runParityVerify(
 
   for (const screen of screens) {
     try {
-      const result = await compareScreen({ projectDir, factoryRoot, screen });
+      const result = await compareScreen({
+        projectDir,
+        factoryRoot,
+        screen,
+        ctx,
+      });
       divergences.push(...result.divergences);
       for (const w of result.warnings) {
         warnings.push(`screen ${screen.id}: ${w}`);
