@@ -29,6 +29,8 @@ import { runParityVerify } from "../src/parity-verify.js";
 interface CliArgs {
   projectSlug: string;
   devServerUrl: string;
+  /** True when operator passed --dev-server-url explicitly (manual-boot mode). */
+  devServerUrlExplicit: boolean;
   urlMapPath: string | null;
   json: boolean;
 }
@@ -37,12 +39,14 @@ function parseArgs(argv: readonly string[]): CliArgs {
   const args = argv.slice(2);
   const rest: string[] = [];
   let devServerUrl = "http://localhost:3000";
+  let devServerUrlExplicit = false;
   let urlMapPath: string | null = null;
   let json = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--dev-server-url") {
       devServerUrl = args[++i] ?? devServerUrl;
+      devServerUrlExplicit = true;
     } else if (a === "--url-map") {
       urlMapPath = args[++i] ?? null;
     } else if (a === "--json") {
@@ -53,11 +57,18 @@ function parseArgs(argv: readonly string[]): CliArgs {
   }
   if (rest.length === 0) {
     console.error(
-      "Usage: parity-verify <project-slug> [--dev-server-url <url>] [--url-map <path>] [--json]",
+      "Usage: parity-verify <project-slug> [--dev-server-url <url>] [--url-map <path>] [--json]\n" +
+        "  --dev-server-url omitted → auto-boot dev server (feat-036)",
     );
     process.exit(3);
   }
-  return { projectSlug: rest[0]!, devServerUrl, urlMapPath, json };
+  return {
+    projectSlug: rest[0]!,
+    devServerUrl,
+    devServerUrlExplicit,
+    urlMapPath,
+    json,
+  };
 }
 
 function findFactoryRoot(): string {
@@ -106,7 +117,11 @@ async function main(): Promise<void> {
   const out = await runParityVerify({
     projectDir,
     factoryRoot,
-    devServerUrl: cli.devServerUrl,
+    // feat-036: standalone CLI opts into auto-boot when no explicit
+    // --dev-server-url. With an explicit URL, expect operator-managed
+    // dev server.
+    ...(cli.devServerUrlExplicit ? { devServerUrl: cli.devServerUrl } : {}),
+    autoBootDevServer: !cli.devServerUrlExplicit,
     ...(screenUrlMap ? { screenUrlMap } : {}),
   });
 

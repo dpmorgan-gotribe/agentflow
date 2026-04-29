@@ -495,6 +495,10 @@ export async function runBuildToSpecVerify(
       parity = await parityVerify({
         projectDir,
         factoryRoot,
+        // feat-036 — orchestrator-driven build-to-spec-verify auto-boots
+        // the dev server for parity. Operator running parity-verify
+        // standalone with --dev-server-url uses manual mode instead.
+        autoBootDevServer: true,
       });
       for (const w of parity.warnings) warnings.push(`parity: ${w}`);
     } catch (err) {

@@ -5,6 +5,11 @@ import {
   type ParityVerifyOutput,
   type ParityDivergence,
 } from "@repo/orchestrator-contracts";
+import {
+  bootDevServer,
+  teardownDevServer,
+  type DevServerHandle,
+} from "./dev-server.js";
 
 /**
  * feat-028 Phase 3 — orchestrator-side wrapper for the visual-parity
@@ -60,12 +65,27 @@ export interface ParityVerifyContext {
   enabled?: boolean;
   /**
    * feat-035 — base URL for the running dev server. The Phase B Playwright
-   * driver navigates to `${devServerUrl}${url-for-screen}`. Operator must
-   * boot the dev server separately; lifecycle is intentionally NOT
-   * managed here (per feat-035 §Rejected Alternatives).
-   * Default: `http://localhost:3000`.
+   * driver navigates to `${devServerUrl}${url-for-screen}`.
+   *
+   * feat-036 — when omitted AND `autoBootDevServer !== false`, parity-
+   * verify boots its own dev server via `orchestrator/src/dev-server.ts`,
+   * waits for ready, runs the diff, and tears down on completion. Operator
+   * can still pass an explicit URL to reuse a manually-booted dev server.
    */
   devServerUrl?: string;
+  /**
+   * feat-036 — when true, spawn `pnpm -C apps/web dev` if `devServerUrl`
+   * is not supplied. Default false to preserve test-seam behavior
+   * (tests stub `loadScreenList` + `compareScreen` and don't want to
+   * boot a real server). The standalone CLI + the build-to-spec-verify
+   * wrapper opt in explicitly.
+   */
+  autoBootDevServer?: boolean;
+  /**
+   * feat-036 — wall-clock budget for `waitForDevServer` polling. Default
+   * 60_000ms (matches `run-synthesized-flows.mjs`).
+   */
+  devServerBootTimeoutMs?: number;
   /**
    * feat-035 — explicit screen-id → built-URL override map. Required for
    * dynamic routes (e.g. `/report/:owner/:repo`) where there's no
@@ -328,22 +348,62 @@ export async function runParityVerify(
     );
   }
 
-  for (const screen of screens) {
+  // feat-036 — auto-boot dev server when no URL supplied. Safe to skip
+  // when there are no screens to check OR when caller explicitly opted
+  // out via autoBootDevServer:false.
+  let devServerHandle: DevServerHandle | null = null;
+  let effectiveCtx: ParityVerifyContext = ctx;
+  const shouldAutoBoot =
+    screens.length > 0 && !ctx.devServerUrl && ctx.autoBootDevServer === true;
+  if (shouldAutoBoot) {
     try {
-      const result = await compareScreen({
+      devServerHandle = await bootDevServer(
         projectDir,
-        factoryRoot,
-        screen,
-        ctx,
-      });
-      divergences.push(...result.divergences);
-      for (const w of result.warnings) {
-        warnings.push(`screen ${screen.id}: ${w}`);
-      }
+        ctx.devServerBootTimeoutMs ?? 60_000,
+      );
+      effectiveCtx = { ...ctx, devServerUrl: devServerHandle.baseUrl };
+      warnings.push(
+        `dev-server: auto-booted at ${devServerHandle.baseUrl} (took ${Date.now() - devServerHandle.startedAtMs}ms)`,
+      );
     } catch (err) {
       warnings.push(
-        `screen ${screen.id}: compareScreen threw: ${(err as Error).message}`,
+        `dev-server: auto-boot failed: ${(err as Error).message}; parity-verify will skip with screens unchecked`,
       );
+      // Without a server, we can't compare; return early with the warning.
+      return ParityVerifyOutputSchema.parse({
+        ok: true,
+        screensChecked: 0,
+        divergences: [],
+        warnings,
+        durationMs: Date.now() - startedAt,
+        costUsd: 0,
+      });
+    }
+  }
+
+  try {
+    for (const screen of screens) {
+      try {
+        const result = await compareScreen({
+          projectDir,
+          factoryRoot,
+          screen,
+          ctx: effectiveCtx,
+        });
+        divergences.push(...result.divergences);
+        for (const w of result.warnings) {
+          warnings.push(`screen ${screen.id}: ${w}`);
+        }
+      } catch (err) {
+        warnings.push(
+          `screen ${screen.id}: compareScreen threw: ${(err as Error).message}`,
+        );
+      }
+    }
+  } finally {
+    // feat-036 — always teardown auto-booted server, even on inner throw.
+    if (devServerHandle) {
+      teardownDevServer(devServerHandle);
     }
   }
 
