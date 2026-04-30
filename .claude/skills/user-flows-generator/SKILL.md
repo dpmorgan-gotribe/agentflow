@@ -116,6 +116,184 @@ the source report.
 For each screen in the manifest, inject its status. If a screen isn't in the
 report, default to `not-reviewed` + warn.
 
+### 4b. Author `interactions[]` + `seedingTier` per flow (feat-038 Phase 3)
+
+Each flow needs a structured Playwright action script (`interactions[]`) +
+a per-flow seeding signal (`seedingTier`) so `scripts/synthesize-flow-e2e.mjs`
+can emit deterministic E2E specs that exercise the full user journey, not
+just `page.goto("/")`. Both fields landed in v2.0 of the manifest schema
+(see `schemas/user-flows-manifest.schema.json` + `packages/orchestrator-
+contracts/src/user-flows-manifest.ts`); the synthesizer falls back to the
+v1.0 screen-breadcrumb heuristic when these fields are absent.
+
+#### A. Infer `seedingTier`
+
+Binary signal feeding the per-stack-skill seeding strategy declared in
+`.claude/rules/testing-policy.md §E2E data-seeding strategy`. Rule:
+
+- If the flow's `name` OR `description` (case-insensitive) contains any
+  **mutation verb** — `create`, `add`, `save`, `edit`, `update`, `delete`,
+  `remove`, `archive`, `restore`, `upload`, `publish`, `submit`, `post`,
+  `send`, `assign`, `unassign`, `accept`, `decline`, `approve`, `reject`,
+  `pay`, `checkout`, `signup`, `register` — set `"seedingTier": "mutation"`.
+- Otherwise default to `"seedingTier": "read-only"`.
+
+Read-only flows produce specs that run in parallel; mutation flows opt
+into `test.describe.serial` so cross-test order is deterministic. Borderline
+cases (e.g. "Save preferences" — a setting toggle that persists — vs.
+"Save to favourites" — a UI bookmark) lean **mutation** to be safe; the
+serial-execution overhead is minor and avoids flaky parallel runs.
+
+#### B. Infer `interactions[]`
+
+For each flow, walk its `steps[]` (the screen breadcrumbs already attached
+in steps 2-4) and emit a structured action script. Selectors come from
+reading the actual mockup HTML at `docs/screens/{platform}/{screenId}.html`
+— the kit primitives carry `data-kit-component="X"` attributes, the page
+root carries `data-screen-id="Y"`, and visible text on buttons/links is
+the most stable disambiguator.
+
+**Per-flow algorithm:**
+
+1. **Entry navigate.** First entry is always
+   `{ kind: "navigate", to: "<route>" }`. Most flows enter at `/`; for
+   flows whose first screen is a sub-route (e.g. `/settings`,
+   `/report/:owner/:repo`), use the route from `screens.json`'s
+   `routePattern` field if present, else the screen-id with leading slash
+   (`/settings`, `/about`).
+
+2. **Per transition (screen[i] → screen[i+1]).** Read screen[i]'s HTML.
+   Identify the interactive element that triggers navigation to
+   screen[i+1]. Selector preference order:
+   1. **Visible-text role selector** — `role=button[name="Submit"]` or
+      `role=link[name="Sign in"]` when the element's accessible name is
+      unambiguous and matches a button/link triggering the transition.
+      Most stable across re-runs.
+   2. **`data-kit-component` + text disambiguation** —
+      `[data-kit-component="Button"]:has-text("Generate report")` when
+      multiple buttons exist and text discriminates.
+   3. **Plain text selector** — `text=Generate report` when no role
+      attribute exists.
+   4. **kit-component selector with sibling/parent narrowing** —
+      `[data-kit-component="Card"]:has([data-kit-component="StarsChart"])`
+      for compound elements.
+
+3. **Form submission flows.** When the transition involves submitting a
+   form (input fields visible, submit button triggers nav), emit:
+   - One `{ kind: "fill", selector, value }` per input field with a sane
+     test value (URLs use `facebook/react`-shaped real-but-stable
+     placeholders; emails use `test@example.com`; passwords use
+     `TestPass123!`).
+   - One `{ kind: "click", selector }` for the submit button.
+   - One `{ kind: "waitForResponse", urlPattern: "/api/<path>" }` if the
+     transition involves a network roundtrip (mutation tier OR fetch on
+     submit). Read the screen HTML for hints — if the form posts to
+     `/api/report/`, the urlPattern is `"/api/report/"`.
+
+4. **Final-step assertion.** After the last navigation lands, emit at
+   least one `{ kind: "assertVisible", selector }` on a key element
+   that's distinctive to the destination screen — typically the screen's
+   primary heading or a kit-component unique to that screen (e.g.
+   `[data-kit-component="ContributorsChart"]` for the report screen).
+   This is the assertion that catches kanban-09 / repo-health-01-class
+   integration bugs (the navigate succeeded, but the chart didn't
+   render because the API call 404'd silently).
+
+5. **Optional final URL assertion.** When the route pattern is
+   distinctive, emit
+   `{ kind: "assertUrlMatches", pattern: "^/report/" }` so a flow that
+   navigates client-side without changing the URL fails clearly.
+
+**Worked example — "Generate a single repo health report"** (flow-1 from
+`repo-health-dashboard-01`):
+
+Screen breadcrumb: `home` → `report-loading` → `report`. Reading
+`docs/screens/webapp/home.html` the URL form has a `<input type="text">`
+inside `[data-kit-component="Input"]` and a submit button
+`[data-kit-component="Button"]` with visible text "Generate report".
+Reading `docs/screens/webapp/report.html` the main content is wrapped in
+`[data-kit-component="ContributorsChart"]` and similar charts.
+
+Author this `interactions[]`:
+
+```json
+[
+  { "kind": "navigate", "to": "/" },
+  {
+    "kind": "fill",
+    "selector": "[data-kit-component=\"Input\"] input[type=\"text\"]",
+    "value": "facebook/react"
+  },
+  {
+    "kind": "click",
+    "selector": "role=button[name=\"Generate report\"]"
+  },
+  { "kind": "waitForResponse", "urlPattern": "/api/report/", "status": 200 },
+  {
+    "kind": "assertVisible",
+    "selector": "[data-kit-component=\"ContributorsChart\"]"
+  },
+  { "kind": "assertUrlMatches", "pattern": "^/report/" }
+]
+```
+
+`seedingTier`: `"read-only"` (the flow's name is "Generate" but the
+generation reads from GitHub via a proxy cache — no project-managed
+mutation; the tier is determined by the project's persistence_layer +
+whether the flow CHANGES persisted state, not by the verb in isolation).
+
+#### C. Edge cases
+
+- **Screen HTML missing** for a step. Skip the transition and emit a
+  `// TODO: screen HTML missing — add interaction manually` comment
+  step (NOT a real interaction, just a JSON comment-string in the
+  description for the operator). Or: omit the flow's `interactions[]`
+  entirely and surface a warning. Prefer the latter — partial
+  interactions[] are worse than none (the synthesizer's legacy
+  fallback path produces a meaningful screen-breadcrumb spec).
+- **Ambiguous selector** for a transition (two buttons with the same
+  text). Add a `nth=` qualifier: `role=button[name="Submit"] >> nth=0`.
+  If still ambiguous, prefer the kit-component selector and disambiguate
+  via parent: `[data-kit-component="Card"]:has-text("Project A") [data-kit-component="Button"]`.
+- **Modal-style transitions** (clicking a card opens a detail modal in
+  the same route). The `assertVisible` step should target the modal
+  container; the `assertUrlMatches` step is omitted (URL doesn't
+  change).
+- **Error-recovery flows** (flow-3 "Recover from a 404" in
+  `repo-health-dashboard-01`). The fill value should trigger the
+  expected error path — e.g. `value: "nonexistent-org/nonexistent-repo"`
+  for a 404 flow. The `waitForResponse` step asserts `status: 404`.
+  The destination assertion is `assertVisible` on the error banner's
+  kit-component.
+- **No `interactions[]` if confidence is low.** If the LLM can't infer
+  selectors with reasonable confidence (e.g. the screen HTML is heavily
+  custom with no kit attributes), omit `interactions[]` for that flow
+  and surface a warning. The synthesizer's v1.0 fallback path emits a
+  meaningful spec from `steps[]` alone.
+
+#### D. Output
+
+Each flow gains two new fields:
+
+```json
+{
+  "id": "flow-1",
+  "name": "Generate a single repo health report",
+  "description": "...",
+  "primaryPersona": "diane-em",
+  "steps": [
+    /* unchanged screen breadcrumbs */
+  ],
+  "interactions": [
+    /* the structured script per algorithm above */
+  ],
+  "seedingTier": "read-only"
+}
+```
+
+Set `manifest.schemaVersion = "2.0"` once at least one flow has
+`interactions[]` populated.
+
 ### 5. Generate `docs/user-flows-manifest.json`
 
 Aggregate everything into one manifest:
@@ -123,6 +301,7 @@ Aggregate everything into one manifest:
 ```json
 {
   "version": "1.0",
+  "schemaVersion": "2.0",
   "generatedAt": "2026-04-21T14:00:00Z",
   "projectName": "gotribe-v1",
   "platforms": ["webapp", "mobile", "admin"],
@@ -151,7 +330,38 @@ Aggregate everything into one manifest:
           "status": "pass",
           "title": "Sign in"
         }
-      ]
+      ],
+      "interactions": [
+        { "kind": "navigate", "to": "/" },
+        {
+          "kind": "click",
+          "selector": "role=link[name=\"Sign in\"]"
+        },
+        {
+          "kind": "fill",
+          "selector": "[data-kit-component=\"Input\"][name=\"email\"]",
+          "value": "test@example.com"
+        },
+        {
+          "kind": "fill",
+          "selector": "[data-kit-component=\"Input\"][name=\"password\"]",
+          "value": "TestPass123!"
+        },
+        {
+          "kind": "click",
+          "selector": "role=button[name=\"Sign in\"]"
+        },
+        {
+          "kind": "waitForResponse",
+          "urlPattern": "/api/auth/signin",
+          "status": 200
+        },
+        {
+          "kind": "assertVisible",
+          "selector": "[data-screen-id=\"discover-home\"]"
+        }
+      ],
+      "seedingTier": "mutation"
     }
   ],
   "personas": [
@@ -170,6 +380,10 @@ Aggregate everything into one manifest:
   }
 }
 ```
+
+`schemaVersion: "2.0"` is set whenever ≥1 flow has `interactions[]`
+populated. Manifests with `schemaVersion` absent fall back to v1.0
+semantics — readers (synthesizer + viewer) handle both shapes.
 
 ### 6. Compute hashes
 
@@ -216,6 +430,12 @@ Before reporting complete:
   "archivedFrom": "docs/user-flows-archive/2026-04-14T16-15-42Z.html",
   "personasCovered": 5,
   "flowsCovered": 14,
+  "flowsWithInteractions": 12,
+  "seedingTierCounts": {
+    "read-only": 9,
+    "mutation": 3
+  },
+  "schemaVersion": "2.0",
   "screensLinked": 483,
   "screensByStatus": {
     "pass": 461,
@@ -228,6 +448,12 @@ Before reporting complete:
   "warnings": []
 }
 ```
+
+The `flowsWithInteractions` count is < `flowsCovered` when some flows
+fell back to v1.0 emit (low-confidence selectors, missing screen HTML).
+Each gap surfaces as a warning naming the flow id. `schemaVersion` is
+`"2.0"` whenever ≥1 flow gained `interactions[]`; otherwise it's omitted
+and downstream readers fall back to v1.0 semantics.
 
 ## Viewer mechanics (template contract — lives at `.claude/templates/user-flows-template.html`)
 
