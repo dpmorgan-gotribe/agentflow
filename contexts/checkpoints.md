@@ -9,3 +9,4 @@
 20260430-001912-human-bug-032-phase-ab-handoff.md
 20260430-010524-human-feat-038-phase0-handoff.md
 20260430-034811-human-feat-038-complete-and-projects-synced.md
+20260430-081931-human-factory-uplift-prebuilds-ready.md
