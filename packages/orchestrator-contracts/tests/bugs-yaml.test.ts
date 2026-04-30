@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   BugEntrySchema,
   BugsYamlJsonSchema,
@@ -6,7 +7,7 @@ import {
   defaultAgentSequenceForSource,
 } from "../src/bugs-yaml.js";
 
-const validOrphanEntry: typeof BugEntrySchema._type = {
+const validOrphanEntry: z.infer<typeof BugEntrySchema> = {
   id: "bug-orphan-carddetailmodal",
   iteration: 1,
   source: "reachability-orphan",
@@ -33,7 +34,7 @@ const validOrphanEntry: typeof BugEntrySchema._type = {
   errorLog: [],
 };
 
-const validFlowEntry: typeof BugEntrySchema._type = {
+const validFlowEntry: z.infer<typeof BugEntrySchema> = {
   id: "bug-flow-flow-4-card-modal",
   iteration: 1,
   source: "flow-execution-failure",
@@ -63,7 +64,7 @@ const validFlowEntry: typeof BugEntrySchema._type = {
   errorLog: [],
 };
 
-const validBugsYaml: typeof BugsYamlSchema._type = {
+const validBugsYaml: z.infer<typeof BugsYamlSchema> = {
   version: "1.0",
   generated_at: "2026-04-26T12:34:56.000Z",
   project_name: "kanban-webapp-10",

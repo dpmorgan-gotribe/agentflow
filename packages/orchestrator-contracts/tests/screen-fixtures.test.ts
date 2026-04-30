@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   ScreenFixtureDerivedFromSchema,
   ScreenFixtureJsonSchema,
@@ -6,7 +7,7 @@ import {
   ScreenFixtureSchema,
 } from "../src/screen-fixtures.js";
 
-const validFixture: typeof ScreenFixtureSchema._type = {
+const validFixture: z.infer<typeof ScreenFixtureSchema> = {
   version: "1.0",
   screenId: "home",
   derivedFrom: "mockup-auto",
@@ -19,7 +20,7 @@ const validFixture: typeof ScreenFixtureSchema._type = {
   preActions: [],
 };
 
-const validFlowContextFixture: typeof ScreenFixtureSchema._type = {
+const validFlowContextFixture: z.infer<typeof ScreenFixtureSchema> = {
   version: "1.0",
   screenId: "search-empty",
   derivedFrom: "flow-context",

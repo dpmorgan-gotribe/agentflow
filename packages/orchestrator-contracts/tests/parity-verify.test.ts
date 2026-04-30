@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   ParityDivergenceSchema,
   ParityPatternSchema,
@@ -8,20 +9,20 @@ import {
   ParityVerifyOutputSchema,
 } from "../src/parity-verify.js";
 
-const validVariantDrift: typeof ParityVariantDriftSchema._type = {
+const validVariantDrift: z.infer<typeof ParityVariantDriftSchema> = {
   selector: '[data-kit-component="Button"][data-screen-id="home"]',
   mockupValue: "primary",
   builtValue: "secondary",
 };
 
-const validStyleDrift: typeof ParityStyleDriftSchema._type = {
+const validStyleDrift: z.infer<typeof ParityStyleDriftSchema> = {
   selector: '[data-kit-component="Card"]',
   property: "border-radius",
   mockupValue: "8px",
   builtValue: "4px",
 };
 
-const validShellStrippingDivergence: typeof ParityDivergenceSchema._type = {
+const validShellStrippingDivergence: z.infer<typeof ParityDivergenceSchema> = {
   screen: "home",
   pattern: "shell-stripping",
   detail: {
@@ -37,7 +38,7 @@ const validShellStrippingDivergence: typeof ParityDivergenceSchema._type = {
   severity: "P0",
 };
 
-const validTokenDriftDivergence: typeof ParityDivergenceSchema._type = {
+const validTokenDriftDivergence: z.infer<typeof ParityDivergenceSchema> = {
   screen: "settings",
   pattern: "token-drift",
   detail: {
@@ -49,7 +50,7 @@ const validTokenDriftDivergence: typeof ParityDivergenceSchema._type = {
   severity: "P1",
 };
 
-const validHappyOutput: typeof ParityVerifyOutputSchema._type = {
+const validHappyOutput: z.infer<typeof ParityVerifyOutputSchema> = {
   ok: true,
   screensChecked: 6,
   divergences: [],
@@ -58,7 +59,7 @@ const validHappyOutput: typeof ParityVerifyOutputSchema._type = {
   costUsd: 0,
 };
 
-const validFailingOutput: typeof ParityVerifyOutputSchema._type = {
+const validFailingOutput: z.infer<typeof ParityVerifyOutputSchema> = {
   ok: false,
   screensChecked: 6,
   divergences: [validShellStrippingDivergence, validTokenDriftDivergence],

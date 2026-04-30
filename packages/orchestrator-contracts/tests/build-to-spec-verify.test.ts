@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   BuildToSpecVerifyOutput,
   BuildToSpecVerifyOutputJsonSchema,
@@ -12,7 +13,7 @@ import {
   RuntimePageError,
 } from "../src/build-to-spec-verify.js";
 
-const validOk: typeof BuildToSpecVerifyOutput._type = {
+const validOk: z.infer<typeof BuildToSpecVerifyOutput> = {
   ok: true,
   reachability: {
     orphanComponents: [],
@@ -34,7 +35,7 @@ const validOk: typeof BuildToSpecVerifyOutput._type = {
   warnings: [],
 };
 
-const validFlowFailure: typeof FlowFailure._type = {
+const validFlowFailure: z.infer<typeof FlowFailure> = {
   flowId: "flow-4",
   flowName: "Open detail-edit modal",
   step: 1,
@@ -47,7 +48,7 @@ const validFlowFailure: typeof FlowFailure._type = {
   message: "clicked card; expected card-modal; landed on home",
 };
 
-const validOrphanComponent: typeof OrphanComponent._type = {
+const validOrphanComponent: z.infer<typeof OrphanComponent> = {
   path: "apps/web/src/components/board/CardDetailModal.tsx",
   exportNames: ["CardDetailModal"],
   owningFeature: "feat-board-core",
@@ -58,7 +59,7 @@ const validOrphanComponent: typeof OrphanComponent._type = {
   reason: "exported but no production importer found",
 };
 
-const validOrphanRoute: typeof OrphanRoute._type = {
+const validOrphanRoute: z.infer<typeof OrphanRoute> = {
   path: "apps/web/app/settings/page.tsx",
   routePattern: "/settings",
   owningFeature: "feat-settings",
