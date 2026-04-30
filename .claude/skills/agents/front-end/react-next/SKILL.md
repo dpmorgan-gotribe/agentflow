@@ -46,8 +46,40 @@ apps/web/
 ├── tailwind.config.ts            # extends @repo/ui-kit/tokens
 ├── tsconfig.json                 # extends @repo/ui-kit/tsconfig.consumer.json
 ├── package.json
-└── .env.local                    # never committed; user-authored at gate 5 from .env.example
+├── .env.example                  # NEXT_PUBLIC_API_BASE contract (bug-032 Phase C)
+└── .env.local                    # gitignored; user-authored from .env.example (operator-copy step)
 ```
+
+### 1a. Env contract — bug-032 Phase C
+
+`apps/web/.env.example` is **part of the canonical scaffold**, not optional. The frontend's API client (`packages/api-client/src/client.ts`-style) reads `process.env.NEXT_PUBLIC_API_BASE` at build time to construct cross-tier URLs. With no `.env*` authored, the base URL is empty → URLs become same-origin relative → `/api/*` requests hit the Next.js dev server (404) instead of the backend.
+
+Author at scaffold time:
+
+```env
+# apps/web/.env.example — frontend env contract.
+# Copy to .env.local for local dev. .env.local is gitignored.
+
+# Backend API origin — MUST match the FastAPI process's bound port.
+# In dev:  copy to .env.local and set the port (default :8000).
+# In prod: set in deployment env (Vercel project settings, etc.).
+NEXT_PUBLIC_API_BASE=http://localhost:8000
+```
+
+`next.config.ts` exposes the var to the browser:
+
+```ts
+const nextConfig: NextConfig = {
+  env: {
+    NEXT_PUBLIC_API_BASE: process.env.NEXT_PUBLIC_API_BASE ?? "",
+  },
+  // ... rest of config
+};
+```
+
+`.env.local` is gitignored AND blocked by the factory's `enforce-boundaries.sh` hook (secrets-pattern guard). The architect skill documents the operator copy step (`cp apps/web/.env.example apps/web/.env.local`) in `docs/credentials-checklist.md` — the builder MUST NOT auto-author `.env.local`.
+
+For multi-tier projects (web + api), the project-root `scripts/dev.mjs` (also authored by architect — see architect SKILL §7c) handles port coordination automatically: it boots the backend, captures the actual bound port, propagates `NEXT_PUBLIC_API_BASE=http://localhost:<port>` into the frontend's env at spawn time. Operators run `node scripts/dev.mjs` instead of `pnpm dev` to get coordinated boots.
 
 ### 1b. Feature-sliced state convention (bug-015 Phase 3)
 

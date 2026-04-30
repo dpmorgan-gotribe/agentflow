@@ -58,8 +58,45 @@ apps/api/
 ├── pyproject.toml                       # uv-managed; deps + tool config
 ├── uv.lock
 ├── .python-version                      # 3.13
+├── .env.example                         # PORT + CORS_ORIGIN + vendor-secret keys (bug-032 Phase C)
 └── alembic.ini
 ```
+
+### 1a. Env contract — bug-032 Phase C
+
+`apps/api/.env.example` is **part of the canonical scaffold**, not optional. Multi-tier projects (web + api) need a port-coordination contract: the frontend's `NEXT_PUBLIC_API_BASE` MUST point at the actual port FastAPI binds, OR all `/api/*` requests 404 in dev (silently breaks every flow that exercises the backend).
+
+Author at scaffold time:
+
+```env
+# apps/api/.env.example — backend env contract.
+# Copy to .env (or apps/api/.env) for local dev. .env is gitignored.
+
+# Port the FastAPI / uvicorn process binds. Must match
+# apps/web/.env.local NEXT_PUBLIC_API_BASE port (or use scripts/dev.mjs
+# at project root which handles port coordination automatically).
+PORT=8000
+
+# CORS origin — must match the frontend dev origin (typically :3000).
+CORS_ORIGIN=http://localhost:3000
+
+# Vendor secrets (PATs, etc.) — see project-root .env.example for full
+# contract. Backend-side only; never sent to the browser.
+```
+
+`apps/api/.env` is `.gitignore`d at project level. The architect skill (step 8 §"Local dev setup") documents the operator copy step (`cp .env.example .env`); the backend builder MUST NOT auto-author `.env` (the `enforce-boundaries.sh` hook blocks it as a secrets guard).
+
+`config.py` reads via `pydantic_settings.BaseSettings`:
+
+```python
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    port: int = 8000
+    cors_origin: str = "http://localhost:3000"
+    # ... other vars
+```
+
+Defaults match `.env.example` so the backend boots cleanly even when `.env` isn't set up (operator gets clean defaults rather than missing-config errors).
 
 Cross-repo generated:
 
