@@ -342,6 +342,25 @@ Binds to `feat-004-builder-tdd-hybrid` policy.
 
 - **Playwright E2E** (tester-owned, not builder): specs at `apps/web/e2e/*.spec.ts`; runner `pnpm playwright test`.
 
+### E2E data-seeding strategy (feat-038 Phase 2B)
+
+Strategy resolution comes from `architecture.yaml.tooling.stack.persistence_layer` (set by `/architect`); the synthesizer (`scripts/synthesize-flow-e2e.mjs`) maps the slot to one of three Playwright patterns documented in `.claude/rules/testing-policy.md §E2E data-seeding strategy`:
+
+| persistence_layer   | Strategy | Helper imported into synthesized specs                         | Per-test cost | Empirical reference                                                                    |
+| ------------------- | -------- | -------------------------------------------------------------- | ------------- | -------------------------------------------------------------------------------------- |
+| `localStorage`      | A        | `apps/web/e2e/helpers/seed-localstorage.ts` (`clearAndReload`) | ~10ms         | `kanban-webapp-09/apps/web/e2e/board.spec.ts:23`                                       |
+| `external-api-only` | D        | `apps/web/e2e/helpers/seed-intercept.ts` (`clearMocks`)        | ~0ms          | `repo-health-dashboard-01/apps/web/e2e/compare.spec.ts:15`                             |
+| `real-db`           | C        | `apps/web/e2e/helpers/seed-db.ts` (`seedFixtures`/`cleanup`)   | 50–500ms      | book-swap (first DB-backed; canonical FastAPI shape in python-fastapi/SKILL.md §3 E2E) |
+
+The architect skill copies the appropriate template from `.claude/templates/seed-{strategy}.ts.template` into `apps/web/e2e/helpers/seed-{strategy}.ts` at the project's architect step (see `.claude/skills/architect/SKILL.md §7d`). The web-frontend-builder MUST NOT modify the helper file's exports — they're the contract the synthesizer + tester-authored specs both consume. If the project's seeding pattern needs a primitive the template doesn't ship (e.g. `seedAuthCookies` for a project that mixes localStorage + a server cookie), open a kit-change-request rather than inline-editing the helper.
+
+Tester responsibilities (when authoring E2E specs alongside the synthesized ones):
+
+1. Read which strategy applies before authoring — check `architecture.yaml.tooling.stack.persistence_layer`.
+2. Strategy A: `test.beforeEach: clearAndReload(page)` (the synthesizer emits this automatically for synthesized specs; hand-authored specs MUST follow the same pattern). Pre-seed via `seedLocalStorage(page, { ... })` when the test needs non-empty starting state.
+3. Strategy D: install mocks per-test via `mockApiResponse(page, urlPattern, response)` in the test body BEFORE the first navigate; the synthesizer emits `clearMocks(page)` in `afterEach` automatically so mocks don't leak across tests.
+4. Strategy C: tests run AFTER `playwright/global-setup.ts` has seeded the read-only baseline. Mutation tests opt into `test.describe.serial` + author `beforeAll: seedFixtures(...)` / `afterAll: cleanupFixtures(...)`. The backend MUST be running with `ENABLE_TEST_SEED=1` (see `.claude/skills/agents/back-end/python-fastapi/SKILL.md §3 E2E data-seeding strategy` for the FastAPI implementation; equivalent gate exists for other backend stacks).
+
 - **`apps/web/vitest.config.ts` initial scaffold** (bug-023): when authoring the initial config (only on the scaffold-fastapi / scaffold-next-app task or equivalent), include the SCAFFOLD-OWNED comment header at the top — gives downstream features inline guidance even if they don't read the SKILL.md:
 
   ```ts

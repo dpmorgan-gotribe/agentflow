@@ -1,0 +1,139 @@
+import type { APIRequestContext } from "@playwright/test";
+
+/**
+ * Strategy C — real-DB hybrid (globalSetup baseline + per-block scoped).
+ *
+ * Source: `.claude/rules/testing-policy.md §E2E data-seeding strategy`.
+ *
+ * Use via:
+ *
+ *   - `playwright/global-setup.ts` — seeds read-only baseline data once
+ *     per run (e.g. catalog/lookup tables, fixtures every test reads).
+ *   - `test.describe(...)` blocks containing mutation flows wrap their
+ *     own `beforeAll: seedFixtures(...)` + `afterAll: cleanupFixtures(...)`
+ *     so the block's writes don't pollute siblings. Mutation-tier blocks
+ *     also opt into `test.describe.serial` (the synthesizer emits this
+ *     automatically when `seedingTier === "mutation"`).
+ *
+ * Per-test cost depends on fixture size; expect 50–500ms for typical
+ * payloads. Strategies A + D are wrong for DB-backed projects — A would
+ * 10× test wall-clock by re-seeding via the API, D can't fake what's
+ * actually persisted.
+ *
+ * ## Backend contract
+ *
+ * The project's API exposes two gated endpoints, only enabled when the
+ * `ENABLE_TEST_SEED=1` environment variable is set (NEVER in production):
+ *
+ *   POST /test/seed
+ *     body: { fixtures: { <table_name>: <row>[], ... } }
+ *     response: 204 on success, 4xx with { error } on validation failure
+ *
+ *   POST /test/cleanup
+ *     body: { tables: <table_name>[] }
+ *     response: 204 on success
+ *
+ * The python-fastapi stack skill (`.claude/skills/agents/back-end/
+ * python-fastapi/SKILL.md §Testing`) documents the canonical FastAPI
+ * implementation shape. Other backend stacks implement equivalent
+ * endpoints per their idioms.
+ *
+ * Empirical reference: book-swap will be the first DB-backed project to
+ * ship; finance-track follows. No shipped reference yet — this template
+ * is the contract that defines what those projects implement.
+ */
+
+const SEED_BASE_URL =
+  process.env.SEED_BASE_URL ??
+  process.env.API_BASE_URL ??
+  "http://127.0.0.1:8000";
+
+/**
+ * Seed fixtures via the gated endpoint. Each top-level key is a table
+ * name; the value is an array of row objects matching the table schema.
+ * Throws if the request fails — `beforeAll` surfaces the error rather
+ * than running tests against unprepared state.
+ *
+ * Example:
+ *
+ *   await seedFixtures(request, {
+ *     users: [
+ *       { id: "u-alice", email: "alice@test.local", role: "admin" },
+ *       { id: "u-bob",   email: "bob@test.local",   role: "user"  },
+ *     ],
+ *     listings: [
+ *       { id: "l-1", owner_id: "u-alice", title: "The Pragmatic Programmer" },
+ *     ],
+ *   });
+ */
+export async function seedFixtures(
+  request: APIRequestContext,
+  fixtures: Record<string, unknown[]>,
+): Promise<void> {
+  const response = await request.post(`${SEED_BASE_URL}/test/seed`, {
+    data: { fixtures },
+    failOnStatusCode: false,
+  });
+  if (!response.ok()) {
+    const status = response.status();
+    const body = await response.text();
+    throw new Error(
+      `seedFixtures: POST ${SEED_BASE_URL}/test/seed → ${status} ${body}`,
+    );
+  }
+}
+
+/**
+ * Truncate the named tables. Use in `afterAll` to leave the run's
+ * baseline state untouched for subsequent describe blocks.
+ *
+ * Idempotent — succeeds even if some tables don't exist (the backend's
+ * `/test/cleanup` is expected to handle that gracefully).
+ */
+export async function cleanupFixtures(
+  request: APIRequestContext,
+  tables: string[],
+): Promise<void> {
+  const response = await request.post(`${SEED_BASE_URL}/test/cleanup`, {
+    data: { tables },
+    failOnStatusCode: false,
+  });
+  if (!response.ok()) {
+    // Don't throw on cleanup failure — the test that ran was the
+    // load-bearing operation; cleanup-failure shouldn't fail the whole
+    // run. Surface as a console warning so CI logs flag it.
+    const status = response.status();
+    const body = await response.text();
+    // eslint-disable-next-line no-console
+    console.warn(
+      `cleanupFixtures: POST ${SEED_BASE_URL}/test/cleanup → ${status} ${body}`,
+    );
+  }
+}
+
+/**
+ * Convenience wrapper: seed + return a cleanup function that targets
+ * exactly the tables seeded. Useful when fixture composition changes
+ * across tests and you don't want to maintain a parallel list.
+ *
+ * Example:
+ *
+ *   test.describe.serial("listing creation", () => {
+ *     let cleanup: () => Promise<void>;
+ *     test.beforeAll(async ({ request }) => {
+ *       cleanup = await seedAndPrepareCleanup(request, {
+ *         users: [{ id: "u-test" }],
+ *       });
+ *     });
+ *     test.afterAll(async () => cleanup());
+ *     // ... tests ...
+ *   });
+ */
+export async function seedAndPrepareCleanup(
+  request: APIRequestContext,
+  fixtures: Record<string, unknown[]>,
+): Promise<() => Promise<void>> {
+  await seedFixtures(request, fixtures);
+  const tables = Object.keys(fixtures);
+  return () => cleanupFixtures(request, tables);
+}

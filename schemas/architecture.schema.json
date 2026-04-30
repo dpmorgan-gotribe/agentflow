@@ -191,6 +191,11 @@
             null
           ],
           "description": "Primary data store. Informational — drives Docker Compose + dev-setup generation more than builder prompt composition."
+        },
+        "persistence_layer": {
+          "type": ["string", "null"],
+          "enum": ["localStorage", "external-api-only", "real-db", null],
+          "description": "feat-038 Phase 2B — drives the E2E data-seeding strategy per `.claude/rules/testing-policy.md §E2E data-seeding strategy`. localStorage → Strategy A (per-test reseed via localStorage.clear). external-api-only → Strategy D (page.route() interception of upstream API). real-db → Strategy C (hybrid: globalSetup baseline + describe-block scoped /test/seed). null/absent: synthesizer infers from web_framework/backend_framework/database fields (database != null → real-db; database null + backend_framework non-null → external-api-only; both null → localStorage). Architects MUST set this explicitly when the project has a non-trivial persistence layer; the inference is a backstop for legacy manifests."
         }
       }
     }

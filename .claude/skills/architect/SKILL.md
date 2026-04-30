@@ -87,7 +87,7 @@ Record for each integration:
 
 ### 4. Pick stack-slugs per tooling.stack slot (feat-002)
 
-For each slot (`web_framework`, `web_styling`, `mobile_framework`, `backend_language`, `backend_framework`, `orm`, `database`):
+For each slot (`web_framework`, `web_styling`, `mobile_framework`, `backend_language`, `backend_framework`, `orm`, `database`, `persistence_layer`):
 
 1. Check brief §7/§8 for explicit names (`FastAPI`, `SvelteKit`, `Expo`, etc.) → pick.
 2. Otherwise check `docs/analysis/shared/competitors.md` for dominant stacks in the winning vertical → borrow.
@@ -98,6 +98,15 @@ For each slot (`web_framework`, `web_styling`, `mobile_framework`, `backend_lang
    - `orm: prisma`
    - `database: postgres`
 4. No-tier case: set slot to `null` (e.g. `mobile_framework: null` for web-only projects). PM uses `features[].skip[]` to skip the builder for null tiers.
+
+**`persistence_layer` (feat-038 Phase 2B)** — drives the E2E data-seeding strategy per `.claude/rules/testing-policy.md §E2E data-seeding strategy`. Pick from the (web_framework, backend_framework, database) shape:
+
+- `database != null` → `persistence_layer: real-db` (Strategy C — hybrid baseline + per-block seed)
+- `database == null && backend_framework != null` → `persistence_layer: external-api-only` (Strategy D — page.route intercept of the upstream API)
+- `database == null && backend_framework == null && web_framework != null` → `persistence_layer: localStorage` (Strategy A — per-test localStorage clear)
+- All-null (no app surface) → `persistence_layer: null`
+
+The synthesizer `scripts/synthesize-flow-e2e.mjs` infers from the same rule when `persistence_layer` is absent, so legacy projects keep working — but new architect runs MUST set the field explicitly so the slot is auditable in `stackRationale[]`.
 
 For every slot, record a `stackRationale[]` entry:
 
@@ -292,6 +301,39 @@ root `.env`, run these once:
 Then `node scripts/dev.mjs` from the project root boots both halves with
 port coordination. See `scripts/dev.mjs` source for the full contract.
 ```
+
+### 7d. Copy E2E seed-helper template (feat-038 Phase 2B)
+
+When `architecture.yaml.tooling.stack.web_framework` is non-null AND `persistence_layer` is non-null, copy the strategy-appropriate factory template to the project's e2e helpers directory so the synthesizer (`scripts/synthesize-flow-e2e.mjs`) can import from it without manual operator setup:
+
+```bash
+mkdir -p <project>/apps/web/e2e/helpers
+case "$persistence_layer" in
+  localStorage)
+    cp .claude/templates/seed-localstorage.ts.template <project>/apps/web/e2e/helpers/seed-localstorage.ts
+    ;;
+  external-api-only)
+    cp .claude/templates/seed-intercept.ts.template <project>/apps/web/e2e/helpers/seed-intercept.ts
+    ;;
+  real-db)
+    cp .claude/templates/seed-db.ts.template <project>/apps/web/e2e/helpers/seed-db.ts
+    mkdir -p <project>/apps/web/playwright
+    cp .claude/templates/playwright-global-setup.ts.template <project>/apps/web/playwright/global-setup.ts
+    ;;
+esac
+```
+
+For `real-db` projects also wire `globalSetup: "./playwright/global-setup.ts"` into `apps/web/playwright.config.ts` (if the config exists at architect time; otherwise the web-frontend-builder picks this up when scaffolding the config). The `/test/seed` + `/test/cleanup` endpoint contract that `seed-db.ts` consumes is documented in `.claude/skills/agents/back-end/python-fastapi/SKILL.md §Testing`.
+
+Strategy mapping:
+
+| persistence_layer   | template copied                                           | strategy slug |
+| ------------------- | --------------------------------------------------------- | ------------- |
+| `localStorage`      | seed-localstorage.ts.template                             | A             |
+| `external-api-only` | seed-intercept.ts.template                                | D             |
+| `real-db`           | seed-db.ts.template + playwright-global-setup.ts.template | C             |
+
+Idempotent — overwrite existing helpers on each architect re-run so the project stays in lockstep with factory updates.
 
 ### 9. Emit docs/deployment-checklist.md (self-hosted only)
 

@@ -159,6 +159,60 @@ Binds to `feat-004-builder-tdd-hybrid`.
           await session.rollback()
   ```
 
+### E2E data-seeding strategy (feat-038 Phase 2B)
+
+When `architecture.yaml.tooling.stack.persistence_layer == "real-db"` (which is the default for any FastAPI project with `database != null`), the project consumes Strategy C from `.claude/rules/testing-policy.md §E2E data-seeding strategy`. The synthesizer (`scripts/synthesize-flow-e2e.mjs`) emits Playwright specs that import from `apps/web/e2e/helpers/seed-db.ts` (factory template at `.claude/templates/seed-db.ts.template`); that helper expects two **gated test endpoints** the FastAPI app exposes when `ENABLE_TEST_SEED=1` is set in the environment:
+
+```python
+# apps/api/src/api/routes/test_seed.py — only mounted when the env flag is on
+import os
+from fastapi import APIRouter, HTTPException, status
+
+router = APIRouter(prefix="/test", tags=["test-seed"])
+
+@router.post("/seed", status_code=status.HTTP_204_NO_CONTENT)
+async def seed_fixtures(payload: SeedRequest, session: AsyncSession = Depends(get_session)):
+    """POST /test/seed { fixtures: { <table>: [<row>...] } } — bulk-insert."""
+    for table_name, rows in payload.fixtures.items():
+        model = MODEL_REGISTRY.get(table_name)
+        if model is None:
+            raise HTTPException(400, detail=f"unknown table: {table_name}")
+        session.add_all([model(**row) for row in rows])
+    await session.commit()
+
+@router.post("/cleanup", status_code=status.HTTP_204_NO_CONTENT)
+async def cleanup_fixtures(payload: CleanupRequest, session: AsyncSession = Depends(get_session)):
+    """POST /test/cleanup { tables: [<name>...] } — TRUNCATE the named tables."""
+    for table_name in payload.tables:
+        model = MODEL_REGISTRY.get(table_name)
+        if model is not None:
+            await session.execute(text(f"TRUNCATE TABLE {model.__tablename__} CASCADE"))
+    await session.commit()
+```
+
+Mount-time gate (in `apps/api/src/api/main.py`):
+
+```python
+if os.environ.get("ENABLE_TEST_SEED") == "1":
+    from api.routes.test_seed import router as test_seed_router
+    app.include_router(test_seed_router)
+```
+
+**Why a flag, not a separate test app:** the E2E suite needs to seed against the SAME app instance the spec exercises (cookie/session state, middleware, auth). Spinning up a parallel test app diverges from prod behavior. The flag default-OFF guarantees the endpoints are unreachable in prod regardless of dev_dependencies leaking.
+
+Builder responsibilities:
+
+1. Author `apps/api/src/api/routes/test_seed.py` (the two endpoints + Pydantic request models) when the project is DB-backed.
+2. Author the `MODEL_REGISTRY` dict — `{ "users": User, "listings": Listing, ... }` — so the endpoint dispatches table-name → SQLAlchemy model. PM groups this under a single feature labeled `test-seed-endpoint` (idempotent; depends on data-models being live).
+3. Add `ENABLE_TEST_SEED=1` to `apps/api/.env.example` with a comment documenting the prod-default-OFF contract.
+4. NEVER expose `/test/seed` or `/test/cleanup` in production — runtime guard via the env flag is the canonical defense; CI must ensure the flag is unset on prod deploys.
+
+Tester responsibilities (when authoring E2E specs that consume `seedFixtures`):
+
+1. The Playwright `globalSetup` (`apps/web/playwright/global-setup.ts`, factory template at `.claude/templates/playwright-global-setup.ts.template`) seeds read-only baseline fixtures once per run.
+2. Mutation-tier flows (`seedingTier === "mutation"` in `docs/user-flows-manifest.json`) author `test.beforeAll: seedFixtures(...)` + `test.afterAll: cleanupFixtures(...)` inside their describe block. The synthesizer emits this skeleton automatically — fill in the fixture map.
+3. The dev server for E2E runs MUST set `ENABLE_TEST_SEED=1` (typically via `apps/api/.env.test`); operator `node scripts/dev.mjs --test-seed` or equivalent.
+
 ## 4. Commands
 
 ```

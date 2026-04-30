@@ -38,25 +38,43 @@
 // the runner (scripts/run-synthesized-flows.mjs) can surface them via
 // testResult.attachments[].
 //
-// Per-strategy data-seeding helper authoring (Strategy A / C / D from
-// `.claude/rules/testing-policy.md §E2E data-seeding strategy`) is
-// explicitly OUT OF SCOPE for Phase 2A. Phase 2B will land it once the
-// first DB-backed project ships and produces empirical numbers; for now
-// the v2.0 emission path assumes interactions[] is self-contained
-// (Strategy A: localStorage projects already work this way; Strategy D:
-// projects can hand-author `page.route()` mocks in the manifest authoring
-// step).
+// feat-038 Phase 2B — Per-strategy data-seeding hookup.
+//
+// The synthesizer reads `architecture.yaml.tooling.stack.persistence_layer`
+// (with inference fallback when the explicit field is absent — see
+// `resolvePersistenceLayer()` below) and maps it to one of the three
+// strategies catalogued in `.claude/rules/testing-policy.md §E2E
+// data-seeding strategy`:
+//
+//   - localStorage      → Strategy A (per-test reseed; clearAndReload)
+//   - external-api-only → Strategy D (page.route interception)
+//   - real-db           → Strategy C (hybrid: globalSetup baseline +
+//                                    describe-block-scoped beforeAll/afterAll)
+//
+// Each strategy has a factory-supplied helper template at
+// `.claude/templates/seed-{localstorage,intercept,db}.ts.template`
+// which `/architect` copies to `apps/web/e2e/helpers/seed-{strategy}.ts`
+// in the project. The synthesized spec imports from the per-strategy
+// helper and emits the canonical pre-test setup (Strategy A clears
+// localStorage in `beforeEach`; Strategy D removes mocks in `afterEach`;
+// Strategy C emits a `beforeAll/afterAll` skeleton with a TODO for the
+// flow author to fill in mutation-specific fixtures). When the
+// architecture.yaml is missing or persistence_layer is null, the
+// synthesizer skips strategy emission and degrades gracefully — the spec
+// still runs, just without auto-seeding hooks.
 //
 // Usage:
 //   node scripts/synthesize-flow-e2e.mjs <projectDir>
 //
 // Output (stdout JSON):
-//   { ok, generatedFiles[], flowsCount, projectDir, warnings[] }
+//   { ok, generatedFiles[], flowsCount, projectDir, warnings[],
+//     persistenceLayer, strategy }
 //
 // Exit code 0 always (synthesis errors are surfaced via JSON).
 
 import fs from "node:fs";
 import path from "node:path";
+import yaml from "js-yaml";
 
 const projectDir = path.resolve(process.argv[2] ?? process.cwd());
 if (!fs.existsSync(projectDir)) {
@@ -147,6 +165,64 @@ function inferSelector(fromScreenId, toScreenId, fromHtml) {
   return `page.locator('a, button').filter({ hasText: /${toScreenId.replace(/-/g, "[\\s-]?")}/i }).first()`;
 }
 
+// ─── feat-038 Phase 2B: persistence-layer → strategy resolution ────────────
+//
+// architecture.yaml.tooling.stack carries the canonical signal. When
+// persistence_layer is set explicitly the synthesizer trusts it; otherwise
+// inference falls out of (database, backend_framework, web_framework) per
+// the rule documented in `.claude/rules/testing-policy.md §E2E
+// data-seeding strategy`. Inference is a backstop for legacy manifests
+// authored before persistence_layer landed; new architect runs SHOULD
+// populate it explicitly.
+
+const PERSISTENCE_TO_STRATEGY = {
+  localStorage: "A",
+  "external-api-only": "D",
+  "real-db": "C",
+};
+
+const STRATEGY_HELPER_FILE = {
+  A: "seed-localstorage",
+  D: "seed-intercept",
+  C: "seed-db",
+};
+
+/**
+ * Read architecture.yaml from the project and return the resolved
+ * persistence_layer slug ("localStorage" | "external-api-only" | "real-db")
+ * or null when the architecture.yaml is missing / unparseable / its stack
+ * block is null. The synthesizer falls back to no-strategy emission in
+ * the null case so projects without an architecture.yaml (e.g. mid-Mode-A
+ * runs) still produce runnable specs.
+ */
+function resolvePersistenceLayer(projectDir) {
+  const archPath = path.join(projectDir, ".claude/architecture.yaml");
+  if (!fs.existsSync(archPath)) return null;
+  let arch;
+  try {
+    arch = yaml.load(fs.readFileSync(archPath, "utf8"));
+  } catch {
+    return null;
+  }
+  const stack = arch?.tooling?.stack ?? {};
+  if (typeof stack.persistence_layer === "string") {
+    return stack.persistence_layer;
+  }
+  // Inference fallback — order matters; database wins over backend_framework.
+  if (stack.database != null) return "real-db";
+  if (stack.backend_framework != null) return "external-api-only";
+  if (stack.web_framework != null) return "localStorage";
+  return null;
+}
+
+/**
+ * Map persistence_layer → strategy slug ("A" | "C" | "D" | null).
+ */
+function strategyFromPersistence(persistenceLayer) {
+  if (persistenceLayer == null) return null;
+  return PERSISTENCE_TO_STRATEGY[persistenceLayer] ?? null;
+}
+
 // ─── feat-038 Phase 2A: v2.0 interactions[] emission ───────────────────────
 //
 // Each InteractionStep maps to one Playwright statement. The translation
@@ -208,8 +284,15 @@ function emitInteraction(step, stepNum, flowFileBase) {
 /**
  * Emit a Playwright spec for a flow whose v2.0 `interactions[]` is
  * present. Companion to `specForFlow` (legacy heuristic path).
+ *
+ * `strategy` is the resolved seeding strategy ("A" | "C" | "D" | null).
+ * When set, the synthesizer emits the appropriate helper import + setup
+ * hook (clearAndReload in beforeEach for A; clearMocks in afterEach for
+ * D; seedFixtures/cleanupFixtures TODO skeleton inside describe for C
+ * mutation flows). When null (architecture.yaml missing or
+ * persistence_layer unresolvable), strategy emission is skipped.
  */
-function specForFlowInteractions(flow, flowIndex) {
+function specForFlowInteractions(flow, flowIndex, strategy) {
   const flowFileBase = `flow-${flowIndex + 1}`;
   const flowName = (flow.name ?? `flow ${flowIndex + 1}`).replace(/`/g, "\\`");
   const flowId = (flow.id ?? `flow-${flowIndex + 1}`).replace(/`/g, "\\`");
@@ -253,6 +336,22 @@ function specForFlowInteractions(flow, flowIndex) {
   lines.push(` * Failures land in docs/build-to-spec/failures/.`);
   lines.push(` */`);
   lines.push(`import { test, expect } from "@playwright/test";`);
+  // Phase 2B — per-strategy helper import. Only one strategy is active per
+  // project; the helpers it doesn't use are dead-imported but not
+  // referenced. Tree-shaking handles the unused-export case at bundle
+  // time; for spec execution the runtime cost is one ESM resolve per
+  // helper file.
+  if (strategy === "A") {
+    lines.push(
+      `import { clearAndReload } from "../helpers/seed-localstorage";`,
+    );
+  } else if (strategy === "D") {
+    lines.push(`import { clearMocks } from "../helpers/seed-intercept";`);
+  } else if (strategy === "C") {
+    lines.push(
+      `import { seedFixtures, cleanupFixtures } from "../helpers/seed-db";`,
+    );
+  }
   lines.push(``);
   lines.push(`const FAILURE_DIR = "../../docs/build-to-spec/failures";`);
   lines.push(``);
@@ -282,9 +381,28 @@ function specForFlowInteractions(flow, flowIndex) {
   lines.push(`      failureText: req.failure()?.errorText ?? "unknown",`);
   lines.push(`    });`);
   lines.push(`  });`);
+  // Phase 2B Strategy A — start each test with a clean localStorage state.
+  // Navigate to "/" first so the origin matches; then clear + reload.
+  if (strategy === "A") {
+    lines.push(``);
+    lines.push(
+      `  // Strategy A (localStorage): wipe persisted state before each test.`,
+    );
+    lines.push(`  await page.goto("/").catch(() => {});`);
+    lines.push(`  await clearAndReload(page).catch(() => {});`);
+  }
   lines.push(`});`);
   lines.push(``);
   lines.push(`test.afterEach(async ({ page }, testInfo) => {`);
+  // Phase 2B Strategy D — remove any mocks installed during the test BEFORE
+  // the runtime-error attach runs (so cleanup doesn't trip the network-
+  // failure listener).
+  if (strategy === "D") {
+    lines.push(
+      `  // Strategy D (intercept): unregister all page.route() mocks.`,
+    );
+    lines.push(`  await clearMocks(page).catch(() => {});`);
+  }
   lines.push(`  const ctx = /** @type {any} */ (testInfo).__runtimeCtx;`);
   lines.push(`  if (!ctx) return;`);
   lines.push(`  try {`);
@@ -318,6 +436,34 @@ function specForFlowInteractions(flow, flowIndex) {
   lines.push(`});`);
   lines.push(``);
   lines.push(`${describeFn}("${flowName} (${flowId})", () => {`);
+  // Phase 2B Strategy C — emit a beforeAll/afterAll skeleton for mutation
+  // flows so the test author can fill in the fixture map without rebuilding
+  // the whole describe block. Read-only flows on Strategy C don't need
+  // per-block seeding (globalSetup handles the baseline).
+  if (strategy === "C" && isMutation) {
+    lines.push(``);
+    lines.push(
+      `  // Strategy C (real-db) mutation flow — fill in the fixtures this test needs.`,
+    );
+    lines.push(
+      `  // The /test/seed endpoint must be enabled by ENABLE_TEST_SEED=1 on the backend;`,
+    );
+    lines.push(
+      `  // see .claude/skills/agents/back-end/python-fastapi/SKILL.md §Testing for the`,
+    );
+    lines.push(`  // canonical FastAPI implementation shape.`);
+    lines.push(`  // test.beforeAll(async ({ request }) => {`);
+    lines.push(`  //   await seedFixtures(request, {`);
+    lines.push(`  //     // <table_name>: [<row>, ...],`);
+    lines.push(`  //   });`);
+    lines.push(`  // });`);
+    lines.push(`  // test.afterAll(async ({ request }) => {`);
+    lines.push(
+      `  //   await cleanupFixtures(request, [/* tables touched */]);`,
+    );
+    lines.push(`  // });`);
+    lines.push(``);
+  }
   lines.push(
     `  test("walks ${interactions.length} interaction(s) deterministically", async ({ page }) => {`,
   );
@@ -556,6 +702,12 @@ fs.mkdirSync(outDir, { recursive: true });
 const generated = [];
 const skipped = [];
 
+// feat-038 Phase 2B — resolve the seeding strategy once for the whole run.
+// Per-flow emission consults this; legacy specForFlow path ignores it
+// (the legacy heuristic doesn't import seed helpers).
+const persistenceLayer = resolvePersistenceLayer(projectDir);
+const strategy = strategyFromPersistence(persistenceLayer);
+
 for (let i = 0; i < manifest.flows.length; i++) {
   const flow = manifest.flows[i];
   // feat-038 Phase 2A: dispatch on the v2.0 `interactions[]` field. When
@@ -567,7 +719,7 @@ for (let i = 0; i < manifest.flows.length; i++) {
   const useInteractions =
     Array.isArray(flow.interactions) && flow.interactions.length > 0;
   const { content, skipped: didSkip } = useInteractions
-    ? specForFlowInteractions(flow, i)
+    ? specForFlowInteractions(flow, i, strategy)
     : specForFlow(flow, i);
   const fileName = `flow-${i + 1}.spec.ts`;
   const fullPath = path.join(outDir, fileName);
@@ -610,6 +762,24 @@ if (!hasPlaywrightConfig && generated.length > 0) {
   );
 }
 
+// Phase 2B — warn when a strategy was resolved but its helper file is
+// missing from the project. The architect skill is responsible for
+// copying the helper template; surface the gap as a non-fatal warning
+// so the operator can run the copy themselves until /architect catches up.
+if (strategy && generated.length > 0) {
+  const helperFile = STRATEGY_HELPER_FILE[strategy];
+  const helperPath = path.join(
+    projectDir,
+    "apps/web/e2e/helpers",
+    `${helperFile}.ts`,
+  );
+  if (!fs.existsSync(helperPath)) {
+    warnings.push(
+      `Strategy ${strategy} resolved (persistence_layer="${persistenceLayer}") but apps/web/e2e/helpers/${helperFile}.ts is missing; copy from .claude/templates/${helperFile}.ts.template (see .claude/skills/architect/SKILL.md §Local dev setup).`,
+    );
+  }
+}
+
 console.log(
   JSON.stringify(
     {
@@ -619,6 +789,8 @@ console.log(
       skippedFiles: skipped,
       projectDir,
       outDir: path.relative(projectDir, outDir).replace(/\\/g, "/"),
+      persistenceLayer,
+      strategy,
       warnings,
     },
     null,

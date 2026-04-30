@@ -1,0 +1,46 @@
+import { request } from "@playwright/test";
+import { seedFixtures } from "../e2e/helpers/seed-db";
+
+/**
+ * Strategy C — Playwright globalSetup.
+ *
+ * Runs once per test-run to seed the read-only baseline that every test
+ * reads but no test mutates. Mutation-tier flows handle their own
+ * fixture seeding via describe-block beforeAll/afterAll (see
+ * `.claude/rules/testing-policy.md §E2E data-seeding strategy`).
+ *
+ * Wired into `playwright.config.ts`:
+ *
+ *   export default defineConfig({
+ *     globalSetup: "./playwright/global-setup.ts",
+ *     // ...
+ *   });
+ *
+ * Edit the `fixtures` block below to match your project's schema. The
+ * shape is the same one the backend's `/test/seed` endpoint accepts:
+ * top-level keys are table names; values are arrays of row objects.
+ */
+
+export default async function globalSetup(): Promise<void> {
+  const ctx = await request.newContext();
+  try {
+    await seedFixtures(ctx, {
+      // ── Baseline read-only fixtures ─────────────────────────────────
+      // These are seeded once per run and assumed present by every test.
+      // Mutation flows (test.describe.serial blocks) seed their own
+      // additional rows in beforeAll and clean up in afterAll.
+      //
+      // Example (book-swap-shaped):
+      //
+      //   genres: [
+      //     { id: "g-fiction",     name: "Fiction" },
+      //     { id: "g-nonfiction",  name: "Non-fiction" },
+      //   ],
+      //   admin_users: [
+      //     { id: "u-admin", email: "admin@test.local", role: "admin" },
+      //   ],
+    });
+  } finally {
+    await ctx.dispose();
+  }
+}
