@@ -274,6 +274,28 @@ function emitInteraction(step, stepNum, flowFileBase) {
       // directory) prefixed with the flow id so they're discoverable per
       // flow even when multiple flows snapshot.
       return `      ${idx} await page.screenshot({ path: \`\${FAILURE_DIR}/${flowFileBase}-${step.name}.png\`, fullPage: true });`;
+    case "mock": {
+      // feat-039: Playwright page.route() interception. Synthesizer emits the
+      // route registration with a RegExp matcher (consistent with
+      // waitForResponse — both kinds match urlPattern as regex against the
+      // full URL). Flow-author orders the mock BEFORE the navigate.
+      // RegExp choice (not glob) matters when the SPA's API client prefixes
+      // the path with NEXT_PUBLIC_API_BASE (e.g. http://localhost:8000) —
+      // a glob "/api/report/" would fail to intercept the absolute URL.
+      const urlSrc = JSON.stringify(step.urlPattern);
+      const method = JSON.stringify(step.method ?? "GET");
+      const isObjectBody = step.body !== null && typeof step.body === "object";
+      const bodySrc = isObjectBody
+        ? `JSON.stringify(${JSON.stringify(step.body)})`
+        : JSON.stringify(step.body);
+      const contentType = JSON.stringify(
+        step.contentType ?? (isObjectBody ? "application/json" : "text/plain"),
+      );
+      return `      ${idx} await page.route(new RegExp(${urlSrc}), (route) => {
+        if (route.request().method() !== ${method}) { route.continue(); return; }
+        route.fulfill({ status: ${step.status}, headers: { "content-type": ${contentType} }, body: ${bodySrc} });
+      });`;
+    }
     default:
       // Schema validates upstream so this branch is unreachable in
       // practice — defensive throw documents the contract.

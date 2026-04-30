@@ -265,6 +265,48 @@ whether the flow CHANGES persisted state, not by the verb in isolation).
   for a 404 flow. The `waitForResponse` step asserts `status: 404`.
   The destination assertion is `assertVisible` on the error banner's
   kit-component.
+- **Synthetic-state flows requiring `kind: "mock"`** (feat-039). When a
+  flow's purpose is exercising a synthetic state that cannot be
+  reproduced live — rate-limited (HTTP 429), private/forbidden (HTTP
+  403), network-failure, auth-failed, generic 5xx — insert one or more
+  `{ kind: "mock", urlPattern, status, body, contentType?, method? }`
+  interactions BEFORE the navigate that triggers the request. The
+  synthesizer emits `await page.route(urlPattern, ...)` at exactly the
+  position you place the mock; ordering is your responsibility. Common
+  shape:
+
+  ```json
+  [
+    {
+      "kind": "mock",
+      "urlPattern": "/api/report/",
+      "method": "GET",
+      "status": 429,
+      "body": { "error": "rate_limited", "retryAfter": 60 }
+    },
+    { "kind": "navigate", "to": "/" },
+    {
+      "kind": "fill",
+      "selector": "input[name=\"url\"]",
+      "value": "facebook/react"
+    },
+    { "kind": "click", "selector": "button[type=\"submit\"]" },
+    {
+      "kind": "assertVisible",
+      "selector": "[data-screen-id=\"report-rate-limited\"]"
+    }
+  ]
+  ```
+
+  Defaults: `method` defaults to `"GET"`; `contentType` defaults to
+  `"application/json"` for object bodies, `"text/plain"` for string
+  bodies. String bodies pass through verbatim; object bodies are
+  `JSON.stringify`'d before send. Status must be 100-599. The mock
+  applies for the lifetime of the test (auto-cleaned by Strategy D's
+  `clearMocks` afterEach hook). Mocks for happy-path flows (where the
+  real backend is reachable, e.g. with `GITHUB_TOKEN` set) are
+  unnecessary — only use this for genuinely synthetic states.
+
 - **No `interactions[]` if confidence is low.** If the LLM can't infer
   selectors with reasonable confidence (e.g. the screen HTML is heavily
   custom with no kit attributes), omit `interactions[]` for that flow

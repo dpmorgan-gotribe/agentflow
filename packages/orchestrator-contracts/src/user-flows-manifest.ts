@@ -176,7 +176,41 @@ export const ScreenshotInteractionSchema = z.object({
 export type ScreenshotInteraction = z.infer<typeof ScreenshotInteractionSchema>;
 
 /**
- * Discriminated union over the 10 InteractionStep kinds. Use Zod's
+ * Mock an HTTP response via Playwright's `page.route()` interception.
+ * Required for any flow whose state cannot be reproduced live (rate-limited,
+ * private, network-failure, 4xx/5xx error states). Synthesizer emits the
+ * page.route() call at the position the operator places this step in
+ * `interactions[]` — must be BEFORE the navigate that triggers the request,
+ * per Playwright route-registration semantics.
+ *
+ * Example (rate-limit synthetic state):
+ *   { kind: "mock", urlPattern: "/api/report/", method: "GET", status: 429,
+ *     body: { error: "rate_limited", retryAfter: 60 }, contentType: "application/json" }
+ */
+export const MockInteractionSchema = z.object({
+  kind: z.literal("mock"),
+  /**
+   * URL substring or regex source. Synthesizer compiles into a RegExp and
+   * passes to page.route() — matches any request whose URL contains the
+   * pattern. Include leading slash for path-only patterns ("/api/report/").
+   */
+  urlPattern: z.string().min(1),
+  /** HTTP status code to return (100-599). */
+  status: z.number().int().min(100).max(599),
+  /**
+   * Response body. String passes through verbatim; object is JSON.stringify'd
+   * before send (with contentType auto-defaulting to application/json).
+   */
+  body: z.union([z.string(), z.record(z.string(), z.unknown())]),
+  /** Response Content-Type header. Defaults to application/json for objects, text/plain for strings. */
+  contentType: z.string().optional(),
+  /** HTTP method to match. Defaults to GET. */
+  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
+});
+export type MockInteraction = z.infer<typeof MockInteractionSchema>;
+
+/**
+ * Discriminated union over the 11 InteractionStep kinds. Use Zod's
  * `discriminatedUnion("kind", ...)` so type-narrowing is automatic on the
  * consumer side: `if (step.kind === "fill") step.value` is type-safe.
  */
@@ -191,6 +225,7 @@ export const InteractionStepSchema = z.discriminatedUnion("kind", [
   AssertTextInteractionSchema,
   AssertUrlMatchesInteractionSchema,
   ScreenshotInteractionSchema,
+  MockInteractionSchema,
 ]);
 export type InteractionStep = z.infer<typeof InteractionStepSchema>;
 

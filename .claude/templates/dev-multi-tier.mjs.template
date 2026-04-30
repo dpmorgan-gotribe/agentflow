@@ -41,13 +41,85 @@ const PROJECT_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const IS_WIN = process.platform === "win32";
 
 /**
+ * Parse a single .env-style file: KEY=VALUE per line, # comments, blank
+ * lines ignored. Returns a flat object. Quotes around values are stripped
+ * if matched. Does NOT do shell expansion.
+ */
+function parseEnvFile(text) {
+  const out = {};
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq < 1) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    // Strip surrounding double or single quotes if both ends match.
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    out[key] = val;
+  }
+  return out;
+}
+
+/**
+ * Load env vars from .env then .env.local at PROJECT_ROOT, with .env.local
+ * overriding .env. Pre-existing process.env values still WIN over file
+ * contents (so an explicit `PORT=8001 node scripts/dev.mjs` invocation
+ * isn't shadowed by a .env.local entry). Returns a merged object suitable
+ * to pass as the `env` field to child_process.spawn().
+ *
+ * Critical for bug-033: subprocess (FastAPI / Express / Nest) needs secrets
+ * like GITHUB_TOKEN / DATABASE_URL / SESSION_SECRET that live in
+ * .env.local. Node doesn't auto-load .env.local — Next does, but only
+ * within its own process, not its spawned siblings.
+ */
+function loadEnvFiles() {
+  const merged = {};
+  for (const file of [".env", ".env.local"]) {
+    const path = join(PROJECT_ROOT, file);
+    if (!existsSync(path)) continue;
+    const parsed = parseEnvFile(readFileSync(path, "utf8"));
+    Object.assign(merged, parsed);
+  }
+  // process.env wins over file contents — explicit operator overrides take
+  // precedence (e.g. `PORT=8001 node scripts/dev.mjs`).
+  return { ...merged, ...process.env };
+}
+
+/** Redact secret-looking values for the boot-time log line. */
+function redactEnvForLog(env) {
+  const SECRET_HINTS = /token|secret|key|password|api_?_?key|private/i;
+  const out = {};
+  for (const k of Object.keys(env)) {
+    if (SECRET_HINTS.test(k)) {
+      out[k] = env[k] ? "<set>" : "<empty>";
+    }
+  }
+  return out;
+}
+
+const MERGED_ENV = loadEnvFiles();
+const REDACTED_SECRETS = redactEnvForLog(MERGED_ENV);
+if (Object.keys(REDACTED_SECRETS).length > 0) {
+  process.stdout.write(
+    `[dev] env-loaded secrets (redacted): ${JSON.stringify(REDACTED_SECRETS)}\n`,
+  );
+}
+
+/**
  * Resolve the backend port. Precedence:
  *   1. process.env.PORT (operator override)
- *   2. apps/api/.env (PORT=N line)
- *   3. 8000 (FastAPI default per apps/api/src/api/config.py)
+ *   2. .env.local PORT (highest file priority)
+ *   3. apps/api/.env (PORT=N line) — legacy per-tier convention
+ *   4. 8000 (FastAPI default per apps/api/src/api/config.py)
  */
 function resolveBackendPort() {
-  if (process.env.PORT) return Number(process.env.PORT);
+  if (MERGED_ENV.PORT) return Number(MERGED_ENV.PORT);
   const apiEnvPath = join(PROJECT_ROOT, "apps", "api", ".env");
   if (existsSync(apiEnvPath)) {
     const text = readFileSync(apiEnvPath, "utf8");
@@ -98,7 +170,7 @@ function spawnBackend() {
     detached: !IS_WIN,
     windowsHide: true,
     shell: IS_WIN,
-    env: { ...process.env, PORT: String(BACKEND_PORT) },
+    env: { ...MERGED_ENV, PORT: String(BACKEND_PORT) },
   });
   if (!IS_WIN && typeof child.unref === "function") child.unref();
   // Track whether the spawn itself failed (e.g. uv not on PATH). Without
@@ -136,7 +208,13 @@ function spawnFrontend(apiBaseUrl) {
     windowsHide: true,
     shell: IS_WIN,
     env: {
-      ...process.env,
+      ...MERGED_ENV,
+      // PORT in .env / .env.local applies to the BACKEND. Force the frontend
+      // to FRONTEND_PORT so Next doesn't inherit the backend's port and
+      // collide with itself. (Discovered live during bug-033 fix smoke-test:
+      // .env.local's PORT=4000 bled into Next via MERGED_ENV → both halves
+      // tried to bind :4000.)
+      PORT: String(FRONTEND_PORT),
       BROWSER: "none",
       NEXT_PUBLIC_API_BASE: apiBaseUrl,
     },

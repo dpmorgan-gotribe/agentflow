@@ -72,6 +72,13 @@ const FIXTURES: FixtureSpec[] = [
     expectedSerial: true, // mutation tier
     expectedHelperImport: `import { seedFixtures, cleanupFixtures } from "../helpers/seed-db";`,
   },
+  {
+    name: "strategy-d-with-mock",
+    expectedStrategy: "D",
+    expectedPersistenceLayer: "external-api-only",
+    expectedSerial: false, // read-only tier
+    expectedHelperImport: `import { clearMocks } from "../helpers/seed-intercept";`,
+  },
 ];
 
 interface SynthOutput {
@@ -164,8 +171,9 @@ describe("synthesize-flow-e2e — Phase 2A v2.0 emission across strategies", () 
       expect(normalizeSpec(emitted)).toContain(
         "failed at interaction ${__stepIndex}",
       );
-      // First interaction is always navigate.
-      expect(emitted).toMatch(/__stepIndex = 1;\s*await page\.goto\(/);
+      // page.goto is emitted somewhere in the flow (may not be at
+      // __stepIndex=1 when mock kinds precede the navigate, per feat-039).
+      expect(emitted).toMatch(/await page\.goto\(/);
       // Runtime-error capture prelude (feat-027) is intact.
       expect(emitted).toContain("test.beforeEach(async ({ page }, testInfo)");
       expect(emitted).toContain("runtime-errors");
@@ -211,5 +219,34 @@ describe("synthesize-flow-e2e — Phase 2A v2.0 emission across strategies", () 
       const content = readFileSync(expectedPath, "utf8");
       expect(content.length).toBeGreaterThan(500);
     }
+  });
+
+  it("feat-039 — kind=mock emits page.route() with method check + fulfill BEFORE navigate", () => {
+    const expectedSpec = readFileSync(
+      join(FIXTURES_DIR, "strategy-d-with-mock/expected/flow-1.spec.ts"),
+      "utf8",
+    );
+    // Mock translation: page.route() registration with RegExp matcher +
+    // method-narrow + fulfill. RegExp (not glob) is required so the
+    // urlPattern matches absolute URLs prefixed with NEXT_PUBLIC_API_BASE.
+    // Body assertions normalize whitespace because the on-write formatter
+    // pretty-prints the JSON.stringify(...) literal.
+    expect(expectedSpec).toContain(
+      `await page.route(new RegExp("/api/report/"`,
+    );
+    expect(expectedSpec).toContain(`route.request().method() !== "GET"`);
+    expect(expectedSpec).toContain(`status: 429`);
+    expect(expectedSpec).toContain(`"content-type": "application/json"`);
+    // Body content tokens (post-formatter form): each field appears as written.
+    expect(expectedSpec).toMatch(
+      /JSON\.stringify\(\{\s*error:\s*"rate_limited"/,
+    );
+    expect(expectedSpec).toMatch(/retryAfter:\s*60/);
+    // Ordering: the mock's page.route() precedes the navigate's page.goto().
+    const mockIdx = expectedSpec.indexOf("await page.route(");
+    const navigateIdx = expectedSpec.indexOf('await page.goto("/")');
+    expect(mockIdx).toBeGreaterThan(0);
+    expect(navigateIdx).toBeGreaterThan(0);
+    expect(mockIdx).toBeLessThan(navigateIdx);
   });
 });

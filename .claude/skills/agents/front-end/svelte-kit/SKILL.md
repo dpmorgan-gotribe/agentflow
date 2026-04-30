@@ -289,7 +289,7 @@ Before any agent commits a Playwright spec, the runtime MUST be installed + conf
 **Required artifacts:**
 
 1. `apps/web/package.json` devDependencies includes `@playwright/test` (^1.48.0 or newer)
-2. `apps/web/playwright.config.ts` exists with at minimum:
+2. `apps/web/playwright.config.ts` exists with at minimum (template varies by `architecture.yaml.tooling.stack.persistence_layer` — see feat-040):
 
    ```ts
    import { defineConfig, devices } from "@playwright/test";
@@ -297,11 +297,29 @@ Before any agent commits a Playwright spec, the runtime MUST be installed + conf
    export default defineConfig({
      testDir: "./e2e",
      fullyParallel: true,
+     forbidOnly: !!process.env.CI,
+     // Bumped local from 0 → 1 for live-backend specs.
+     // Strategy A (localStorage) projects can keep retries: 0 — deterministic.
+     retries: process.env.CI ? 2 : 1,
      reporter: process.env.CI ? "list" : "html",
      use: { baseURL: "http://localhost:5173", trace: "on-first-retry" },
      projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+     webServer: {
+       // Per feat-040: command depends on persistence_layer.
+       //   - localStorage      → "pnpm exec vite dev"           (single-tier)
+       //   - external-api-only → "node ../../scripts/dev.mjs"   (multi-tier; bug-033 .env propagation)
+       //   - real-db           → "node ../../scripts/dev.mjs"   (multi-tier + DB)
+       command: "node ../../scripts/dev.mjs",
+       url: "http://localhost:5173",
+       reuseExistingServer: !process.env.CI,
+       timeout: 180_000,
+       stdout: "pipe",
+       stderr: "pipe",
+     },
    });
    ```
+
+   For Strategy A (localStorage) projects, replace `webServer.command` with `"pnpm exec vite dev"` and drop the `timeout`/`stdout`/`stderr` extras. Front-end builder picks the variant based on `architecture.yaml.tooling.stack.persistence_layer`.
 
    (SvelteKit's Vite dev server defaults to port 5173 — override only if `vite.config.ts` does.)
 

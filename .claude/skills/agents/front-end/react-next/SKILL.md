@@ -384,7 +384,7 @@ Before any agent commits a Playwright spec, the runtime MUST be installed + conf
 **Required artifacts:**
 
 1. `apps/web/package.json` devDependencies includes `@playwright/test` (^1.48.0 or newer)
-2. `apps/web/playwright.config.ts` exists with at minimum:
+2. `apps/web/playwright.config.ts` exists with at minimum (template varies by `architecture.yaml.tooling.stack.persistence_layer` — see decision matrix in feat-040):
 
    ```ts
    import { defineConfig, devices } from "@playwright/test";
@@ -392,11 +392,31 @@ Before any agent commits a Playwright spec, the runtime MUST be installed + conf
    export default defineConfig({
      testDir: "./e2e",
      fullyParallel: true,
+     forbidOnly: !!process.env.CI,
+     // Bumped local from 0 → 1 for live-backend specs (real API calls have ~5% flake rate).
+     // Strategy A (localStorage-only) projects can keep retries: 0 — deterministic.
+     retries: process.env.CI ? 2 : 1,
      reporter: process.env.CI ? "list" : "html",
      use: { baseURL: "http://localhost:3000", trace: "on-first-retry" },
      projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+     webServer: {
+       // Per investigate-012 F2 / feat-040 — webServer.command depends on persistence_layer:
+       //   - localStorage (Strategy A)      → "pnpm exec next dev"   (single-tier; only frontend)
+       //   - external-api-only (Strategy D) → "node ../../scripts/dev.mjs"  (multi-tier)
+       //   - real-db (Strategy C)           → "node ../../scripts/dev.mjs"  (multi-tier + DB)
+       // Multi-tier needs scripts/dev.mjs (factory template) for port coordination + .env.local
+       // propagation to the backend subprocess (bug-033). Single-tier can use plain `next dev`.
+       command: "node ../../scripts/dev.mjs",
+       url: "http://localhost:3000",
+       reuseExistingServer: !process.env.CI,
+       timeout: 180_000,
+       stdout: "pipe",
+       stderr: "pipe",
+     },
    });
    ```
+
+   For Strategy A (localStorage) projects, replace the `webServer.command` with `"pnpm exec next dev"` and drop the `timeout`/`stdout`/`stderr` extras. The front-end builder reads `architecture.yaml.tooling.stack.persistence_layer` and emits the correct variant; if the field is absent, default to the multi-tier form (safer — boots dev.mjs which falls back gracefully when no apps/api/ exists).
 
 3. `apps/web/package.json` scripts includes `"test:e2e": "playwright test"`
 

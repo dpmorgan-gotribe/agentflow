@@ -178,6 +178,12 @@ describe("InteractionStep — discriminated union dispatch", () => {
       { kind: "assertText", selector: "h1", text: "Hello" },
       { kind: "assertUrlMatches", pattern: "/x" },
       { kind: "screenshot", name: "snap-1" },
+      {
+        kind: "mock",
+        urlPattern: "/api/report/",
+        status: 200,
+        body: { ok: true },
+      },
     ];
     for (const c of cases) {
       expect(() => InteractionStepSchema.parse(c)).not.toThrow();
@@ -193,6 +199,97 @@ describe("InteractionStep — discriminated union dispatch", () => {
   it("rejects a kind-mismatched payload (fill missing value)", () => {
     expect(() =>
       InteractionStepSchema.parse({ kind: "fill", selector: "input" }),
+    ).toThrow();
+  });
+});
+
+// ─── MockInteraction (feat-039) ─────────────────────────────────────────────
+
+describe("InteractionStep — mock", () => {
+  it("accepts a canonical 200 mock with object body", () => {
+    const parsed = InteractionStepSchema.parse({
+      kind: "mock",
+      urlPattern: "/api/report/",
+      status: 200,
+      body: { ok: true, data: { stars: 100 } },
+    });
+    expect(parsed.kind).toBe("mock");
+    if (parsed.kind === "mock") {
+      expect(parsed.body).toEqual({ ok: true, data: { stars: 100 } });
+      expect(parsed.contentType).toBeUndefined();
+      expect(parsed.method).toBeUndefined();
+    }
+  });
+
+  it("accepts a 429 rate-limit mock with explicit method + contentType", () => {
+    const parsed = InteractionStepSchema.parse({
+      kind: "mock",
+      urlPattern: "/api/report/",
+      method: "GET",
+      status: 429,
+      contentType: "application/json",
+      body: { error: "rate_limited", retryAfter: 60 },
+    });
+    expect(parsed.kind).toBe("mock");
+    if (parsed.kind === "mock") {
+      expect(parsed.status).toBe(429);
+      expect(parsed.method).toBe("GET");
+      expect(parsed.contentType).toBe("application/json");
+    }
+  });
+
+  it("accepts a string body (e.g. raw HTML or text/plain payload)", () => {
+    const parsed = InteractionStepSchema.parse({
+      kind: "mock",
+      urlPattern: "/api/x",
+      status: 500,
+      body: "Internal Server Error",
+      contentType: "text/plain",
+    });
+    expect(parsed.kind).toBe("mock");
+    if (parsed.kind === "mock") {
+      expect(parsed.body).toBe("Internal Server Error");
+    }
+  });
+
+  it("rejects mock missing urlPattern", () => {
+    expect(() =>
+      InteractionStepSchema.parse({
+        kind: "mock",
+        status: 200,
+        body: { ok: true },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects mock with status outside 100-599", () => {
+    expect(() =>
+      InteractionStepSchema.parse({
+        kind: "mock",
+        urlPattern: "/api/x",
+        status: 99,
+        body: {},
+      }),
+    ).toThrow();
+    expect(() =>
+      InteractionStepSchema.parse({
+        kind: "mock",
+        urlPattern: "/api/x",
+        status: 600,
+        body: {},
+      }),
+    ).toThrow();
+  });
+
+  it("rejects mock with unknown method", () => {
+    expect(() =>
+      InteractionStepSchema.parse({
+        kind: "mock",
+        urlPattern: "/api/x",
+        status: 200,
+        body: {},
+        method: "TRACE",
+      }),
     ).toThrow();
   });
 });

@@ -45,6 +45,55 @@ Explicitly NOT happy path (tester writes these):
 - Malformed input (wrong types, missing required fields, XSS-style strings, unicode edge cases)
 - Cross-module interactions (auth middleware + session router behavior when redis is down)
 
+## External-API tests must mock the upstream — CONSTRAINT (bug-119 class)
+
+**Tests for proxy / API-client / external-integration logic MUST mock the external API.** This is a hard constraint, not guidance.
+
+### Why a constraint, not a guideline
+
+Empirical evidence from `repo-health-dashboard-01` (2026-04-30 feat-045 Phase C run): `apps/api/tests/test_edge_cases.py::test_ssrf_guard_rejects_malformed_segments[foo%2e%2e-etc]` calls the FastAPI app with a malformed path expecting a 404/422 SSRF rejection — but when GitHub's unauth rate-limit (60/hr) is exhausted, the proxy returns 429 BEFORE the SSRF guard runs (or after — either way 429 ≠ 404/422). The test result then depends on opaque external state (network, rate-limit bucket, GitHub uptime) instead of the SSRF guard's logic. False-flake masquerades as "intermittent test failure", masking real regressions when they happen.
+
+The same class of bug surfaced earlier in feat-045 Phase B: synthesized E2E for `repo-health-dashboard-01` flows 1/2/3 hit GitHub live, exhausted unauth bucket, and timed out at 30s waiting for responses. Mocking eliminated the flake entirely (8/8 pass in 13.3s deterministically).
+
+### What must be mocked
+
+Any test (unit, integration, E2E) that exercises code which makes an outbound HTTP call to an external service:
+
+- GitHub / GitLab / external git-host APIs
+- Open Library / Google Books / external book-data APIs
+- Plaid / Stripe / external finance APIs
+- OpenAI / Anthropic / external AI APIs
+- Email / SMS / push-notification providers
+- Any third-party service whose response shape, latency, or rate-limit your code depends on
+
+### Approved mocking primitives by stack
+
+| Stack               | Primitive                                             | Pattern                                                                                                                                                        |
+| ------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Python (pytest)     | `pytest-httpx`                                        | `httpx_mock.add_response(url__regex=..., status_code=..., json=...)` + `assert httpx_mock.get_requests() == []` for "rejected before upstream call" guarantees |
+| TypeScript (vitest) | `vi.spyOn(global, "fetch")` or `msw`                  | `vi.spyOn(global, "fetch").mockResolvedValue(new Response(...))`                                                                                               |
+| Playwright (E2E)    | `page.route()` (manifest `kind: "mock"` per feat-039) | Author `kind: "mock"` interactions in `user-flows-manifest.json` for synthetic states; synthesizer emits `page.route(new RegExp(urlPattern), ...)`             |
+
+### What MAY hit a real external service
+
+- **Manual sanity (Phase D operator-walk)** — operator-attested checklist file at `docs/manual-sanity-confirmed.txt` that requires the operator to walk happy paths against live data.
+- **Smoke tests run with `LIVE_API=1` env gate** — opt-in; never default; never gates CI; documented in stack-skill §Testing as an optional supplementary suite.
+- **Nothing else.** Default-on tests must mock.
+
+### Required tester behavior
+
+When the tester encounters or writes a test that hits a real external service without mocking, the tester MUST:
+
+1. Add the mock primitive (per the table above).
+2. Re-run the test with the upstream physically unreachable (`unset GITHUB_TOKEN` and disconnect network if necessary) — confirms the mock is doing the work, not relying on real upstream.
+3. If the test cannot be made to pass with a mock (e.g. it's an integration test that genuinely needs end-to-end coverage), document why in a comment + add the `LIVE_API=1` gate.
+
+### Cross-references
+
+- `bug-033` (factory-wide) — `scripts/dev.mjs` env propagation; the surface that exposed bug-119's class
+- `bug-119` (project: repo-health-dashboard-01) — first concrete instance fixed under this rule
+- `feat-039` (factory-wide) — the `mock` InteractionStep kind that makes E2E mocking declarative
+
 ## Genuine product bug — CONSTRAINT (bug-024)
 
 **Tester writes test files only.** When an edge-case test fails because the implementation has a bug, the tester FLAGS it via `genuineProductBugs[]` in its return JSON. The tester does NOT modify source files to fix the bug inline. This is a **hard constraint**, not guidance.

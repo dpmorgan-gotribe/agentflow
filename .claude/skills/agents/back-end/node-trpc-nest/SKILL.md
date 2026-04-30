@@ -104,6 +104,99 @@ Binds to `feat-004-builder-tdd-hybrid`.
 - **Router tests** use a real `appRouter` + `createCallerFactory` — no HTTP; just in-process invocation with a stubbed context.
 - **Coverage expectation**: 60% builder / 80% total. Builder covers happy path per service; tester adds edge cases + concurrent-request integration + real-Postgres integration in a docker-compose test-db.
 - **Integration tests** (tester-owned): `apps/api/integration/*.test.ts` with a real Postgres via `testcontainers` or a named Docker Compose service.
+- **External-API mocking (CONSTRAINT, bug-119 class)**: any test exercising code that makes an outbound HTTP call to a third-party service MUST mock the upstream. Use `vi.spyOn(global, "fetch")` for `fetch`-based clients OR `msw` for richer interception. Live-API verification belongs in manual sanity (Phase D operator-walk), never in unit/integration tests. Per `.claude/rules/testing-policy.md §External-API tests must mock the upstream`.
+
+### E2E data-seeding strategy (feat-038 Phase 2B)
+
+When `architecture.yaml.tooling.stack.persistence_layer == "real-db"` (default for tRPC + Nest projects with `database != null`), the project consumes Strategy C from `.claude/rules/testing-policy.md §E2E data-seeding strategy`. The synthesizer (`scripts/synthesize-flow-e2e.mjs`) emits Playwright specs that import from `apps/web/e2e/helpers/seed-db.ts` (factory template at `.claude/templates/seed-db.ts.template`); that helper expects two **gated test endpoints** the Nest app exposes when `ENABLE_TEST_SEED=1`:
+
+```ts
+// apps/api/src/test-seed/test-seed.controller.ts — only registered when the env flag is on
+import { Body, Controller, HttpCode, HttpStatus, Post } from "@nestjs/common";
+import { z } from "zod";
+import { PrismaService } from "../prisma/prisma.service";
+
+const SeedRequest = z.object({
+  fixtures: z.record(z.string(), z.array(z.record(z.string(), z.unknown()))),
+});
+
+const CleanupRequest = z.object({
+  tables: z.array(z.string()),
+});
+
+// Whitelist: test-seed cannot touch arbitrary tables — explicit allow-list
+// keyed by Prisma model delegate. Add new tables here when authoring fixtures.
+const MODEL_REGISTRY: Record<string, "user" | "listing" /* ... */> = {
+  users: "user",
+  listings: "listing",
+};
+
+@Controller("test")
+export class TestSeedController {
+  constructor(private readonly prisma: PrismaService) {}
+
+  @Post("seed")
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async seed(@Body() raw: unknown): Promise<void> {
+    const payload = SeedRequest.parse(raw);
+    await this.prisma.$transaction(async (tx) => {
+      for (const [tableName, rows] of Object.entries(payload.fixtures)) {
+        const delegate = MODEL_REGISTRY[tableName];
+        if (!delegate) throw new Error(`unknown table: ${tableName}`);
+        // @ts-expect-error — dynamic delegate dispatch
+        await tx[delegate].createMany({ data: rows });
+      }
+    });
+  }
+
+  @Post("cleanup")
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async cleanup(@Body() raw: unknown): Promise<void> {
+    const payload = CleanupRequest.parse(raw);
+    for (const tableName of payload.tables) {
+      const delegate = MODEL_REGISTRY[tableName];
+      if (!delegate) continue; // silent-skip unknown table on cleanup
+      // @ts-expect-error — dynamic delegate dispatch
+      await this.prisma[delegate].deleteMany({});
+    }
+  }
+}
+```
+
+Mount-time gate (in `apps/api/src/app.module.ts`):
+
+```ts
+const imports = [PrismaModule /* ...always */];
+if (process.env.ENABLE_TEST_SEED === "1") {
+  imports.push(TestSeedModule);
+}
+
+@Module({
+  imports,
+  controllers: [
+    /* ... */
+  ],
+  providers: [
+    /* ... */
+  ],
+})
+export class AppModule {}
+```
+
+**Why a flag, not a separate test app:** the E2E suite needs to seed against the SAME app instance the spec exercises (cookie/session state, middleware, auth). Spinning up a parallel test app diverges from prod behavior. The flag default-OFF guarantees the endpoints are unreachable in prod regardless of dev_dependencies leaking.
+
+Builder responsibilities:
+
+1. Author `apps/api/src/test-seed/{test-seed.controller.ts, test-seed.module.ts}` (the two endpoints + Zod request schemas) when the project is DB-backed.
+2. Author the `MODEL_REGISTRY` map — `{ "users": "user", "listings": "listing", ... }` — so the controller dispatches table-name → Prisma delegate. PM groups this under a single feature labeled `test-seed-endpoint` (idempotent; depends on data-models being live).
+3. Add `ENABLE_TEST_SEED=1` to `apps/api/.env.example` with a comment documenting the prod-default-OFF contract.
+4. NEVER expose `/test/seed` or `/test/cleanup` in production — runtime guard via the env flag is the canonical defense; CI must ensure the flag is unset on prod deploys.
+
+Tester responsibilities (when authoring E2E specs that consume `seedFixtures`):
+
+1. The Playwright `globalSetup` (`apps/web/playwright/global-setup.ts`, factory template at `.claude/templates/playwright-global-setup.ts.template`) seeds read-only baseline fixtures once per run.
+2. Mutation-tier flows (`seedingTier === "mutation"` in `docs/user-flows-manifest.json`) author `test.beforeAll: seedFixtures(...)` + `test.afterAll: cleanupFixtures(...)` inside their describe block. The synthesizer emits this skeleton automatically — fill in the fixture map.
+3. The dev server for E2E runs MUST set `ENABLE_TEST_SEED=1` (typically via `apps/api/.env.test`); operator `node scripts/dev.mjs --test-seed` or equivalent.
 
 ## 4. Commands
 
