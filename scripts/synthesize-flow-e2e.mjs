@@ -1,25 +1,57 @@
 #!/usr/bin/env node
-// scripts/synthesize-flow-e2e.mjs — feat-022 Phase 3.
+// scripts/synthesize-flow-e2e.mjs — feat-022 Phase 3 + feat-038 Phase 2A.
 //
 // Reads `docs/user-flows-manifest.json` + the screen mockups under
 // `docs/screens/{platform}/*.html`. For each flow, generates a Playwright
-// spec at `apps/web/e2e/synthesized/flow-{n}.spec.ts` whose body walks the
-// flow's `steps[]` and asserts `data-screen-id` lands on the expected
-// next-screen within 2s of clicking a heuristic-derived selector for the
-// transition.
+// spec at `apps/web/e2e/synthesized/flow-{n}.spec.ts`.
 //
-// The action DSL is intentionally tiny — flows-manifest.json doesn't carry
-// explicit `action` fields per step, so the synthesizer infers a click
-// target from the EXIT screen's mockup HTML (it scans for the most likely
-// element that triggers navigation to that screen). On failure each spec
-// captures a screenshot + DOM dump under
-// `docs/build-to-spec/failures/flow-{n}-step-{m}.{html,png}`.
+// Two emission paths, dispatched per flow:
+//
+//   v2.0 (feat-038 Phase 2A)  — when `flow.interactions[]` is populated
+//   ─────────────────────────────────────────────────────────────────────
+//   Each entry in `interactions[]` is a discriminated-union
+//   `InteractionStep` (see packages/orchestrator-contracts/
+//   src/user-flows-manifest.ts). The synthesizer's job is purely
+//   mechanical: one Playwright statement per step, deterministic. Kinds
+//   navigate / fill / click / select / waitForResponse / waitForSelector /
+//   assertVisible / assertText / assertUrlMatches / screenshot map 1:1 to
+//   their canonical `page.*` / `expect(...)` equivalents. The full
+//   sequence is wrapped in a try/catch that captures a screenshot + DOM
+//   dump on the first failing step and rethrows an enriched error naming
+//   the step index. When `flow.seedingTier === "mutation"` the spec opts
+//   into `test.describe.serial` so cross-test mutation order is stable.
+//
+//   v1.0 (feat-022 Phase 3 — preserved)
+//   ─────────────────────────────────────────────────────────────────────
+//   Legacy screen-breadcrumb path. The manifest's `steps[]` is a list of
+//   screen-id transitions; the synthesizer infers a click target from the
+//   FROM-screen's mockup HTML (most likely element that triggers
+//   navigation to the TO screen) and asserts `data-screen-id` lands on
+//   the expected next-screen within 2s. Backward-compat path so existing
+//   manifests authored before feat-038 Phase 3 (which updates the
+//   /user-flows-generator skill to author `interactions[]`) still emit
+//   meaningful specs.
+//
+// Both paths share the runtime-error capture prelude (feat-027): each
+// test attaches a `runtime-errors` JSON payload listing console errors,
+// page errors, network failures, and Next.js dev-server overlay text so
+// the runner (scripts/run-synthesized-flows.mjs) can surface them via
+// testResult.attachments[].
+//
+// Per-strategy data-seeding helper authoring (Strategy A / C / D from
+// `.claude/rules/testing-policy.md §E2E data-seeding strategy`) is
+// explicitly OUT OF SCOPE for Phase 2A. Phase 2B will land it once the
+// first DB-backed project ships and produces empirical numbers; for now
+// the v2.0 emission path assumes interactions[] is self-contained
+// (Strategy A: localStorage projects already work this way; Strategy D:
+// projects can hand-author `page.route()` mocks in the manifest authoring
+// step).
 //
 // Usage:
 //   node scripts/synthesize-flow-e2e.mjs <projectDir>
 //
 // Output (stdout JSON):
-//   { ok, generatedFiles[], flowsCount, projectDir }
+//   { ok, generatedFiles[], flowsCount, projectDir, warnings[] }
 //
 // Exit code 0 always (synthesis errors are surfaced via JSON).
 
@@ -113,6 +145,208 @@ function inferSelector(fromScreenId, toScreenId, fromHtml) {
 
   // 5. Fall back: any clickable that names the to-screen
   return `page.locator('a, button').filter({ hasText: /${toScreenId.replace(/-/g, "[\\s-]?")}/i }).first()`;
+}
+
+// ─── feat-038 Phase 2A: v2.0 interactions[] emission ───────────────────────
+//
+// Each InteractionStep maps to one Playwright statement. The translation
+// table is intentionally tight — extending the schema with a new kind
+// requires (a) adding a Zod variant in packages/orchestrator-contracts/
+// src/user-flows-manifest.ts and (b) adding a case here. Schema validation
+// runs upstream so this function trusts step.kind to be one of the 10
+// canonical values; the default branch is a defensive throw.
+
+/**
+ * Render a single TS source string for one InteractionStep. The emitted
+ * line includes a `__stepIndex = N;` prefix so the surrounding try/catch
+ * can name the failing step in its rethrown error message.
+ */
+function emitInteraction(step, stepNum, flowFileBase) {
+  const idx = `__stepIndex = ${stepNum};`;
+  switch (step.kind) {
+    case "navigate":
+      return `      ${idx} await page.goto(${JSON.stringify(step.to)});`;
+    case "fill":
+      return `      ${idx} await page.locator(${JSON.stringify(step.selector)}).fill(${JSON.stringify(step.value)});`;
+    case "click":
+      return `      ${idx} await page.locator(${JSON.stringify(step.selector)}).click();`;
+    case "select":
+      return `      ${idx} await page.locator(${JSON.stringify(step.selector)}).selectOption(${JSON.stringify(step.option)});`;
+    case "waitForResponse": {
+      const urlSrc = JSON.stringify(step.urlPattern);
+      const statusCheck =
+        typeof step.status === "number"
+          ? ` && r.status() === ${step.status}`
+          : "";
+      return `      ${idx} await page.waitForResponse((r) => new RegExp(${urlSrc}).test(r.url())${statusCheck});`;
+    }
+    case "waitForSelector": {
+      const opts =
+        typeof step.timeout === "number"
+          ? `, { timeout: ${step.timeout} }`
+          : "";
+      return `      ${idx} await page.waitForSelector(${JSON.stringify(step.selector)}${opts});`;
+    }
+    case "assertVisible":
+      return `      ${idx} await expect(page.locator(${JSON.stringify(step.selector)})).toBeVisible();`;
+    case "assertText":
+      return `      ${idx} await expect(page.locator(${JSON.stringify(step.selector)})).toHaveText(${JSON.stringify(step.text)});`;
+    case "assertUrlMatches":
+      return `      ${idx} await expect(page).toHaveURL(new RegExp(${JSON.stringify(step.pattern)}));`;
+    case "screenshot":
+      // Screenshots land under FAILURE_DIR (the spec's artefact dump
+      // directory) prefixed with the flow id so they're discoverable per
+      // flow even when multiple flows snapshot.
+      return `      ${idx} await page.screenshot({ path: \`\${FAILURE_DIR}/${flowFileBase}-${step.name}.png\`, fullPage: true });`;
+    default:
+      // Schema validates upstream so this branch is unreachable in
+      // practice — defensive throw documents the contract.
+      return `      ${idx} throw new Error("synthesizer: unknown interaction kind: ${String(step.kind).replace(/"/g, '\\"')}");`;
+  }
+}
+
+/**
+ * Emit a Playwright spec for a flow whose v2.0 `interactions[]` is
+ * present. Companion to `specForFlow` (legacy heuristic path).
+ */
+function specForFlowInteractions(flow, flowIndex) {
+  const flowFileBase = `flow-${flowIndex + 1}`;
+  const flowName = (flow.name ?? `flow ${flowIndex + 1}`).replace(/`/g, "\\`");
+  const flowId = (flow.id ?? `flow-${flowIndex + 1}`).replace(/`/g, "\\`");
+  const description = (flow.description ?? "").replace(/`/g, "\\`");
+
+  const interactions = Array.isArray(flow.interactions)
+    ? flow.interactions
+    : [];
+  if (interactions.length === 0) {
+    return {
+      content: `// ${flowFileBase}: skipped — flow has empty interactions[]\n`,
+      skipped: true,
+    };
+  }
+
+  // Mutation-tier flows opt into serial execution so order-dependent state
+  // (the cross-test pollution Strategy A/C/D's per-flow seeding contracts
+  // in `.claude/rules/testing-policy.md` is meant to prevent) is at least
+  // deterministic when the seeding helpers haven't landed yet.
+  const isMutation = flow.seedingTier === "mutation";
+  const describeFn = isMutation ? "test.describe.serial" : "test.describe";
+
+  const stmtLines = interactions
+    .map((step, i) => emitInteraction(step, i + 1, flowFileBase))
+    .join("\n");
+
+  const lines = [];
+  lines.push(`/**`);
+  lines.push(
+    ` * ${flowFileBase}.spec.ts — synthesized by scripts/synthesize-flow-e2e.mjs (feat-038 Phase 2A v2.0 path).`,
+  );
+  lines.push(` *`);
+  lines.push(` * Flow: ${flowName} (${flowId})`);
+  if (description) lines.push(` * ${description}`);
+  lines.push(
+    ` * Seeding tier: ${flow.seedingTier ?? "read-only"} → ${describeFn}`,
+  );
+  lines.push(
+    ` * DO NOT EDIT BY HAND — re-runs of /build-to-spec-verify regenerate this file.`,
+  );
+  lines.push(` * Failures land in docs/build-to-spec/failures/.`);
+  lines.push(` */`);
+  lines.push(`import { test, expect } from "@playwright/test";`);
+  lines.push(``);
+  lines.push(`const FAILURE_DIR = "../../docs/build-to-spec/failures";`);
+  lines.push(``);
+  // Same runtime-error capture prelude as the legacy path (feat-027).
+  lines.push(`test.beforeEach(async ({ page }, testInfo) => {`);
+  lines.push(`  const ctx = {`);
+  lines.push(`    consoleErrors: [],`);
+  lines.push(`    pageErrors: [],`);
+  lines.push(`    networkFailures: [],`);
+  lines.push(`    devServerOverlay: null,`);
+  lines.push(`  };`);
+  lines.push(`  /** @type {any} */ (testInfo).__runtimeCtx = ctx;`);
+  lines.push(`  page.on("console", (msg) => {`);
+  lines.push(
+    `    if (msg.type() === "error") ctx.consoleErrors.push(msg.text());`,
+  );
+  lines.push(`  });`);
+  lines.push(`  page.on("pageerror", (err) => {`);
+  lines.push(
+    `    ctx.pageErrors.push({ message: err.message, stack: err.stack });`,
+  );
+  lines.push(`  });`);
+  lines.push(`  page.on("requestfailed", (req) => {`);
+  lines.push(`    ctx.networkFailures.push({`);
+  lines.push(`      method: req.method(),`);
+  lines.push(`      url: req.url(),`);
+  lines.push(`      failureText: req.failure()?.errorText ?? "unknown",`);
+  lines.push(`    });`);
+  lines.push(`  });`);
+  lines.push(`});`);
+  lines.push(``);
+  lines.push(`test.afterEach(async ({ page }, testInfo) => {`);
+  lines.push(`  const ctx = /** @type {any} */ (testInfo).__runtimeCtx;`);
+  lines.push(`  if (!ctx) return;`);
+  lines.push(`  try {`);
+  lines.push(`    const overlayText = await page.evaluate(() => {`);
+  lines.push(`      const el = document.querySelector(`);
+  lines.push(
+    `        "#__next_error__, [data-nextjs-error-overlay], nextjs-portal",`,
+  );
+  lines.push(`      );`);
+  lines.push(`      return el ? (el.textContent || "").trim() : null;`);
+  lines.push(`    });`);
+  lines.push(`    if (overlayText && overlayText.length > 0) {`);
+  lines.push(
+    `      ctx.devServerOverlay = { detected: true, rawText: overlayText.slice(0, 4000) };`,
+  );
+  lines.push(`    }`);
+  lines.push(`  } catch {`);
+  lines.push(`    // page closed / navigation in progress — best effort only`);
+  lines.push(`  }`);
+  lines.push(`  if (`);
+  lines.push(`    ctx.consoleErrors.length ||`);
+  lines.push(`    ctx.pageErrors.length ||`);
+  lines.push(`    ctx.networkFailures.length ||`);
+  lines.push(`    ctx.devServerOverlay`);
+  lines.push(`  ) {`);
+  lines.push(`    await testInfo.attach("runtime-errors", {`);
+  lines.push(`      body: JSON.stringify(ctx, null, 2),`);
+  lines.push(`      contentType: "application/json",`);
+  lines.push(`    });`);
+  lines.push(`  }`);
+  lines.push(`});`);
+  lines.push(``);
+  lines.push(`${describeFn}("${flowName} (${flowId})", () => {`);
+  lines.push(
+    `  test("walks ${interactions.length} interaction(s) deterministically", async ({ page }) => {`,
+  );
+  lines.push(`    let __stepIndex = 0;`);
+  lines.push(`    try {`);
+  lines.push(stmtLines);
+  lines.push(`    } catch (err) {`);
+  lines.push(`      // Capture failure context for the bug-author downstream.`);
+  lines.push(
+    `      await page.screenshot({ path: \`\${FAILURE_DIR}/${flowFileBase}-failure.png\`, fullPage: true }).catch(() => {});`,
+  );
+  lines.push(`      const html = await page.content().catch(() => "");`);
+  lines.push(`      const fs = await import("node:fs");`);
+  lines.push(`      fs.mkdirSync(FAILURE_DIR, { recursive: true });`);
+  lines.push(
+    `      fs.writeFileSync(\`\${FAILURE_DIR}/${flowFileBase}-failure.html\`, html);`,
+  );
+  lines.push(
+    `      const message = err instanceof Error ? err.message : String(err);`,
+  );
+  lines.push(
+    `      throw new Error(\`${flowFileBase} (${flowName}) failed at interaction \${__stepIndex}: \${message}\`);`,
+  );
+  lines.push(`    }`);
+  lines.push(`  });`);
+  lines.push(`});`);
+  lines.push(``);
+
+  return { content: lines.join("\n"), skipped: false };
 }
 
 // ─── Spec generation ────────────────────────────────────────────────────────
@@ -324,7 +558,17 @@ const skipped = [];
 
 for (let i = 0; i < manifest.flows.length; i++) {
   const flow = manifest.flows[i];
-  const { content, skipped: didSkip } = specForFlow(flow, i);
+  // feat-038 Phase 2A: dispatch on the v2.0 `interactions[]` field. When
+  // present and non-empty the synthesizer emits the deterministic
+  // translation path; otherwise it falls back to the legacy v1.0
+  // screen-breadcrumb heuristic so existing manifests still produce
+  // meaningful specs until /user-flows-generator (feat-038 Phase 3) is
+  // updated to author interactions[] alongside steps[].
+  const useInteractions =
+    Array.isArray(flow.interactions) && flow.interactions.length > 0;
+  const { content, skipped: didSkip } = useInteractions
+    ? specForFlowInteractions(flow, i)
+    : specForFlow(flow, i);
   const fileName = `flow-${i + 1}.spec.ts`;
   const fullPath = path.join(outDir, fileName);
   fs.writeFileSync(fullPath, content);
