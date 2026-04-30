@@ -479,12 +479,20 @@ function parseReporterJson(stdout, warnings, stderr = "") {
       // devServerOverlay. We surface that into failure.runtimeErrors so the
       // bug-author can render it into a runtime-error bug template.
       const runtimeErrors = extractRuntimeErrors(attachments, warnings);
-      // Try to extract step / from / expected from the error message
-      // (the synthesizer formats them as
-      //   `step N: clicked toward "X" but landed on "Y" (selector: ...)`).
+      // Try to extract step / from / expected from the error message.
+      // The synthesizer formats v1.0 (legacy heuristic path) as
+      //   `step N: clicked toward "X" but landed on "Y" (selector: ...)`.
+      // feat-038 Phase 4 — the v2.0 (interactions[]) path emits
+      //   `flow-1 (Name) failed at interaction N: <playwright error>`.
+      // parseFailureMessage handles both; v2.0 only populates `step`,
+      // since the action vocabulary doesn't carry from/to/selector meta.
       const meta = parseFailureMessage(errorMsg);
-      // ── feat-027 Phase B: classify primary cause ──────────────────────────
+      // ── feat-027 Phase B + feat-038 Phase 4: classify primary cause ───────
       // - dev-server-compile: overlay detected → ALWAYS primary (cascades all)
+      // - seed-setup: error message comes from seedFixtures/cleanupFixtures
+      //   (Strategy C beforeAll/afterAll hooks). Env-issue precedes
+      //   runtime-signals because the test never got to interact with the page;
+      //   any runtime errors captured are downstream of the seed failure.
       // - runtime-error: any console / page / network errors captured
       // - timeout-no-evidence: timedOut with no runtime signal AND no step meta
       // - step-transition: the synthesizer's own assertion fired (default)
@@ -495,9 +503,16 @@ function parseReporterJson(stdout, warnings, stderr = "") {
           runtimeErrors.pageErrors.length > 0 ||
           runtimeErrors.networkFailures.length > 0 ||
           runtimeErrors.devServerOverlay !== undefined);
+      // feat-038 Phase 4: detect Strategy C seed-helper failures by their
+      // canonical thrown-error prefix (see .claude/templates/seed-db.ts.template).
+      const isSeedSetupFailure =
+        typeof errorMsg === "string" &&
+        /^seedFixtures:|^cleanupFixtures:/m.test(errorMsg);
       let primaryCause;
       if (runtimeErrors?.devServerOverlay) {
         primaryCause = "dev-server-compile";
+      } else if (isSeedSetupFailure) {
+        primaryCause = "seed-setup";
       } else if (hasRuntimeSignal) {
         primaryCause = "runtime-error";
       } else if (isTimedOut && !meta.step) {
@@ -644,8 +659,16 @@ function extractRuntimeErrors(attachments, warnings) {
  */
 function parseFailureMessage(msg) {
   const out = {};
+  // v1.0 emit: "step N: clicked toward X but landed on Y (selector: ...)"
   const stepM = msg.match(/step\s+(\d+)\s*:/i);
   if (stepM) out.step = Number.parseInt(stepM[1], 10);
+  // feat-038 Phase 4 — v2.0 emit: "flow-1 (Name) failed at interaction N: ..."
+  // Only set `step` when it wasn't already populated by v1.0 match (so a
+  // future hybrid spec wouldn't double-clobber).
+  if (out.step === undefined) {
+    const interactionM = msg.match(/failed at interaction\s+(\d+)\s*:/i);
+    if (interactionM) out.step = Number.parseInt(interactionM[1], 10);
+  }
   const towardM = msg.match(/clicked toward\s+["']([^"']+)["']/i);
   if (towardM) out.expectedScreenId = towardM[1];
   const landedM = msg.match(/landed on\s+["']([^"']+)["']/i);

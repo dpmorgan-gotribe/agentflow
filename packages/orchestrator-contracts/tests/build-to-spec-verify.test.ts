@@ -391,8 +391,8 @@ describe("RuntimeErrors (feat-027)", () => {
   });
 });
 
-describe("FlowPrimaryCause (feat-027)", () => {
-  it("accepts the four documented values", () => {
+describe("FlowPrimaryCause (feat-027 + feat-038 Phase 4)", () => {
+  it("accepts the five documented values", () => {
     expect(FlowPrimaryCause.parse("step-transition")).toBe("step-transition");
     expect(FlowPrimaryCause.parse("runtime-error")).toBe("runtime-error");
     expect(FlowPrimaryCause.parse("dev-server-compile")).toBe(
@@ -401,6 +401,7 @@ describe("FlowPrimaryCause (feat-027)", () => {
     expect(FlowPrimaryCause.parse("timeout-no-evidence")).toBe(
       "timeout-no-evidence",
     );
+    expect(FlowPrimaryCause.parse("seed-setup")).toBe("seed-setup");
   });
 
   it("rejects unknown values", () => {

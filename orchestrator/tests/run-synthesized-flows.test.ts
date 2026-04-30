@@ -692,6 +692,109 @@ describe("runSynthesizedFlows — feat-027 runtime-errors extraction", () => {
     expect(result.flows.failed[0].primaryCause).toBe("step-transition");
   });
 
+  it("feat-038 Phase 4 — classifies primaryCause=seed-setup when seedFixtures throws (Strategy C beforeAll)", async () => {
+    writePackageJson({ hasPlaywright: true });
+    writePlaywrightConfig();
+    writeSpec("flow-seed.spec.ts");
+
+    const reporterJson = JSON.stringify({
+      suites: [
+        {
+          file: "e2e/synthesized/flow-seed.spec.ts",
+          specs: [
+            {
+              title: "mutation flow needing seed",
+              tests: [
+                {
+                  results: [
+                    {
+                      status: "failed",
+                      error: {
+                        message:
+                          "seedFixtures: POST http://127.0.0.1:8000/test/seed → 503 Service Unavailable",
+                      },
+                      attachments: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    let spawnCallIdx = 0;
+    const spawnFn = ((..._args: unknown[]) => {
+      spawnCallIdx += 1;
+      if (spawnCallIdx === 1) return fakeProc({ exitCode: 0 });
+      return fakeProc({ stdout: reporterJson, exitCode: 1 });
+    }) as unknown as typeof import("node:child_process").spawn;
+
+    const result = await runSynthesizedFlows({
+      projectDir,
+      spawnFn,
+      spawnSyncFn: noopSpawnSync,
+      httpGet: httpGetOk,
+      baseUrlOverride: "http://localhost:3000",
+    });
+
+    expect(result.flows.failed[0].primaryCause).toBe("seed-setup");
+  });
+
+  it("feat-038 Phase 4 — parseFailureMessage handles v2.0 'failed at interaction N' emit", async () => {
+    writePackageJson({ hasPlaywright: true });
+    writePlaywrightConfig();
+    writeSpec("flow-v2.spec.ts");
+
+    const reporterJson = JSON.stringify({
+      suites: [
+        {
+          file: "e2e/synthesized/flow-v2.spec.ts",
+          specs: [
+            {
+              title: "v2 interactions flow",
+              tests: [
+                {
+                  results: [
+                    {
+                      status: "failed",
+                      error: {
+                        message:
+                          "flow-1 (Generate a single repo health report) failed at interaction 4: page.waitForResponse: Test timeout of 30000ms exceeded.",
+                      },
+                      attachments: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    let spawnCallIdx = 0;
+    const spawnFn = ((..._args: unknown[]) => {
+      spawnCallIdx += 1;
+      if (spawnCallIdx === 1) return fakeProc({ exitCode: 0 });
+      return fakeProc({ stdout: reporterJson, exitCode: 1 });
+    }) as unknown as typeof import("node:child_process").spawn;
+
+    const result = await runSynthesizedFlows({
+      projectDir,
+      spawnFn,
+      spawnSyncFn: noopSpawnSync,
+      httpGet: httpGetOk,
+      baseUrlOverride: "http://localhost:3000",
+    });
+
+    // step populated from "failed at interaction 4:"
+    expect(result.flows.failed[0].step).toBe(4);
+    // No runtime signal + has step meta + not timed-out → step-transition.
+    expect(result.flows.failed[0].primaryCause).toBe("step-transition");
+  });
+
   it("gracefully handles malformed runtime-errors JSON → warning + null", async () => {
     writePackageJson({ hasPlaywright: true });
     writePlaywrightConfig();

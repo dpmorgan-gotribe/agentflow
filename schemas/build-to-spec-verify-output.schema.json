@@ -298,7 +298,8 @@
                   "step-transition",
                   "runtime-error",
                   "dev-server-compile",
-                  "timeout-no-evidence"
+                  "timeout-no-evidence",
+                  "seed-setup"
                 ]
               },
               "message": {

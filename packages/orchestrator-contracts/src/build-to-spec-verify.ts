@@ -125,22 +125,30 @@ export type RuntimeErrors = z.infer<typeof RuntimeErrors>;
  * runner picks ONE based on a precedence ladder:
  *   1. devServerOverlay present → `dev-server-compile` (root-cause; cascades
  *      into every step)
- *   2. ANY runtime signal (console/page/network) → `runtime-error`
- *   3. test timed out with no synthesizer-recorded transition meta →
+ *   2. error message starts with `seedFixtures:` / `cleanupFixtures:` →
+ *      `seed-setup` (feat-038 Phase 4) — Strategy C beforeAll/afterAll
+ *      hook failed; this is an environment issue (backend not reachable,
+ *      `ENABLE_TEST_SEED=1` not set, schema mismatch on the seed payload),
+ *      NOT an app bug. The bug-author should route these to the operator
+ *      with remediation guidance rather than dispatching a builder.
+ *   3. ANY runtime signal (console/page/network) → `runtime-error`
+ *   4. test timed out with no synthesizer-recorded transition meta →
  *      `timeout-no-evidence` (pre-feat-027 black-box state — surface so the
  *      auto-fix loop knows it lacks signal)
- *   4. default → `step-transition` (the synthesizer's own assertion fired)
+ *   5. default → `step-transition` (the synthesizer's own assertion fired)
  *
  * The bug-author + iteration router consume this to (a) emit the right bug
- * template (`runtimeErrorBody` vs `flowFailureBody`), and (b) sort
- * runtime-error / dev-server-compile bugs FIRST so the auto-fix loop
- * resolves the cascade-root before chasing dependent timeouts.
+ * template (`runtimeErrorBody` vs `flowFailureBody` vs `seedSetupBody`),
+ * and (b) sort runtime-error / dev-server-compile / seed-setup bugs FIRST
+ * so the auto-fix loop resolves the cascade-root before chasing dependent
+ * timeouts.
  */
 export const FlowPrimaryCause = z.enum([
   "step-transition",
   "runtime-error",
   "dev-server-compile",
   "timeout-no-evidence",
+  "seed-setup",
 ]);
 export type FlowPrimaryCause = z.infer<typeof FlowPrimaryCause>;
 
