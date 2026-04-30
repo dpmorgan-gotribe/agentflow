@@ -66,7 +66,44 @@ The user explicitly named the central tradeoff: **"do we clean up and seed data 
 
 ## Approach
 
-### Phase 0 — Time-boxed investigation: data-seeding strategy (1 hour)
+### Phase 0 — Decision (shipped 2026-04-30)
+
+The original 3-option framing (per-test reseed / shared baseline / hybrid) assumed every project would have a real-DB backend. Empirical survey across the factory's shipped projects revealed the reality: **strategy is stack-determined by the project's persistence layer**, not a single global choice.
+
+**Empirical findings (audit at feat-038 Phase 0 time):**
+
+| Project                                    | Persistence layer                                         | Strategy actually used                                                                                        | Per-test cost |
+| ------------------------------------------ | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------- |
+| `kanban-webapp-09` (shipped)               | localStorage only (Zustand-persist, no backend mutations) | **A** (per-test reseed) — `test.beforeEach: localStorage.clear() + reload` (`apps/web/e2e/board.spec.ts:23`)  | ~10ms         |
+| `repo-health-dashboard-01` (shipped)       | External GitHub API + in-memory proxy cache               | **D** (API interception) — `page.route("**/api/report/**", ...)` (`apps/web/e2e/compare.spec.ts:15`)          | ~0ms          |
+| `book-swap` / `finance-track` (pre-builds) | Real DB-backed (planned, not yet shipped)                 | **C** (hybrid) when first project ships — pattern to be defined alongside the canonical `/test/seed` endpoint | ~50–500ms     |
+
+**Decision: per-stack-skill strategy declaration.**
+
+The factory's stack skills declare which seeding strategy applies based on the project's `architecture.yaml.tooling.stack.persistence_layer` value. A single project may need to mix strategies at the test-suite level (e.g. external API → intercept; project-managed user-prefs DB → hybrid).
+
+The canonical contract lands in `.claude/rules/testing-policy.md §E2E data-seeding strategy (feat-038 Phase 0)` so per-stack-skill `§Testing` blocks reference one source of truth rather than re-deriving.
+
+**Why not pure A / B / C:**
+
+- **Pure A** (per-test backend reseed): correct for localStorage projects (cheap), punishingly expensive for DB-backed ones (would 10× test wall-clock).
+- **Pure B** (shared global baseline): order-dependent and flaky for any mutation flow; debugging a single failing test requires running its predecessors. Rejected.
+- **Pure C** (hybrid): correct when there's a real DB, but adds machinery that's pure overhead for projects with no backend mutation tier.
+
+The persistence-layer-driven dispatch makes each project pay the minimum overhead its architecture requires.
+
+**Why not just call out to existing tester patterns:**
+
+- Tester-authored E2E (e.g. `compare.spec.ts`'s `page.route(...)`) is per-feature scope. The synthesizer authors cross-feature integration specs that exist precisely to catch bugs the per-feature tests miss. Some flows (e.g. "create card → assign user → archive") span features and therefore can't trivially mock the backend mid-flow.
+- For flows whose `seedingTier: "mutation"`, the synthesized spec needs real persistence (real localStorage state OR real DB writes) to validate the integration. API interception is wrong here.
+
+**Out-of-scope for Phase 0** — explicitly deferred:
+
+- Live benchmarking on `book-swap-pre-build` (the original investigation step) was infeasible — pre-build projects have no built backend. The first project to ship a real-DB Strategy C E2E will produce empirical numbers that we can fold back into this rule. Hypothesis stays: if reseed <500ms, A also works for DB-backed; >2s makes C mandatory.
+- Per-stack `seed-{strategy}.ts` helper authoring (Phase 1+ implementation work).
+- The structured `steps[]` schema extension to user-flows-manifest (Phase 1).
+
+### Phase 0 — Original time-boxed investigation outline (preserved for record)
 
 Decide the canonical seeding strategy before deepening the synthesizer (Phase 1+ depends on knowing how to write seed-aware specs). Three options, each with documented tradeoffs:
 

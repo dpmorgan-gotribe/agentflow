@@ -105,6 +105,40 @@ If the failing test requires interpretive latitude to call "correct behavior" �
 - `.claude/skills/tester/SKILL.md` §Hard constraint — skill-driven dispatch context mirror
 - `plans/archive/bug-024-tester-modifies-source.md` — the bug that motivated promoting this from guidance to constraint
 
+## E2E data-seeding strategy (feat-038 Phase 0)
+
+E2E tests need data to exist in the system before they can assert on UI states (e.g. "the archive button only appears when ≥1 card is in the Done column"). The strategy is **stack-determined by the project's persistence layer**, not a one-size-fits-all global choice.
+
+### Strategy by persistence layer
+
+| Persistence layer the project uses                                       | Strategy            | Pattern                                                                                                                                                   | Cost per test |
+| ------------------------------------------------------------------------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| **`localStorage` only** (Zustand-persist, no backend mutation tier)      | A — per-test reseed | `test.beforeEach: localStorage.clear() + reload`; per-test `localStorage.setItem` for non-empty starting state                                            | ~10ms         |
+| **External-only API + in-memory proxy cache** (no project-managed DB)    | D — interception    | `page.route("**/api/<path>", ...)` to fake responses; tests run without the real backend reachable                                                        | ~0ms          |
+| **Real backend + DB** (FastAPI/Express/etc. with project-managed schema) | C — hybrid          | `globalSetup` seeds read-only baseline via a gated `/test/seed` endpoint; mutation flows wrap in `test.describe.serial` with their own beforeAll/afterAll | ~50–500ms     |
+
+Each shipped stack skill's `§Testing` block declares which strategy applies based on the `architecture.yaml.tooling.stack.persistence_layer` slot. A single project may need to mix strategies at the test-suite level — e.g. a project with both an external API (intercept) and a project-managed user-prefs DB (hybrid) would split its E2E into two directories with distinct seeding patterns.
+
+### Empirical motivation (audit at feat-038 time)
+
+- `kanban-webapp-09` (shipped, mutation-heavy) — Strategy A. `apps/web/e2e/board.spec.ts:23` uses `test.beforeEach: localStorage.clear() + reload`. Per-test cost effectively zero.
+- `repo-health-dashboard-01` (shipped, external-API only) — Strategy D. `apps/web/e2e/compare.spec.ts:15` uses `page.route("**/api/report/**", ...)` to fake the GitHub-proxy responses. No backend needed.
+- `book-swap` / `finance-track` (pre-builds, real-DB) — would need Strategy C when E2E lands. No shipped pattern yet; first project to ship will define the canonical `/test/seed` endpoint shape.
+
+### `synthesize-flow-e2e` synthesizer integration (feat-038 Phase 1+)
+
+When the synthesizer (`scripts/synthesize-flow-e2e.mjs`) deepens beyond the current `page.goto("/")`-only output, generated specs must opt into the right strategy:
+
+1. **Manifest schema extension** — each flow's entry in `docs/user-flows-manifest.json` declares `seedingTier: "read-only" | "mutation"` so the synthesizer knows how to scope per-spec setup.
+2. **Strategy resolution at synthesis time** — synthesizer reads `architecture.yaml.tooling.stack.persistence_layer` + the flow's `seedingTier` and emits the appropriate Playwright pattern (localStorage-clear / page.route / `/test/seed`).
+3. **Per-stack helpers** — `apps/web/e2e/helpers/seed-{strategy}.ts` (factory-supplied via stack skill scaffold) so spec authors and the synthesizer use the same primitives.
+
+### Cross-references
+
+- `.claude/skills/agents/front-end/react-next/SKILL.md §Testing` — strategy declaration for React + Next consumers (one of A/D depending on stack composition).
+- `.claude/skills/agents/back-end/python-fastapi/SKILL.md §Testing` — strategy declaration for FastAPI consumers (C when DB-backed, D when proxy/cache only).
+- `plans/active/feat-038-deepen-synthesize-flow-e2e-and-data-seeding.md §Phase 0 — Decision` — the full reasoning + benchmark expectations.
+
 ## Stack-skill integration
 
 Every shipped stack skill (`.claude/skills/agents/{tier}/{stack-slug}/SKILL.md`) has a §Testing section documenting:
