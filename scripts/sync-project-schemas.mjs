@@ -79,6 +79,14 @@ const SYNC_PAIRS = [
     projectDir: "scripts",
     matcher: /^validate-.*\.mjs$/i,
   },
+  {
+    label: "retrofits",
+    factoryDir: "scripts",
+    projectDir: "scripts",
+    // Codemod-style scripts that must travel with the project so skills
+    // (e.g. /stylesheet §18) can invoke them from project CWD.
+    matcher: /^retrofit-.*\.mjs$/i,
+  },
 ];
 
 function listFactoryFiles(category) {

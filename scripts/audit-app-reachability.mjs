@@ -37,16 +37,23 @@ if (!fs.existsSync(projectDir)) {
 
 // bug-028: SCAN_ROOTS expanded. Prior list only walked
 // `apps/{web,mobile}/{src,app}` + `apps/api/src` — missed
-// `apps/web/components`, `apps/web/lib`, and every `packages/*/src`.
-// For modern Next.js layouts that put components alongside app/
-// instead of under src/, `<Link href="/about">` and similar refs
-// were invisible to the audit → false-positive orphan-route reports.
+// `apps/web/components`, `apps/web/lib`. For modern Next.js layouts
+// that put components alongside app/ instead of under src/,
+// `<Link href="/about">` and similar refs were invisible → false-positive
+// orphan-route reports.
+//
+// bug-030 Phase A: `packages/` REMOVED from scan roots. Including it caused
+// every workspace-package primitive to be flagged orphan because the audit
+// doesn't trace re-export chains through `@repo/<name>` package barrels.
+// The audit's purpose is to find unreachable code in *apps*; library
+// packages have their own consumer chain via `package.json` exports +
+// bundler resolution, and their dead-code surface is policed elsewhere
+// (ui-kit's own /stylesheet hard-gate, `validate-consumer` ESLint rule).
 const SCAN_ROOTS = [
   "apps/web", // walks the entire web app (filter applied below)
   "apps/mobile",
   "apps/api/src",
   "apps/api/app",
-  "packages",
 ];
 
 // Sub-paths inside SCAN_ROOTS that should be skipped (large + non-source).
@@ -251,12 +258,19 @@ function resolveImport(fromFile, spec) {
   }
   let baseDir;
   if (spec.startsWith("@/") || spec.startsWith("~/")) {
-    // tsconfig "paths" alias — heuristic: assume @/ → apps/web/src/
-    // Try multiple roots; first match wins.
+    // tsconfig "paths" alias — heuristic: try multiple roots; first match wins.
+    // bug-030 Phase A: prepend `apps/web` (the app root, sibling of app/ +
+    // components/ + lib/) so modern Next App Router projects that put
+    // components/ + lib/ alongside app/ resolve correctly. Without this,
+    // `import { Providers } from "@/components/providers"` resolved as
+    // `apps/web/app/components/providers.tsx` (does not exist) → null
+    // → file flagged as orphan despite being directly imported.
     const stripped = spec.slice(2);
     for (const aliasRoot of [
+      path.join(projectDir, "apps/web"),
       path.join(projectDir, "apps/web/src"),
       path.join(projectDir, "apps/web/app"),
+      path.join(projectDir, "apps/mobile"),
       path.join(projectDir, "apps/mobile/src"),
       path.join(projectDir, "apps/api/src"),
     ]) {
@@ -295,8 +309,13 @@ function resolveCandidate(candidate) {
   return null;
 }
 
+// bug-030 Phase A: third alternative captures `export { … } from "…"` and
+// `export * from "…"` re-exports as importer edges. Without this, folder
+// barrels like `apps/web/components/header/index.ts` ─ which `export * from
+// "./header"` ─ left `header.tsx` flagged orphan even though `layout.tsx`
+// reaches it via `@/components/header → header/index.ts → ./header`.
 const IMPORT_RE =
-  /(?:^|\n)\s*(?:import\s+(?:[^'"]*?from\s+)?['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\))/g;
+  /(?:^|\n)\s*(?:import\s+(?:[^'"]*?from\s+)?['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)|export\s+(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s+from\s+['"]([^'"]+)['"])/g;
 
 /** Map: importedFile → Set<importerFile> (importers in production only). */
 /** @type {Map<string, Set<string>>} */
@@ -318,7 +337,7 @@ for (const file of [...sourceFiles, ...testFiles]) {
   IMPORT_RE.lastIndex = 0;
   let m;
   while ((m = IMPORT_RE.exec(text)) !== null) {
-    const spec = m[1] ?? m[2];
+    const spec = m[1] ?? m[2] ?? m[3];
     const resolved = resolveImport(file, spec);
     if (!resolved) continue;
     if (isTestFile(file)) {

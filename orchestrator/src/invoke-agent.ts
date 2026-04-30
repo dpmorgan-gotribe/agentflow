@@ -544,7 +544,7 @@ async function runCheckoutFeature(
  * Returns `{ ok: true }` on success or a `CheckoutFeatureFailure`-shaped
  * `reason` + `detail` for the orchestrator to bubble up.
  */
-type SeedResult =
+export type SeedResult =
   | { ok: true }
   | {
       ok: false;
@@ -569,7 +569,10 @@ const REQUIRED_AUTONOMOUS_PERMISSIONS = [
   "Grep(*)",
 ] as const;
 
-function seedWorktree(projectRoot: string, worktreePath: string): SeedResult {
+export function seedWorktree(
+  projectRoot: string,
+  worktreePath: string,
+): SeedResult {
   // Step 1: confirm the project actually has the hooks dir to copy.
   const projectHooks = join(projectRoot, ".claude", "hooks");
   if (!existsSync(projectHooks)) {

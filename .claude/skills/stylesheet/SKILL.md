@@ -837,6 +837,14 @@ The outline-on-hover + dashed rectangle is a universal affordance: hovering reve
 - Write `packages/ui-kit/CHANGELOG.md` entry — `1.0.0` release lists every primitive, pattern, layout, token scale, dial values
 - Write `packages/ui-kit/UI-KIT.md` — living consumption guide (import examples, dark-mode toggle, dial-change impact summary)
 - Write `packages/ui-kit/.input-fingerprint.json` — hash from step 2 + metadata (regeneration date, resolved-inputs summary)
+- **Retrofit `data-kit-component` safety net (bug-029 — Phase B, automatic):**
+
+  ```bash
+  node scripts/retrofit-ui-kit-data-attrs.mjs .
+  ```
+
+  Run from the project root. The codemod walks `packages/ui-kit/src/{primitives,layouts}/**/*.tsx`, finds every exported component, and inserts `data-kit-component="<Name>"` on its first DOM-rendering JSX root if absent. It is **idempotent** — running on a kit that already conforms is a no-op. Capture the script's summary line in the return JSON's `warnings[]` if any rows report `applied=` (it means the LLM authoring step in §9b.1 missed at least one primitive — log it so the contract drift is observable, not silent). Edge case the script cannot auto-fix: components that render via `React.createElement(...)` instead of JSX — those are flagged as `no-jsx` and need manual attribute injection (rare; ~1% of generated primitives).
+
 - Run `pnpm typecheck` in the monorepo
 - Run `pnpm lint` against the kit (the ESLint plugin is disabled on kit internals via `overrides` per 022b — it applies to `apps/*` only)
 - `validate-consumer` is NOT run against the kit itself — its purpose is to scan `apps/**`, which don't exist yet at this stage

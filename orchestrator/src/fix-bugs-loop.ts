@@ -11,6 +11,7 @@ import {
 import type { BudgetTracker } from "./budget-tracker.js";
 import type { BuildToSpecVerifyContext } from "./build-to-spec-verify.js";
 import type { InvokeAgentFn } from "./feature-graph.js";
+import { seedWorktree } from "./invoke-agent.js";
 
 /**
  * feat-026 — automated bug-fix loop runner.
@@ -124,10 +125,25 @@ function shellQuote(value: string): string {
 }
 
 /**
- * Open the shared fixup worktree on master. Idempotent — returns
- * silently if the worktree already exists. Uses the same `git worktree
+ * Open the shared fixup worktree on master. Uses the same `git worktree
  * add` pattern as `runCheckoutFeature` in invoke-agent.ts (cross-platform
  * shell quoting via `shellQuote`).
+ *
+ * bug-031 Phase A: invokes `seedWorktree()` AFTER the worktree exists
+ * (whether freshly added OR pre-existing from a prior session). Without
+ * seeding, the fixup worktree lacks `.claude/hooks/` (gitignored at
+ * `agenticVisibility: private` projects so `git worktree add` doesn't
+ * bring it) AND the autonomous `permissions.allow` block — both of
+ * which dispatched builders need to actually write fixes. Pre-bug-031
+ * the loop dispatched into a half-provisioned sandbox and every fix
+ * attempt failed at the permission/hook boundary.
+ *
+ * bug-031 Phase B: re-seeds even when the worktree already exists.
+ * `seedWorktree()` is idempotent (existing entries preserved; missing
+ * required entries appended). Re-seeding refreshes hooks/settings that
+ * may have drifted from the factory revision since the worktree was
+ * first created — common when an orchestrator session straddles a
+ * factory upgrade.
  *
  * Skipped when `skipWorktreeManagement` is true (tests + standalone
  * verify-without-loop runs).
@@ -137,20 +153,32 @@ function openFixupWorktree(args: {
   worktreePath: string;
   branch: string;
 }): { ok: true } | { ok: false; reason: string } {
-  if (existsSync(args.worktreePath)) return { ok: true };
-  mkdirSync(dirname(args.worktreePath), { recursive: true });
-  try {
-    execSync(
-      `git worktree add ${shellQuote(args.worktreePath)} -b ${shellQuote(args.branch)}`,
-      { cwd: args.projectRoot, stdio: ["ignore", "pipe", "pipe"] },
-    );
-    return { ok: true };
-  } catch (err) {
+  if (!existsSync(args.worktreePath)) {
+    mkdirSync(dirname(args.worktreePath), { recursive: true });
+    try {
+      execSync(
+        `git worktree add ${shellQuote(args.worktreePath)} -b ${shellQuote(args.branch)}`,
+        { cwd: args.projectRoot, stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } catch (err) {
+      return {
+        ok: false,
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  // bug-031: seed (or re-seed) the worktree with .claude/hooks/ + autonomous
+  // permissions.allow. Idempotent — safe whether the worktree was just added
+  // or pre-existed.
+  const seed = seedWorktree(args.projectRoot, args.worktreePath);
+  if (!seed.ok) {
     return {
       ok: false,
-      reason: err instanceof Error ? err.message : String(err),
+      reason: `fixup-worktree-seed-failed (${seed.reason}): ${seed.detail}`,
     };
   }
+  return { ok: true };
 }
 
 /**

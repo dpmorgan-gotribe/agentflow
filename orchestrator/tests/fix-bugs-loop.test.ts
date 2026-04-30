@@ -482,6 +482,81 @@ describe("runFixBugsLoop — fixup worktree lifecycle", () => {
     expect(result.bugsFailed).toContain("bug-orphan-noworktree");
   });
 
+  // bug-031 Phase A regression — pre-fix the fixup worktree was opened via
+  // raw `git worktree add` without the seedWorktree() helper, so dispatched
+  // builders hit "hooks not found" + "Read tool requires permission grant"
+  // errors. This test pre-creates the fixup worktree (skipping the git path
+  // we can't exercise without a real repo) so the seed step still runs and
+  // we can assert the post-conditions on disk.
+  it("seeds the fixup worktree with .claude/hooks + permissions.allow when the worktree pre-exists", async () => {
+    // Project must have hooks + a permissions.allow block at root for
+    // seedWorktree to copy/extend.
+    const projectHooks = join(projectRoot, ".claude", "hooks");
+    mkdirSync(projectHooks, { recursive: true });
+    for (const hook of [
+      "block-dangerous.sh",
+      "detect-loop.mjs",
+      "enforce-boundaries.sh",
+      "validate-brief.mjs",
+    ]) {
+      writeFileSync(join(projectHooks, hook), "# stub\n");
+    }
+    writeFileSync(
+      join(projectRoot, ".claude", "settings.json"),
+      JSON.stringify({ permissions: { allow: ["Read(*)"] } }, null, 2),
+    );
+
+    // Pre-create the fixup worktree dir so openFixupWorktree skips the
+    // `git worktree add` path entirely (we cannot run real git here).
+    const worktreePath = join(projectRoot, ".claude", "worktrees", "fixup");
+    mkdirSync(worktreePath, { recursive: true });
+
+    writeBugsYamlDoc([makeBug({ id: "bug-orphan-seed-test" })]);
+
+    // Build a context where seeding actually runs — skipWorktreeManagement
+    // false invokes openFixupWorktree, which now calls seedWorktree().
+    const invoke: InvokeAgentFn = async (args) => ({
+      taskStatus: Object.fromEntries(
+        args.tasks.map((t) => [t.id, "completed"] as const),
+      ),
+      errors: {},
+      costUsd: 0,
+    });
+    await runFixBugsLoop(
+      makeCtx(invoke, cleanVerify, { skipWorktreeManagement: false }),
+    );
+
+    // Phase A assertions: the seed-step ran during openFixupWorktree.
+    for (const hook of [
+      "block-dangerous.sh",
+      "detect-loop.mjs",
+      "enforce-boundaries.sh",
+      "validate-brief.mjs",
+    ]) {
+      expect(
+        existsSync(join(worktreePath, ".claude", "hooks", hook)),
+        `seeded hook missing: ${hook}`,
+      ).toBe(true);
+    }
+    const wtSettings = JSON.parse(
+      readFileSync(join(worktreePath, ".claude", "settings.json"), "utf8"),
+    ) as { permissions?: { allow?: string[] } };
+    const allow = wtSettings.permissions?.allow ?? [];
+    for (const required of [
+      "Write(*)",
+      "Edit(*)",
+      "MultiEdit(*)",
+      "Bash(*)",
+      "Read(*)",
+      "Glob(*)",
+      "Grep(*)",
+    ]) {
+      expect(allow, `missing autonomous permission: ${required}`).toContain(
+        required,
+      );
+    }
+  });
+
   it("uses projectRoot as cwd when skipWorktreeManagement=true", async () => {
     let observedCwd: string | undefined;
     const invoke: InvokeAgentFn = async (args) => {
