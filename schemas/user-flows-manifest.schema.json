@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentflow/schemas/user-flows-manifest.schema.json",
+  "title": "user-flows-manifest.json",
+  "description": "Manifest authored by /user-flows-generator (gate 4 sign-off artefact). v1.0 (screen-breadcrumb only) is the historical shape; v2.0 (feat-038 Phase 1) adds optional `interactions[]` (structured Playwright action script) + `seedingTier` (per-flow seeding signal feeding the per-stack-skill strategy from .claude/rules/testing-policy.md §E2E data-seeding strategy) + `schemaVersion` (explicit structural-contract version). All v2.0 additions are optional during the Phase 1 → Phase 3 migration window so existing v1.0 manifests still validate.",
+  "type": "object",
+  "required": [
+    "version",
+    "generatedAt",
+    "projectName",
+    "platforms",
+    "uiKitVersion",
+    "screensManifestHash",
+    "visualReviewReportHash",
+    "flows"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Legacy v1.0 manifest version literal. Retained for backward compat; new readers should prefer `schemaVersion`."
+    },
+    "schemaVersion": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Explicit structural-contract version. v2.0 manifests SHOULD set this to \"2.0\". Absent means treat as v1.0."
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "projectName": { "type": "string", "minLength": 1 },
+    "platforms": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "uiKitVersion": { "type": "string", "minLength": 1 },
+    "screensManifestHash": { "type": "string", "minLength": 1 },
+    "visualReviewReportHash": { "type": "string", "minLength": 1 },
+    "flows": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/flow" }
+    },
+    "personas": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/persona" }
+    },
+    "screensCounts": { "$ref": "#/$defs/screensCounts" }
+  },
+  "$defs": {
+    "flow": {
+      "type": "object",
+      "required": ["id", "name", "steps"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "platform": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional — when absent, defaults to manifest-level platform context."
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "primaryPersona": {
+          "type": "string",
+          "description": "SHOULD reference an id in personas[] but older manifests use freeform persona prose. Schema stays lenient."
+        },
+        "steps": {
+          "type": "array",
+          "default": [],
+          "items": { "$ref": "#/$defs/flowScreenStep" },
+          "description": "Legacy v1.0 screen breadcrumbs. Each entry names a screen-id + the mockup HTML the user-flows.html viewer iframes."
+        },
+        "screenIds": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Legacy alternate flat-list field (book-swap uses it). Optional; canonical breadcrumb sequence is `steps[]`."
+        },
+        "interactions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/interactionStep" },
+          "description": "v2.0 — structured Playwright action script. When present, Phase 2's synthesizer emits one statement per entry instead of inferring clicks from screen-id transitions."
+        },
+        "seedingTier": {
+          "type": "string",
+          "enum": ["read-only", "mutation"],
+          "description": "v2.0 — per-flow seeding signal feeding the per-stack strategy in .claude/rules/testing-policy.md §E2E data-seeding strategy. Defaults to read-only when absent."
+        }
+      }
+    },
+    "flowScreenStep": {
+      "type": "object",
+      "required": ["screenId", "platform", "file", "status", "title"],
+      "properties": {
+        "screenId": { "type": "string", "minLength": 1 },
+        "platform": { "type": "string", "minLength": 1 },
+        "file": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Path to the mockup HTML for this screen, relative to the project root. May be null when the screen-id is planned but not yet mocked (pre-build manifests)."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pass", "fail", "needs-human-review", "not-reviewed"],
+          "description": "Visual-review verdict at manifest authorship time. `not-reviewed` is used for pre-build screens not yet through visual-review."
+        },
+        "title": { "type": "string", "minLength": 1 }
+      }
+    },
+    "interactionStep": {
+      "oneOf": [
+        { "$ref": "#/$defs/interactionNavigate" },
+        { "$ref": "#/$defs/interactionFill" },
+        { "$ref": "#/$defs/interactionClick" },
+        { "$ref": "#/$defs/interactionSelect" },
+        { "$ref": "#/$defs/interactionWaitForResponse" },
+        { "$ref": "#/$defs/interactionWaitForSelector" },
+        { "$ref": "#/$defs/interactionAssertVisible" },
+        { "$ref": "#/$defs/interactionAssertText" },
+        { "$ref": "#/$defs/interactionAssertUrlMatches" },
+        { "$ref": "#/$defs/interactionScreenshot" }
+      ],
+      "description": "Discriminated union over 10 Playwright action kinds. Vocabulary is intentionally finite — the synthesizer's job is mechanical translation, not LLM-flavored interpretation. New kinds land additively under a schemaVersion bump."
+    },
+    "interactionNavigate": {
+      "type": "object",
+      "required": ["kind", "to"],
+      "properties": {
+        "kind": { "const": "navigate" },
+        "to": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Route relative to the dev-server base URL (e.g. /, /report/foo/bar)."
+        }
+      }
+    },
+    "interactionFill": {
+      "type": "object",
+      "required": ["kind", "selector", "value"],
+      "properties": {
+        "kind": { "const": "fill" },
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Playwright selector ([data-testid=…] preferred for stability)."
+        },
+        "value": { "type": "string" }
+      }
+    },
+    "interactionClick": {
+      "type": "object",
+      "required": ["kind", "selector"],
+      "properties": {
+        "kind": { "const": "click" },
+        "selector": { "type": "string", "minLength": 1 }
+      }
+    },
+    "interactionSelect": {
+      "type": "object",
+      "required": ["kind", "selector", "option"],
+      "properties": {
+        "kind": { "const": "select" },
+        "selector": { "type": "string", "minLength": 1 },
+        "option": { "type": "string" }
+      }
+    },
+    "interactionWaitForResponse": {
+      "type": "object",
+      "required": ["kind", "urlPattern"],
+      "properties": {
+        "kind": { "const": "waitForResponse" },
+        "urlPattern": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Substring or regex source the synthesizer compiles into a RegExp."
+        },
+        "status": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "interactionWaitForSelector": {
+      "type": "object",
+      "required": ["kind", "selector"],
+      "properties": {
+        "kind": { "const": "waitForSelector" },
+        "selector": { "type": "string", "minLength": 1 },
+        "timeout": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Optional millisecond timeout (Playwright default 30000)."
+        }
+      }
+    },
+    "interactionAssertVisible": {
+      "type": "object",
+      "required": ["kind", "selector"],
+      "properties": {
+        "kind": { "const": "assertVisible" },
+        "selector": { "type": "string", "minLength": 1 }
+      }
+    },
+    "interactionAssertText": {
+      "type": "object",
+      "required": ["kind", "selector", "text"],
+      "properties": {
+        "kind": { "const": "assertText" },
+        "selector": { "type": "string", "minLength": 1 },
+        "text": { "type": "string" }
+      }
+    },
+    "interactionAssertUrlMatches": {
+      "type": "object",
+      "required": ["kind", "pattern"],
+      "properties": {
+        "kind": { "const": "assertUrlMatches" },
+        "pattern": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Regex source string the synthesizer compiles into a RegExp."
+        }
+      }
+    },
+    "interactionScreenshot": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": { "const": "screenshot" },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Filename slug (synthesizer prefixes with the flow id)."
+        }
+      }
+    },
+    "persona": {
+      "type": "object",
+      "required": ["id", "name", "primaryGoal", "flowIds"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "primaryGoal": { "type": "string", "minLength": 1 },
+        "flowIds": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "screensCounts": {
+      "type": "object",
+      "description": "Bookkeeping counters for screens by visual-review status. Both kebab-case (`needs-human-review`) and camelCase (`needsHumanReview`) variants are accepted because shipped manifests use either; new manifests SHOULD prefer kebab-case for consistency with the visual-review status enum.",
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "pass": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "needs-human-review": { "type": "integer", "minimum": 0 },
+        "needsHumanReview": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
