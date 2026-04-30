@@ -87,15 +87,52 @@ const SYNC_PAIRS = [
     // (e.g. /stylesheet §18) can invoke them from project CWD.
     matcher: /^retrofit-.*\.mjs$/i,
   },
+  {
+    // refactor-008: factory-canonical rules (testing-policy.md etc.) that
+    // every project needs in lockstep. Drift previously required manual
+    // per-project copies after every factory rule edit.
+    label: "rules",
+    factoryDir: ".claude/rules",
+    projectDir: ".claude/rules",
+    matcher: /\.md$/i,
+  },
+  {
+    // refactor-008: factory-canonical templates (architect-copied scaffold
+    // files like seed-helpers, dev-multi-tier, ui-kit-eslint-plugin tree).
+    // Recursive — walker preserves nested paths under the factoryDir.
+    label: "templates",
+    factoryDir: ".claude/templates",
+    projectDir: ".claude/templates",
+    // Cover the established suffixes — extend if new template kinds land.
+    matcher: /\.(template|json|md|ts|html|js)$/i,
+  },
 ];
 
+/**
+ * List factory files matching a category's basename matcher, walking
+ * subdirectories recursively. Returns paths relative to the category's
+ * factoryDir, forward-slash-normalised so Windows + POSIX produce the
+ * same set. The matcher applies to the BASENAME only — directory names
+ * aren't tested, so a regex like `/\.schema\.json$/i` won't accidentally
+ * match an unrelated subdir.
+ */
 function listFactoryFiles(category) {
   const factoryAbsDir = join(FACTORY_ROOT, category.factoryDir);
   if (!existsSync(factoryAbsDir)) return [];
-  return readdirSync(factoryAbsDir, { withFileTypes: true })
-    .filter((d) => d.isFile() && category.matcher.test(d.name))
-    .map((d) => d.name)
-    .sort();
+  const out = [];
+  const walk = (relDir) => {
+    const abs = relDir ? join(factoryAbsDir, relDir) : factoryAbsDir;
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        walk(relPath);
+      } else if (entry.isFile() && category.matcher.test(entry.name)) {
+        out.push(relPath);
+      }
+    }
+  };
+  walk("");
+  return out.sort();
 }
 
 function fileBytesMatch(a, b) {
@@ -159,6 +196,13 @@ function syncOneProject(projectAbsDir, opts) {
       }
 
       try {
+        // refactor-008: nested files (e.g. templates/ui-kit-eslint-plugin/
+        // rules/no-deep-imports.js) need their parent dir created before
+        // the copy. mkdirSync is a no-op when the dir already exists.
+        const parentDir = dirname(projectAbs);
+        if (!existsSync(parentDir)) {
+          mkdirSync(parentDir, { recursive: true });
+        }
         copyFileSync(factoryAbs, projectAbs);
         if (projectExisted) {
           synced += 1;

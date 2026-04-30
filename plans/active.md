@@ -13,6 +13,9 @@
 | feat-038-deepen-synthesize-flow-e2e-and-data-seeding | feature | draft  | P0       | feat/deepen-synthesize-flow-e2e-and-data-seeding | Generated flows (`flow-N.spec.ts`) only do `page.goto(/)` — they don't fill forms, click submit, or assert on responses. Phase 0 investigates per-test-reseed vs shared-baseline vs hybrid; Phase 1 adds structured `steps[]` schema to user-flows-manifest; Phase 2 deepens synthesizer; Phase 3 updates `/user-flows-generator` to author steps; Phase 5 ships fixture-based regression harness. With bug-032, would have caught the 404 cleanly. |
 
 <!--
+ARCHIVED 2026-04-30 (sync-project-schemas extension, post-feat-038-Phase-2B):
+- refactor-008 sync-project-schemas-rules-templates (P2, success) — extended scripts/sync-project-schemas.mjs to cover .claude/rules/ + .claude/templates/ via a recursive walker + 2 new SYNC_PAIRS entries + mkdirSync guard for nested file parents. Closes the manual factory→project copy tax (30 manual `cp` invocations this session alone). Single attempt; validated via dry-run against book-swap-pre-build (in-lockstep, 41 unchanged) + reverse-drift on kanban-webapp-09 (1 update + 18 creates including 5 nested ui-kit-eslint-plugin/ files preserved). Live --all run synced 12 projects. 568/568 orchestrator tests still pass.
+
 ARCHIVED 2026-04-30 (Zod v4 typing migration, post-feat-038-Phase-1):
 - refactor-007 zod-infer-types-tests (P2, success) — migrated 4 orchestrator-contracts test files (bugs-yaml / build-to-spec-verify / parity-verify / screen-fixtures) from `typeof Schema._type` (Zod v3) to `z.infer<typeof Schema>` (Zod v4). 15 occurrences, single attempt, mechanical. Closed the typecheck-red / tests-green split (vitest masks tsc errors via esbuild). 568/568 orchestrator + 398/398 contracts tests still pass.
 

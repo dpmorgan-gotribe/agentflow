@@ -163,14 +163,25 @@ are re-copied in refresh mode with backup.
 Track what was preserved, overwritten, and backed up — the return payload
 needs these lists.
 
-### 5a. Sync schemas + validators (BOTH MODES — bug-019)
+### 5a. Sync schemas + validators + rules + templates (BOTH MODES — bug-019, refactor-008)
 
 Run `scripts/sync-project-schemas.mjs` against the project to copy
-`schemas/*.schema.json` and `scripts/validate-*.mjs` from the factory.
-Without this step, factory-side schema regenerations (e.g. bug-015 Phase 2
-adding `affects_files`) silently fail to propagate, and downstream PM
-agents either honor the stale constraint (dropping new fields) or
-silently mutate the project schema as a side-effect.
+factory-canonical files in five categories from the factory tree:
+
+- `schemas/*.schema.json` (bug-019)
+- `scripts/validate-*.mjs` (bug-019)
+- `scripts/retrofit-*.mjs` (bug-019; codemods invoked from project CWD)
+- `.claude/rules/*.md` (refactor-008; e.g. `testing-policy.md`)
+- `.claude/templates/**` (refactor-008; recursive — covers nested
+  `ui-kit-eslint-plugin/` tree + the seed-helper templates the architect
+  copies into projects per persistence_layer)
+
+Without this step, factory-side regenerations (e.g. bug-015 Phase 2
+adding `affects_files`, feat-038 Phase 0 adding §E2E data-seeding
+strategy to testing-policy.md, feat-038 Phase 2B adding seed-helper
+templates) silently fail to propagate. Downstream agents then either
+honor the stale constraint (dropping new fields) or silently mutate the
+project artefact as a side-effect.
 
 ```
 node scripts/sync-project-schemas.mjs projects/<name>
@@ -178,15 +189,17 @@ node scripts/sync-project-schemas.mjs projects/<name>
 
 The script is idempotent: it byte-compares each factory file against the
 project's matching file and skips when identical. New factory files get
-created; updated factory files overwrite the project copy. One log line
-per file. Failures (FS errors) surface a non-zero exit (2) but don't
-abort `/new-project` — surface them in the return payload's `warnings[]`
-and continue.
+created; updated factory files overwrite the project copy. Nested files
+under templates get their parent dir created via `mkdirSync(...,
+{ recursive: true })` before copy. One log line per file. Failures (FS
+errors) surface a non-zero exit (2) but don't abort `/new-project` —
+surface them in the return payload's `warnings[]` and continue.
 
-Add the synced filenames to `filesCopied.schemas` and a new
-`filesCopied.validators` bucket. Ad-hoc operators (suspecting drift
-between PM runs) can call this script directly with `--dry-run` to
-preview, then without it to apply.
+Add the synced filenames to `filesCopied.schemas`, `filesCopied.validators`,
+`filesCopied.retrofits`, `filesCopied.rules`, and `filesCopied.templates`
+buckets. Ad-hoc operators (suspecting drift between PM runs OR after a
+factory rule/template edit) can call this script directly with
+`--dry-run` to preview, then without it to apply.
 
 ### 5b. Scaffold the Turborepo + shared-package skeleton + design-stage MCPs (refactor-003)
 
