@@ -94,14 +94,23 @@ const DEFAULT_PIPELINE_MAX_USD = 150;
  * git ops, no SDK call). Override per-agent in the project's
  * `.claude/models.yaml` under `stallTimeoutMs:` or per-agent
  * `agents.<name>.stallTimeoutMs`.
+ *
+ * 2026-05-01: reviewer + security bumped 10 → 15 min after empirical
+ * pattern on finance-track-01 (3/30 reviewer dispatches hit the 10-min
+ * wall). Reviewer walks 7 dimensions of `docs/reviewer-playbook.md`
+ * against the full feature diff; for medium/large diffs (5+ task files
+ * + extensive tester edge-cases) the per-dimension reasoning blows the
+ * 10-min budget. 15 min is a band-aid pending a structural fix
+ * (per-dimension cap or diff-summarization pre-pass) — see bug-037 if
+ * filed.
  */
 const DEFAULT_STALL_TIMEOUT_BY_AGENT: Record<string, number | null> = {
   "backend-builder": 25 * 60 * 1000,
   "web-frontend-builder": 25 * 60 * 1000,
   "mobile-frontend-builder": 25 * 60 * 1000,
   tester: 20 * 60 * 1000,
-  reviewer: 10 * 60 * 1000,
-  security: 10 * 60 * 1000,
+  reviewer: 15 * 60 * 1000,
+  security: 15 * 60 * 1000,
   "git-agent": null,
 };
 

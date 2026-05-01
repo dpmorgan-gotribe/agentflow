@@ -308,7 +308,7 @@ describe("readModelConfig — stallTimeoutMs (feat-024 Phase B)", () => {
     expect(cfg.stallTimeoutMs).toBe(20 * 60 * 1000);
   });
 
-  it("uses built-in default for reviewer (10 min)", () => {
+  it("uses built-in default for reviewer (15 min — bumped from 10 on 2026-05-01 per finance-track-01 empirical timeouts)", () => {
     writeFileSync(
       globalPath,
       `defaults:\n  build: claude-sonnet-4-6\nagents:\n  reviewer: { tier: build }\n`,
@@ -317,7 +317,7 @@ describe("readModelConfig — stallTimeoutMs (feat-024 Phase B)", () => {
       globalPath,
       projectPath,
     });
-    expect(cfg.stallTimeoutMs).toBe(10 * 60 * 1000);
+    expect(cfg.stallTimeoutMs).toBe(15 * 60 * 1000);
   });
 
   it("git-agent default is null (never abort by liveness)", () => {
