@@ -368,6 +368,192 @@ describe("runFeature — happy path", () => {
   });
 });
 
+// bug-036 Phase A: per-project-root checkout-feature mutex regression test.
+// Concurrent runFeature() calls against the same projectRoot used to race on
+// .git/index.lock; losers silently failed with worktree-seed-failed. The
+// mutex around the checkout-feature step now serializes that step (and ONLY
+// that step) so all parallel features get their worktree.
+describe("runFeature — checkout-feature mutex (bug-036)", () => {
+  it("serializes concurrent checkout-feature calls against the same projectRoot", async () => {
+    // Track the order checkout-feature ops enter + exit. If serialized, each
+    // op's exit timestamp is < the next op's entry timestamp. If racy
+    // (pre-fix), entries interleave (op2 enters while op1 still running).
+    const events: Array<{ kind: "enter" | "exit"; featureId: string }> = [];
+    const slowCheckoutMs = 50;
+
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        if (args.gitOp?.op === "checkout-feature") {
+          const featureId = args.gitOp.featureId;
+          events.push({ kind: "enter", featureId });
+          // Simulate a slow worktree-add so the race window is large enough
+          // to detect interleaving deterministically.
+          await new Promise((r) => setTimeout(r, slowCheckoutMs));
+          events.push({ kind: "exit", featureId });
+          return {
+            taskStatus: {},
+            errors: {},
+            gitAgentOutput: {
+              op: "checkout-feature",
+              success: true,
+              worktreePath: `.claude/worktrees/${args.gitOp.worktree}`,
+              lockfilePath: `.claude/worktrees/${args.gitOp.worktree}.lock`,
+              branch: args.gitOp.branch,
+              featureId,
+            },
+            costUsd: 0.001,
+          };
+        }
+        const op = args.gitOp;
+        const featureId =
+          op && op.op !== "resolve-conflict-handoff"
+            ? op.featureId
+            : "feat-unknown";
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput: {
+            op: "close-feature",
+            success: true,
+            conflict: false,
+            mergeSha: "abc1234",
+            featureId,
+          },
+          costUsd: 0.001,
+        };
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.01,
+      };
+    };
+
+    const features = [
+      buildFeature({
+        id: "feat-a",
+        worktree: "feat-a",
+        branch: "feat/a",
+        tasks: [
+          {
+            id: "a1",
+            agent: "backend-builder",
+            depends_on: [],
+            skills: [],
+            status: "pending",
+            screens: [],
+          },
+          {
+            id: "a2",
+            agent: "tester",
+            depends_on: [],
+            skills: [],
+            status: "pending",
+            screens: [],
+          },
+          {
+            id: "a3",
+            agent: "reviewer",
+            depends_on: [],
+            skills: [],
+            status: "pending",
+            screens: [],
+          },
+        ],
+      }),
+      buildFeature({
+        id: "feat-b",
+        worktree: "feat-b",
+        branch: "feat/b",
+        tasks: [
+          {
+            id: "b1",
+            agent: "backend-builder",
+            depends_on: [],
+            skills: [],
+            status: "pending",
+            screens: [],
+          },
+          {
+            id: "b2",
+            agent: "tester",
+            depends_on: [],
+            skills: [],
+            status: "pending",
+            screens: [],
+          },
+          {
+            id: "b3",
+            agent: "reviewer",
+            depends_on: [],
+            skills: [],
+            status: "pending",
+            screens: [],
+          },
+        ],
+      }),
+      buildFeature({
+        id: "feat-c",
+        worktree: "feat-c",
+        branch: "feat/c",
+        tasks: [
+          {
+            id: "c1",
+            agent: "backend-builder",
+            depends_on: [],
+            skills: [],
+            status: "pending",
+            screens: [],
+          },
+          {
+            id: "c2",
+            agent: "tester",
+            depends_on: [],
+            skills: [],
+            status: "pending",
+            screens: [],
+          },
+          {
+            id: "c3",
+            agent: "reviewer",
+            depends_on: [],
+            skills: [],
+            status: "pending",
+            screens: [],
+          },
+        ],
+      }),
+    ];
+
+    const ctx = makeCtx(invokeAgent);
+    const results = await Promise.all(features.map((f) => runFeature(f, ctx)));
+
+    // All 3 features must have completed (none silently failed at checkout).
+    for (const r of results) {
+      expect(r.status).toBe("completed");
+    }
+
+    // Order of events: 3 enter+exit pairs for each checkout. Build the
+    // entered-set; for each exit we should have its entry's matching enter
+    // come BEFORE any other feature's enter (i.e. no interleaving).
+    const checkoutEvents = events.filter((e) => true);
+    expect(checkoutEvents.length).toBe(6); // 3 features × (enter + exit)
+    // Walk through events in order; whenever we see "enter", "exit" for the
+    // same featureId must be the very next event (no other feature's enter
+    // sneaks between an enter and its matching exit). This proves the
+    // checkout-feature step is serialized end-to-end.
+    for (let i = 0; i < checkoutEvents.length; i += 2) {
+      expect(checkoutEvents[i]!.kind).toBe("enter");
+      expect(checkoutEvents[i + 1]!.kind).toBe("exit");
+      expect(checkoutEvents[i + 1]!.featureId).toBe(
+        checkoutEvents[i]!.featureId,
+      );
+    }
+  });
+});
+
 describe("runFeature — per-task retry", () => {
   // bug-002: TASK_RETRY_CAP was lowered from 3 → 1 for fast-fail debug mode.
   // When the cap is restored to 3 (post Mode-B-stable), update the assertion

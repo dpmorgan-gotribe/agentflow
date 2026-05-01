@@ -517,6 +517,34 @@ export type RunBuildToSpecVerifyFn = (
 const TASK_RETRY_CAP = 2;
 const MERGE_CONFLICT_CAP = 3;
 
+// bug-036 Phase A: per-project-root mutex for checkout-feature operations.
+// `git worktree add` (and the dirty-state auto-commit branch in
+// `runCheckoutFeature`) takes the project root's `.git/index.lock`; concurrent
+// dispatches with maxConcurrentFeatures > 1 race on the lock and the losers
+// silently fail with `worktree-seed-failed` / `index.lock: File exists`. This
+// mutex serializes ONLY the checkout-feature step (the rest of runFeature —
+// builder, tester, reviewer, close-feature merge — runs against the
+// per-feature worktree's own .git and doesn't contend on the project-root lock,
+// so concurrent execution remains safe + parallel after checkout). Empirical
+// motivation: 2026-05-01 finance-track-01 wave-4 race + cap=5 race lost 2/3
+// + 2/5 features respectively.
+const checkoutMutex = new Map<string, Promise<void>>();
+
+async function acquireCheckoutLock(projectRoot: string): Promise<() => void> {
+  while (checkoutMutex.has(projectRoot)) {
+    await checkoutMutex.get(projectRoot);
+  }
+  let release!: () => void;
+  const p = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  checkoutMutex.set(projectRoot, p);
+  return () => {
+    checkoutMutex.delete(projectRoot);
+    release();
+  };
+}
+
 /**
  * Per refactor-004 Appendix D: open a worktree, walk agent_sequence[]
  * with per-task retries, close the worktree (merge to main), handle
@@ -635,27 +663,44 @@ export async function runFeature(
 
   // 1. Checkout feature worktree (skipped on resume — worktree already
   // exists from prior run; /resume-build SKILL §7 recovery actions ran).
+  // bug-036 Phase A: serialize this step via the project-root mutex.
+  // `git worktree add` + the dirty-state auto-commit branch in
+  // `runCheckoutFeature` take the project-root .git/index.lock; concurrent
+  // dispatches race on it and losers fail with `worktree-seed-failed`.
+  // The mutex spans ONLY this step — builder/tester/reviewer/close-feature
+  // run against the per-feature worktree's own .git and don't contend.
   if (!isResume) {
-    const checkout = await ctx.invokeAgent({
-      agent: "git-agent",
-      cwd: ctx.projectRoot,
-      featureContext,
-      tasks: [],
-      gitOp: {
-        op: "checkout-feature",
-        worktree: feature.worktree,
-        branch: feature.branch,
-        featureId: feature.id,
-      },
-    });
-    totalCostUsd += checkout.costUsd;
+    const releaseCheckoutLock = await acquireCheckoutLock(ctx.projectRoot);
+    let checkoutFailed = false;
+    let checkoutFailureMessage = "";
+    try {
+      const checkout = await ctx.invokeAgent({
+        agent: "git-agent",
+        cwd: ctx.projectRoot,
+        featureContext,
+        tasks: [],
+        gitOp: {
+          op: "checkout-feature",
+          worktree: feature.worktree,
+          branch: feature.branch,
+          featureId: feature.id,
+        },
+      });
+      totalCostUsd += checkout.costUsd;
 
-    const checkoutParsed = validateGitOutput(checkout.gitAgentOutput);
-    if (
-      !checkoutParsed ||
-      checkoutParsed.op !== "checkout-feature" ||
-      !checkoutParsed.success
-    ) {
+      const checkoutParsed = validateGitOutput(checkout.gitAgentOutput);
+      if (
+        !checkoutParsed ||
+        checkoutParsed.op !== "checkout-feature" ||
+        !checkoutParsed.success
+      ) {
+        checkoutFailed = true;
+        checkoutFailureMessage = `checkout-feature failed: ${JSON.stringify(checkoutParsed ?? checkout.gitAgentOutput)}`;
+      }
+    } finally {
+      releaseCheckoutLock();
+    }
+    if (checkoutFailed) {
       tracker.onFeatureFailed({ featureId: feature.id });
       return finish(
         feature.id,
@@ -664,7 +709,7 @@ export async function runFeature(
         attempts,
         totalCostUsd,
         taskOutcomes,
-        `checkout-feature failed: ${JSON.stringify(checkoutParsed ?? checkout.gitAgentOutput)}`,
+        checkoutFailureMessage,
         commitWarnings,
       );
     }
