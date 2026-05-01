@@ -1512,8 +1512,24 @@ function buildAgentPrompt(
   args: Parameters<InvokeAgentFn>[0],
 ): string {
   const { featureContext, tasks, retryContext } = args;
+  // bug-035: include task.notes verbatim under each task line so PM-emitted
+  // requirements (state coverage, idempotency, edge-case constraints) reach
+  // the agent. Reviewer reads tasks.yaml directly and was the only agent
+  // seeing notes; builders received summary-only prompts and missed any
+  // requirement PM put in notes (empirical: finance-track-01 feat-seed-script
+  // reviewer rejected on a "one archived account" requirement PM had emitted
+  // in notes but builder never saw).
   const taskLines = tasks
-    .map((t) => `  - ${t.id} (${t.agent})${t.summary ? `: ${t.summary}` : ""}`)
+    .map((t) => {
+      const head = `  - ${t.id} (${t.agent})${t.summary ? `: ${t.summary}` : ""}`;
+      if (!t.notes) return head;
+      const indented = t.notes
+        .trim()
+        .split("\n")
+        .map((line) => `    ${line}`)
+        .join("\n");
+      return `${head}\n${indented}`;
+    })
     .join("\n");
 
   let prompt =

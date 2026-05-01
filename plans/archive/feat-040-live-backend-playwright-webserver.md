@@ -1,7 +1,7 @@
 ---
 id: feat-040-live-backend-playwright-webserver
 type: feature
-status: completed
+status: archived
 completed-at: 2026-04-30
 approved-at: 2026-04-30
 approved-by: human
@@ -88,4 +88,35 @@ Per investigate-012 §F-5 decision: `retries: process.env.CI ? 2 : 1` (was `: 0`
 
 ## Attempt Log
 
-(empty — pending. De facto pre-shipped on `repo-health-dashboard-01` via feat-045 Phase B turn-19 hand-fix; that hand-fix becomes the empirical reference for this rollout.)
+### Attempt 1 — 2026-04-30 — shipped + synced
+
+react-next + svelte-kit SKILL.md §Testing now emit `webServer.command="node ../../scripts/dev.mjs"` for multi-tier (Strategy C/D); `pnpm exec next dev` for Strategy A. Retries bumped 0→1 for live-backend specs. python-fastapi + node-trpc-nest + node-fastify §Testing blocks reference the front-end webServer contract. Synced to all 12 react-next consumers via `sync-project-schemas.mjs --all`. The de facto pre-ship on `repo-health-dashboard-01` (feat-045 Phase B turn-19 hand-fix) became the empirical reference; rollout matched the hand-fix pattern 1:1.
+
+**Outcome:** success.
+
+---
+
+# COMPLETION RECORD (appended to archived plan)
+
+completed: 2026-04-30
+outcome: success
+actual-files-changed:
+
+- .claude/skills/agents/front-end/react-next/SKILL.md (modified)
+- .claude/skills/agents/front-end/svelte-kit/SKILL.md (modified)
+- .claude/skills/agents/back-end/python-fastapi/SKILL.md (modified)
+- .claude/skills/agents/back-end/node-trpc-nest/SKILL.md (modified)
+- .claude/skills/agents/back-end/node-fastify/SKILL.md (modified — concurrent with feat-042)
+- .claude/templates/playwright.config.ts.template (modified)
+  commits:
+- hash: 0b6fe06
+  message: "factory: investigate-012 roadmap — feat-039/040/041/042 + bug-033 + bug-119-class testing-policy hardening"
+  attempts: 1
+  lessons:
+- "Per-strategy webServer.command (vs single shared template) keeps the decision visible to the operator: they can see WHY their config invokes dev.mjs vs next dev directly. Stack skill §Testing is the right home — it's the surface the operator already reads when debugging E2E."
+- "Strategy A projects should NOT boot dev.mjs (no backend to co-launch) — wastes startup time and risks port-collision noise. The strategy split avoids paying the multi-tier cost on single-tier projects."
+- "retries: 1 (was 0) for non-Strategy-A is the right floor — live-backend has measurable network jitter; pure localStorage flows shouldn't need retries because there's nothing to flake on."
+  test-results:
+  unit: n/a (skill-doc + template change; exercised at synthesizer + project run time)
+  integration: feat-045 flows 1-3 + 7-8 ran live against repo-health-dashboard-01 backend booted via `node ../../scripts/dev.mjs` — all hit the FastAPI proxy successfully (with bug-033's env propagation fix in place)
+  duration-minutes: ~75 (single session, parallel with feat-039/041/042 + bug-033)

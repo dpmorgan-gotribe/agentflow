@@ -1,7 +1,7 @@
 ---
 id: feat-044-shepherd-kanban-webapp-09-to-95
 type: feature
-status: abandoned
+status: archived
 abandoned-at: 2026-04-30
 abandoned-reason: kanban-webapp-09 has 100+ uncommitted modifications + 18 broken unit tests (label-rename refactor stalled mid-flight). Operator pivoted to repo-health-dashboard-01 as the first validation target; a fresh kanban-webapp-pre-build /start-build (roadmap step 11) will produce a clean kanban project rather than triaging this one.
 approved-at: 2026-04-30
@@ -156,3 +156,25 @@ This plan is the FIRST validation target for the factory readiness effort. If it
 4. `isomorphic-dompurify` SSR import is a real footgun in Next 15+ — jsdom tries to resolve a non-existent path. Lazy-import / dynamic-import with `ssr: false` is the cleanest fix for client-only apps.
 
 Superseded by: `feat-045-shepherd-repo-health-dashboard-01-to-95`.
+
+---
+
+# COMPLETION RECORD (appended to archived plan)
+
+completed: 2026-04-30
+outcome: abandoned
+actual-files-changed:
+
+- projects/repo-health-dashboard-01-NOT-applicable (kanban project lives in its own gitignored repo; carryovers preserved in-place there, not in factory tree)
+  commits: []
+  attempts: 1
+  lessons:
+- "v2.0 interactions[] schema cannot express drag-drop, dblclick, key-press, or file-upload — those interaction kinds need to be added (tracked as Phase 7 of feat-038 follow-up). Documented as deferred items in flow descriptions. Kanban surfaced the gap because cards are dragged between columns + edited via dblclick."
+- "page.locator() selector strings must use CSS / attribute / `:has-text()` / `:text()` — Playwright's getByRole chained API is NOT available in v2.0 (selectors are passed to page.locator() directly as strings). Document this in the user-flows-generator skill's selector preference order."
+- "`Shipped` baselines are not necessarily clean. Validation targets must be checked for uncommitted state BEFORE plan authoring — saves a session of triage on a project that's mid-rework. Add a pre-flight check to shepherding plans."
+- "isomorphic-dompurify SSR import is a real Next 15+ footgun: jsdom tries to resolve a non-existent path. Lazy-import / dynamic-import with `ssr: false` is the cleanest fix for client-only modal-style components. (Real bug fix preserved in kanban-09's tree even though the shepherding was abandoned.)"
+- "Abandoning a validation target early (turn 13) is the right call when the target's state is incompatible with the plan — better to pivot to repo-health-dashboard-01 than to waste budget on triage. Operator decision saved ~$10-15 of further LLM dispatch."
+  test-results:
+  unit: 18/548 unit tests fail in kanban-09 (label-rename refactor stalled mid-flight) — pre-existing state, not introduced by this plan
+  integration: Phases A+B completed (10 flows authored + synthesized + 48 Playwright passed); Phase C blocked by kanban-09's project-state issues
+  duration-minutes: ~150 (single session, abandoned at turn 13)

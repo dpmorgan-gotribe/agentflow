@@ -1,7 +1,7 @@
 ---
 id: feat-041-node-trpc-nest-strategy-c-testing-block
 type: feature
-status: completed
+status: archived
 completed-at: 2026-04-30
 approved-at: 2026-04-30
 approved-by: human
@@ -73,4 +73,29 @@ Run `node scripts/skills-audit.mjs --scope=build projects/book-swap-pre-build` (
 
 ## Attempt Log
 
-(empty — pending; ships ahead of book-swap-pre-build's Mode B run per investigate-012 step 7.)
+### Attempt 1 — 2026-04-30 — shipped + synced
+
+Added Strategy C declaration + `/test/seed` + `/test/cleanup` Nest controller contract + `ENABLE_TEST_SEED` env gate to node-trpc-nest §3 (mirroring python-fastapi §3 1:1). Cross-tier package conventions (no `.js` extensions) per bug-026 documented. Synced to book-swap-pre-build + book-swap. Unblocks book-swap Mode B at backend-builder dispatch.
+
+**Outcome:** success.
+
+---
+
+# COMPLETION RECORD (appended to archived plan)
+
+completed: 2026-04-30
+outcome: success
+actual-files-changed:
+
+- .claude/skills/agents/back-end/node-trpc-nest/SKILL.md (modified)
+  commits:
+- hash: 0b6fe06
+  message: "factory: investigate-012 roadmap — feat-039/040/041/042 + bug-033 + bug-119-class testing-policy hardening"
+  attempts: 1
+  lessons:
+- "Mirroring python-fastapi §3 1:1 for node-trpc-nest preserves the seed/cleanup contract semantically across stacks: builders + verifier dispatch one mental model regardless of language. Diverging the JSON shape per-stack would have been a false economy."
+- "ENABLE_TEST_SEED=1 env gate (vs separate /test/seed entry-point that's compiled-out at build) is simpler — single deployment artefact, single binary, gate flips the route on/off at request time. Operator can prove the test routes are invisible in prod by curling without the gate set."
+  test-results:
+  unit: n/a (skill-doc change; exercised when book-swap Mode B runs)
+  integration: pending — ships ahead of book-swap-pre-build's first Mode B run
+  duration-minutes: ~45 (single session, parallel with feat-039/040/042 + bug-033)

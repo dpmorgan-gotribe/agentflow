@@ -1,7 +1,7 @@
 ---
 id: bug-033-dev-mjs-env-not-propagated-to-fastapi
 type: bug
-status: completed
+status: archived
 completed-at: 2026-04-30
 approved-at: 2026-04-30
 approved-by: human
@@ -137,3 +137,29 @@ Update `scripts/dev.mjs` in factory; sync to all 12 projects via `node scripts/s
 - Pre-fix repro (revert dev.mjs to old version) → 429 unauth-rate-limit, confirming the fix path
 
 **Outcome:** success. Factory-wide bug closed; future Strategy C/D projects get the fix automatically via `/new-project` template-copy.
+
+---
+
+# COMPLETION RECORD (appended to archived plan)
+
+completed: 2026-04-30
+outcome: success
+actual-files-changed:
+
+- scripts/dev.mjs (modified)
+- .claude/skills/architect/SKILL.md (modified)
+- .claude/templates/dev-multi-tier.mjs.template (modified)
+- .claude/rules/testing-policy.md (modified — Phase 3 hardening)
+  commits:
+- hash: 0b6fe06
+  message: "factory: investigate-012 roadmap — feat-039/040/041/042 + bug-033 + bug-119-class testing-policy hardening"
+  attempts: 1
+  lessons:
+- "Node spawn() inherits parent process.env but Node itself does not load .env / .env.local — must be parsed and merged into the spawn env explicitly. Next loads them at runtime; the factory dev.mjs cannot rely on Next's loader for the FastAPI sibling subprocess."
+- "When merging .env-file values into a parent env, scope file-side PORT to the backend only (frontend gets explicit FRONTEND_PORT) — otherwise both halves can collide on the same port if the operator put PORT=4000 in .env.local for the backend."
+- "Redact secret values in boot logs (`<set>` / `<empty>`) so the operator can confirm propagation without leaking credentials into terminal scrollback or CI logs."
+- "Live external-API tests (bug-119 class) hide propagation bugs as flake. Hardening testing-policy.md to require mocks for proxy/external-API logic prevents the same class from recurring on book-swap / finance-track."
+  test-results:
+  unit: n/a (factory script — exercised via project smoke-test)
+  integration: live smoke-test in repo-health-dashboard-01 — `curl http://localhost:4000/api/report/facebook/react` returned 200 with `rate_limit.remaining=4998` (authenticated 5000/hr bucket) ✓; pre-fix repro returned 429 unauth ✓
+  duration-minutes: ~120 (single session, surfaced + closed within feat-045)

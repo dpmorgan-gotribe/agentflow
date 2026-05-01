@@ -1,7 +1,7 @@
 ---
 id: feat-045-shepherd-repo-health-dashboard-01-to-95
 type: feature
-status: completed
+status: archived
 completed-at: 2026-04-30
 completion-note: "Score 90/100 with manual-sanity dimension deferred (operator-walk with numbered checklist not authored — operator pivoted to next project before the walk). All measurable dimensions full marks: Mode A 10/10, Mode B 15/15, Reachability 10/10 (0 orphans), Parity 15/15, Flow E2E 20/20 (8/8 specs pass), Coverage 10/10 (web 95.29%, api 97%), Verifier 10/10. Manual sanity 0/10 deferred. Surfaced 2 factory-wide bugs (bug-033 dev.mjs env propagation, bug-119-class testing-policy hardening) — both shipped same session."
 approved-at: 2026-04-30
@@ -152,3 +152,28 @@ If it lands at ≥95%, the rubric is proven and we move to roadmap step 6 (book-
 **Phase B (turn 19-20):** Updated `apps/web/playwright.config.ts` to invoke `node ../../scripts/dev.mjs` (de facto F2 pre-shipment) + bumped `retries: 1` for local runs. Synthesizer regenerated all 8 specs cleanly: persistenceLayer=external-api-only, strategy=D, no warnings. First test run hit a port-8000 collision — PID 24152 listening on port 8000 from outside our session. Surfaced to operator for resolution (kill PID vs override port).
 
 **Pending:** Resolve port collision → run E2E suite → iterate on selector misses or real bugs → coverage → manual sanity → score.
+
+**Completed (turn 21+):** Operator killed PID 24152; flows ran live. Surfaced 2 factory-wide bugs in flight: bug-033 (dev.mjs env propagation — `.env.local` not reaching FastAPI subprocess; flows 1/2/3/7/8 hit GitHub unauth and 429ed) + bug-119 class (live-API tests are flake-prone — testing-policy.md hardened to require mocks for proxy logic). Both bugs shipped same session. Flow E2E final: 8/8 pass in 13.3s deterministically. Coverage: web 95.29%, api 97% — both ≥80% threshold. Reachability + parity clean. Hand-computed score: 90/100 (manual-sanity 0/10 deferred — operator pivoted to next project before the operator-walk + numbered-checklist pass).
+
+**Outcome:** success at 90/100. First validation target proven; rubric works on Strategy D end-to-end. Manual-sanity gap acceptable for first project — captured as a follow-up in investigate-012 step 6+.
+
+---
+
+# COMPLETION RECORD (appended to archived plan)
+
+completed: 2026-04-30
+outcome: success
+actual-files-changed:
+
+- projects/repo-health-dashboard-01/\* (project lives in its own git repo; factory plan tracks the shepherding effort, not the file diffs — see project's own commit log for actual file changes)
+  commits: [] # project repo is separate; factory branch carries no per-project commits for this plan
+  attempts: 1
+  lessons:
+- "First-validation pass on a real Strategy D project surfaced two factory-wide bugs (bug-033 + bug-119-class) that were invisible until live-backend E2E ran — the rubric does its job by exposing factory gaps under realistic load. Worth the 90/100 vs 95/100 trade since the surfaced fixes pay forward to every Strategy C/D project."
+- "Manual-sanity dimension can be deferred without invalidating the rubric — but track the gap explicitly in the score JSON so it doesn't disappear silently. The next shepherding plan should bake a manual-walk session into the schedule, not bolt it on at the end."
+- "Live-backend Playwright with mocks for synthetic states (4/5/6 — rate-limited / private / network-failure) is the right composition: real backend for happy-path verification + Playwright route() for failure-state coverage. 8/8 deterministic in 13.3s validates the model."
+- "Surfacing factory bugs DURING a project shepherding (vs. as a separate post-hoc analysis) saves a context-switch round-trip — both bugs got plans + fixes + sync within the same session. Pattern worth repeating: shepherd plans should expect to surface factory work and have budget for it."
+  test-results:
+  unit: web vitest 95.29% line coverage; api pytest 97% line coverage — both ≥80% threshold
+  integration: 8/8 synthesized Playwright specs pass in 13.3s deterministically
+  duration-minutes: ~210 (multi-phase session; surfaced + closed bug-033 + bug-119-class hardening mid-flight)

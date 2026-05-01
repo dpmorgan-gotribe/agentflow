@@ -1,7 +1,7 @@
 ---
 id: feat-039-mock-interaction-step-kind
 type: feature
-status: completed
+status: archived
 completed-at: 2026-04-30
 approved-at: 2026-04-30
 approved-by: human
@@ -123,4 +123,36 @@ The `feat-038 Phase 6` was deferred for this. Now urgent because repo-health-das
 
 ## Attempt Log
 
-(empty)
+### Attempt 1 — 2026-04-30 — shipped end-to-end
+
+Phases 1-5 landed in a single session. Schema bumped (`MockInteractionStep` added to discriminated union); JSON-schema mirrored; synthesizer translator emits `page.route(...)` with method-check + `route.fulfill`; fixture-harness for Strategy D + mock added; ordering test asserts mock emits BEFORE navigate. `/user-flows-generator` SKILL.md step 4b updated with worked example. Synced to all 12 projects via `sync-project-schemas.mjs --all`. 404 contracts + 578 orchestrator tests passing post-merge. Validated downstream by feat-045 flows 4/5/6 (rate-limited / private / network-failure synthetic states) authoring against the new kind.
+
+**Outcome:** success.
+
+---
+
+# COMPLETION RECORD (appended to archived plan)
+
+completed: 2026-04-30
+outcome: success
+actual-files-changed:
+
+- packages/orchestrator-contracts/src/user-flows-manifest.ts (modified)
+- packages/orchestrator-contracts/tests/user-flows-manifest.test.ts (modified)
+- schemas/user-flows-manifest.schema.json (modified)
+- scripts/synthesize-flow-e2e.mjs (modified)
+- orchestrator/tests/synthesize-flow-e2e.test.ts (modified)
+- orchestrator/tests/fixtures/synthesize-flow-e2e/strategy-d-with-mock/ (created)
+- .claude/skills/user-flows-generator/SKILL.md (modified)
+  commits:
+- hash: 0b6fe06
+  message: "factory: investigate-012 roadmap — feat-039/040/041/042 + bug-033 + bug-119-class testing-policy hardening"
+  attempts: 1
+  lessons:
+- "Mock InteractionStep kind keeps the execution-order semantics aligned with Playwright: page.route() must be registered BEFORE the navigate that triggers the request. Synthesizer does not reorder — flow authors order interactions[] correctly. Document this in the user-flows-generator skill or operators silently get post-navigate route() registrations that no-op."
+- "Body field as `string | record<unknown>` (vs always-string) lets flow authors author JSON shapes inline without manual stringify. Synthesizer detects type and emits the right form."
+- "Naming: `mock` over `intercept` — consistency with Playwright + testing-policy.md vocabulary. Worth the bikeshed for grep-ability across the factory."
+  test-results:
+  unit: 4 new tests for MockInteractionStep schema (round-trip, missing urlPattern, status range, nested body) — all pass
+  integration: 1 new fixture (strategy-d-with-mock) covering synthesizer translator — passes; existing 5 manifests unaffected
+  duration-minutes: ~95 (single session, parallel with bug-033 + feat-040/041/042)

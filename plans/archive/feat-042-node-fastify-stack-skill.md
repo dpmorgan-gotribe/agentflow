@@ -1,7 +1,7 @@
 ---
 id: feat-042-node-fastify-stack-skill
 type: feature
-status: completed
+status: archived
 completed-at: 2026-04-30
 approved-at: 2026-04-30
 approved-by: human
@@ -93,4 +93,31 @@ Copy SKILL.md to finance-track-pre-build (manual; `.claude/skills/` is gitignore
 
 ## Attempt Log
 
-(empty — pending; ships ahead of finance-track-pre-build's Mode B run per investigate-012 step 9.)
+### Attempt 1 — 2026-04-30 — shipped + synced
+
+Authored `.claude/skills/agents/back-end/node-fastify/SKILL.md` from scratch — 8 sections (layout, idioms, testing+Strategy C, commands, gotchas, review, deps, anti-patterns, self-verify). Patterned from node-trpc-nest's structure + python-fastapi's §3 strategy declaration. Strategy C `/test/seed` + `/test/cleanup` contract documented; ENABLE_TEST_SEED gate; vitest commands; cross-tier package conventions per bug-026. Synced to finance-track-pre-build + finance-track. Unblocks finance-track Mode B at backend-builder dispatch.
+
+**Outcome:** success.
+
+---
+
+# COMPLETION RECORD (appended to archived plan)
+
+completed: 2026-04-30
+outcome: success
+actual-files-changed:
+
+- .claude/skills/agents/back-end/node-fastify/SKILL.md (created)
+- .claude/skills/agents/back-end/node-fastify/scaffold-templates/ (created)
+  commits:
+- hash: 0b6fe06
+  message: "factory: investigate-012 roadmap — feat-039/040/041/042 + bug-033 + bug-119-class testing-policy hardening"
+  attempts: 1
+  lessons:
+- "Authoring a stack skill from scratch is roughly a node-trpc-nest copy + idiom prune — fastify routes + plugin architecture replace tRPC routers + Nest modules, but Strategy-C contract / commands / gotchas / cross-tier conventions are language-ecosystem-shared. The shared shape across stack skills makes future skills (e.g. node-hono, node-elysia) cheaper to land."
+- "Better-sqlite3 + fastify is the lightweight Strategy C combo; the seed-helpers don't need orm-specific shape-matching like Prisma would. Direct SQL inserts in the seed handler keep the test-data path debuggable."
+- "Ship the stack skill BEFORE the project's first Mode B run, not concurrently. Skills resolve at orchestrator dispatch time; missing skill = silent task skip = wasted Mode B spend."
+  test-results:
+  unit: n/a (skill-doc + scaffold-template; exercised when finance-track Mode B runs)
+  integration: pending — ships ahead of finance-track-pre-build's first Mode B run
+  duration-minutes: ~80 (single session, parallel with feat-039/040/041 + bug-033)

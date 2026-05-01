@@ -1094,6 +1094,112 @@ describe("invokeAgent — builder happy path", () => {
   });
 });
 
+// bug-035: builder dispatch was silently dropping task.notes; PM emits
+// state-coverage + idempotency + edge-case requirements there and the
+// builder never saw them. These regression tests assert notes round-trip
+// from Task → buildAgentPrompt → call.prompt.
+describe("invokeAgent — builder prompt includes task.notes (bug-035)", () => {
+  it("includes notes content indented under the task line when present", async () => {
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      structured_output: { taskOutcomes: { "seed-script-data": "completed" } },
+      total_cost_usd: 0.01,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    await invoke({
+      agent: "backend-builder",
+      cwd: join(projectRoot, ".claude", "worktrees", "feat-auth"),
+      featureContext,
+      tasks: [
+        {
+          id: "seed-script-data",
+          agent: "backend-builder",
+          depends_on: [],
+          skills: [],
+          status: "pending",
+          screens: [],
+          summary: "apps/api/src/db/seed.ts — creates 3 accounts + 100 txns",
+          notes:
+            "Includes one archived account for archive-flow testing.\nIdempotent (TRUNCATE allowlist + reseed) so dev can re-run.",
+        },
+      ],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const call = (queryFn as any).calls[0];
+    expect(call.prompt).toContain("seed-script-data");
+    expect(call.prompt).toContain("apps/api/src/db/seed.ts");
+    // The actual regression — notes content must be present in the prompt.
+    expect(call.prompt).toContain(
+      "Includes one archived account for archive-flow testing.",
+    );
+    expect(call.prompt).toContain(
+      "Idempotent (TRUNCATE allowlist + reseed) so dev can re-run.",
+    );
+  });
+
+  it("omits the notes block cleanly when task.notes is absent", async () => {
+    const budget = mkBudget();
+    const queryFn = makeFakeQuery(() => ({
+      subtype: "success",
+      structured_output: { taskOutcomes: { t1: "completed" } },
+      total_cost_usd: 0.01,
+    }));
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+    });
+    await invoke({
+      agent: "backend-builder",
+      cwd: join(projectRoot, ".claude", "worktrees", "feat-auth"),
+      featureContext,
+      tasks: [
+        {
+          id: "t1",
+          agent: "backend-builder",
+          depends_on: [],
+          skills: [],
+          status: "pending",
+          screens: [],
+          summary: "do the thing",
+          // notes intentionally absent
+        },
+      ],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const call = (queryFn as any).calls[0];
+    expect(call.prompt).toContain("- t1 (backend-builder): do the thing");
+    // Sanity: no stray indented continuation block from a phantom notes value.
+    // The task line should be followed by the blank line before "Your working
+    // directory" (the next prompt section), with no 4-space-indented lines in
+    // between.
+    const taskLineMatch = call.prompt.match(
+      /- t1 \(backend-builder\): do the thing\n([\s\S]*?)\nYour working directory/,
+    );
+    expect(taskLineMatch).not.toBeNull();
+    const between = taskLineMatch![1];
+    // The block between the task line and "Your working directory" should
+    // contain no 4-space-indented continuation lines (those would only be
+    // present if notes were emitted).
+    expect(between).not.toMatch(/^ {4}\S/m);
+  });
+});
+
 describe("invokeAgent — builder missing-task handling", () => {
   it("marks unreported tasks as failed with 'agent did not report outcome'", async () => {
     const budget = mkBudget();
