@@ -33,7 +33,20 @@ import { join } from "node:path";
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const DEFAULT_BASE_URL = "http://localhost:3000";
+// bug-038 Phase A (2026-05-02): stack-aware backend port defaults. The legacy
+// hardcoded `DEFAULT_BACKEND_PORT = 8000` assumed FastAPI's pydantic-settings
+// convention, breaking every non-FastAPI stack (fastify defaults to 3001,
+// express to 4000, etc). The resolver now consults
+// `architecture.yaml.tooling.stack.backend_framework` and picks a stack-shaped
+// default. Unknown / absent backend_framework falls back to FastAPI's 8000
+// for backward compat.
 const DEFAULT_BACKEND_PORT = 8000;
+const STACK_DEFAULT_BACKEND_PORT: Record<string, number> = {
+  "python-fastapi": 8000,
+  "node-fastify": 3001,
+  "node-trpc-nest": 4000,
+  "node-express": 4000,
+};
 
 export interface DevServerHandle {
   /** Frontend (Next.js / Vite / SvelteKit) child process. */
@@ -137,34 +150,92 @@ export function spawnBackendDevServer(
 }
 
 /**
- * Resolve the backend port for `<projectDir>/apps/api/`. Precedence:
- *   1. `process.env.PORT` (operator override)
- *   2. `apps/api/.env` (PORT=N line)
- *   3. 8000 (FastAPI default per pydantic-settings convention)
+ * Resolve the backend port for `<projectDir>/apps/api/`. Precedence (bug-038
+ * Phase A — 2026-05-02 — extends the legacy 3-tier chain):
+ *
+ *   1. `process.env.PORT` (operator override at orchestrator boot)
+ *   2. `process.env.BACKEND_PORT` (NEW — what `scripts/dev.mjs` exports per
+ *      the bug-033 propagation fix; cleaner than reusing the overloaded PORT)
+ *   3. `apps/api/.env.local` PORT or BACKEND_PORT line (NEW — bug-033 made
+ *      `.env.local` the canonical port-config location for projects driven
+ *      by `dev-multi-tier.mjs.template`; resolver predated that fix)
+ *   4. `apps/api/.env` PORT or BACKEND_PORT line (legacy)
+ *   5. `architecture.yaml.tooling.stack.backend_framework` → stack-default
+ *      (NEW — STACK_DEFAULT_BACKEND_PORT table: fastapi:8000, fastify:3001,
+ *      trpc-nest/express:4000)
+ *   6. 8000 (FastAPI default per pydantic-settings convention) — final fallback
  *
  * Returns null when the project has no `apps/api/` tier.
  */
 export function resolveBackendPort(projectDir: string): number | null {
   const apiDir = join(projectDir, "apps", "api");
   if (!existsSync(apiDir)) return null;
+  // 1. process.env.PORT
   if (process.env.PORT) {
     const n = Number(process.env.PORT);
     if (Number.isFinite(n) && n > 0) return n;
   }
-  const apiEnvPath = join(apiDir, ".env");
-  if (existsSync(apiEnvPath)) {
+  // 2. process.env.BACKEND_PORT
+  if (process.env.BACKEND_PORT) {
+    const n = Number(process.env.BACKEND_PORT);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  // 3 + 4. .env.local (canonical post bug-033) then .env (legacy).
+  // Both files use the same shape; helper handles either filename.
+  for (const envFile of [".env.local", ".env"]) {
+    const envPath = join(apiDir, envFile);
+    if (!existsSync(envPath)) continue;
     try {
-      const text = readFileSync(apiEnvPath, "utf8");
-      const m = text.match(/^\s*PORT\s*=\s*(\d+)\s*$/m);
-      if (m && m[1]) {
-        const n = Number(m[1]);
+      const text = readFileSync(envPath, "utf8");
+      // Try BACKEND_PORT first (more specific); fall back to PORT.
+      const matchBackend = text.match(/^\s*BACKEND_PORT\s*=\s*(\d+)\s*$/m);
+      if (matchBackend && matchBackend[1]) {
+        const n = Number(matchBackend[1]);
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+      const matchPort = text.match(/^\s*PORT\s*=\s*(\d+)\s*$/m);
+      if (matchPort && matchPort[1]) {
+        const n = Number(matchPort[1]);
         if (Number.isFinite(n) && n > 0) return n;
       }
     } catch {
-      /* fall through to default */
+      /* fall through to next file / stack-default */
     }
   }
+  // 5. architecture.yaml stack default.
+  const stackPort = resolveStackDefaultBackendPort(projectDir);
+  if (stackPort !== null) return stackPort;
+  // 6. final fallback (FastAPI legacy).
   return DEFAULT_BACKEND_PORT;
+}
+
+/**
+ * Read `<projectDir>/.claude/architecture.yaml` and return the
+ * stack-appropriate default backend port for the configured
+ * `tooling.stack.backend_framework`. Returns null when (a) the file is
+ * absent, (b) parsing fails, or (c) the framework slug isn't in the
+ * STACK_DEFAULT_BACKEND_PORT table — caller falls back to legacy 8000.
+ *
+ * Lightweight regex-based parse: avoids pulling in js-yaml just for one
+ * field. The architecture.yaml's `backend_framework:` line is canonical
+ * per .claude/skills/architect/SKILL.md.
+ */
+function resolveStackDefaultBackendPort(projectDir: string): number | null {
+  const archPath = join(projectDir, ".claude", "architecture.yaml");
+  if (!existsSync(archPath)) return null;
+  try {
+    const text = readFileSync(archPath, "utf8");
+    // Match `backend_framework: <slug>` (allows comments + indentation).
+    // Stops at whitespace OR newline; framework slugs are kebab-case
+    // identifiers (no spaces/quotes typically — but tolerate optional quotes).
+    const m = text.match(/^\s*backend_framework:\s*"?([\w-]+)"?\s*(?:#.*)?$/m);
+    if (!m || !m[1]) return null;
+    const slug = m[1];
+    const port = STACK_DEFAULT_BACKEND_PORT[slug];
+    return typeof port === "number" ? port : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -300,9 +371,20 @@ export async function bootDevServer(
         await waitForDevServer(`${backendUrl}/health`, timeoutMs);
       } catch (err) {
         killChildTree(backendProcess);
+        // bug-038 Phase A (2026-05-02): error message used to hardcode
+        // "verify uv is on PATH and pyproject.toml is valid" — FastAPI-
+        // specific advice that misleads on node-fastify / node-trpc-nest /
+        // node-express stacks. Surface the resolved port + the resolution
+        // chain so the operator can audit which step landed on the wrong
+        // value.
         throw new Error(
           `backend (apps/api/) did not respond on ${backendUrl}/health within ` +
-            `${timeoutMs}ms — verify uv is on PATH and the project's pyproject.toml is valid. ` +
+            `${timeoutMs}ms. Resolved backend port: ${backendPort}. ` +
+            `Resolution chain (bug-038): process.env.PORT > process.env.BACKEND_PORT > ` +
+            `apps/api/.env.local > apps/api/.env > architecture.yaml backend_framework stack-default > 8000. ` +
+            `If the wrong port is being used, set BACKEND_PORT=<port> in apps/api/.env.local. ` +
+            `If the backend tooling failed to start, check the project's stack-specific dev command ` +
+            `(uv/pnpm/etc per architecture.yaml.tooling.stack.backend_framework). ` +
             `Underlying: ${(err as Error).message}`,
         );
       }
