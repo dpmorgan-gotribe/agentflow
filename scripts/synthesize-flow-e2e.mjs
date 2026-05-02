@@ -751,31 +751,69 @@ for (let i = 0; i < manifest.flows.length; i++) {
   else generated.push(rel);
 }
 
-// ─── Sanity-check Playwright runtime is installed (feat-025 Phase 1) ────────
-// Spec files without the runtime are unrunnable; surface a warning so the
-// operator knows the synthesizer's output is dead-code unless install-discipline
-// closes the gap. Mirrors the pre-flight in scripts/run-synthesized-flows.mjs.
+// ─── Playwright runtime self-install + config-presence check ────────────────
+// bug-037 Phase A (2026-05-02): synthesizer used to only WARN when
+// @playwright/test was missing from apps/web/package.json — empirically that
+// warning was ignored (no agent acted on it) + the verifier's flow-execution
+// stage failed silently with "Cannot find module '@playwright/test'", causing
+// ALL synthesized E2E coverage to silently be zero (finance-track-01 case
+// study: 17/17 features merged, 0 of 9 synthesized specs ever ran).
+//
+// Now: auto-add @playwright/test to apps/web/package.json devDependencies
+// when (a) we generated specs AND (b) the dep is absent. Emit a "package.json
+// updated" warning so the operator runs `pnpm install` to materialize the
+// dep into node_modules. The orchestrator's installIfPackageJsonChanged
+// hook (feat-019 Phase B) handles materialization automatically when this
+// runs in-pipeline. (playwright.config.ts is intentionally NOT auto-templated
+// here — it's stack/persistence-layer-shaped config the front-end builder
+// owns per react-next/svelte-kit SKILL.md §3a.)
 
+const PLAYWRIGHT_TEST_VERSION = "^1.48.0";
 const warnings = [];
 const webPkgPath = path.join(projectDir, "apps/web/package.json");
 const webConfigPath = path.join(projectDir, "apps/web/playwright.config.ts");
 let hasPlaywrightDep = false;
 let hasPlaywrightConfig = false;
+let pkgJson = null;
 try {
   if (fs.existsSync(webPkgPath)) {
-    const pkg = JSON.parse(fs.readFileSync(webPkgPath, "utf8"));
+    pkgJson = JSON.parse(fs.readFileSync(webPkgPath, "utf8"));
     hasPlaywrightDep = Boolean(
-      (pkg.devDependencies && pkg.devDependencies["@playwright/test"]) ||
-      (pkg.dependencies && pkg.dependencies["@playwright/test"]),
+      (pkgJson.devDependencies &&
+        pkgJson.devDependencies["@playwright/test"]) ||
+      (pkgJson.dependencies && pkgJson.dependencies["@playwright/test"]),
     );
   }
   hasPlaywrightConfig = fs.existsSync(webConfigPath);
 } catch {
   // ignore — fall through to warning
 }
-if (!hasPlaywrightDep && generated.length > 0) {
+if (!hasPlaywrightDep && generated.length > 0 && pkgJson !== null) {
+  // bug-037 Phase A: auto-add to devDependencies + persist.
+  pkgJson.devDependencies = pkgJson.devDependencies ?? {};
+  pkgJson.devDependencies["@playwright/test"] = PLAYWRIGHT_TEST_VERSION;
+  // Preserve apps/web/package.json's existing JSON formatting (2-space
+  // indent matches every other package.json in the workspace; trailing
+  // newline matches POSIX convention).
+  try {
+    fs.writeFileSync(
+      webPkgPath,
+      JSON.stringify(pkgJson, null, 2) + "\n",
+      "utf8",
+    );
+    warnings.push(
+      `@playwright/test ${PLAYWRIGHT_TEST_VERSION} auto-added to apps/web/package.json devDependencies (bug-037 Phase A); run \`pnpm install\` to materialize. The orchestrator's installIfPackageJsonChanged hook handles this automatically when this runs in-pipeline.`,
+    );
+  } catch (err) {
+    warnings.push(
+      `failed to auto-add @playwright/test to apps/web/package.json: ${err instanceof Error ? err.message : String(err)} — install manually via: pnpm -C apps/web add -D @playwright/test`,
+    );
+  }
+} else if (!hasPlaywrightDep && generated.length > 0) {
+  // Couldn't auto-fix because package.json itself is missing. Fall back to
+  // the legacy warning so the operator at least knows.
   warnings.push(
-    "@playwright/test not installed; specs will not run until installed via: pnpm -C apps/web add -D @playwright/test",
+    "@playwright/test not installed AND apps/web/package.json missing; specs will not run until both are addressed.",
   );
 }
 if (!hasPlaywrightConfig && generated.length > 0) {

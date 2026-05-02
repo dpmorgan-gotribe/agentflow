@@ -250,3 +250,106 @@ describe("synthesize-flow-e2e — Phase 2A v2.0 emission across strategies", () 
     expect(mockIdx).toBeLessThan(navigateIdx);
   });
 });
+
+// bug-037 Phase A: synthesizer auto-adds @playwright/test to apps/web/
+// package.json devDependencies when authoring specs. Empirical motivation:
+// finance-track-01 (2026-05-02) shipped 9 synthesized specs but apps/web
+// never had the runtime → ALL E2E coverage silently zero.
+describe("synthesize-flow-e2e — auto-adds @playwright/test (bug-037 Phase A)", () => {
+  const tempCleanup: string[] = [];
+  afterEach(() => {
+    for (const dir of tempCleanup.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("auto-adds @playwright/test to devDependencies when missing + emits warning", () => {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-d-with-mock");
+    const tempDir = mkdtempSync(join(tmpdir(), `synth-bug037-`));
+    tempCleanup.push(tempDir);
+    cpSync(join(fixtureSrc, ".claude"), join(tempDir, ".claude"), {
+      recursive: true,
+    });
+    cpSync(join(fixtureSrc, "docs"), join(tempDir, "docs"), {
+      recursive: true,
+    });
+    // Seed apps/web/package.json WITHOUT @playwright/test.
+    const webDir = join(tempDir, "apps/web");
+    const fs = require("node:fs") as typeof import("node:fs");
+    fs.mkdirSync(webDir, { recursive: true });
+    fs.writeFileSync(
+      join(webDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "@repo/web",
+          version: "0.0.0",
+          devDependencies: { typescript: "^5.6.0" },
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    const result = runSynthesizerOn(tempDir);
+    expect(result.ok).toBe(true);
+
+    // Auto-add fired: package.json now has @playwright/test.
+    const pkg = JSON.parse(
+      fs.readFileSync(join(webDir, "package.json"), "utf8"),
+    );
+    expect(pkg.devDependencies["@playwright/test"]).toBeDefined();
+    expect(pkg.devDependencies["@playwright/test"]).toMatch(/^\^?\d/);
+    // Existing devDependencies preserved.
+    expect(pkg.devDependencies.typescript).toBe("^5.6.0");
+
+    // Warning surfaces the auto-fix so the operator/orchestrator can run install.
+    expect(
+      result.warnings.some(
+        (w) => w.includes("@playwright/test") && w.includes("auto-added"),
+      ),
+    ).toBe(true);
+  });
+
+  it("does NOT modify package.json when @playwright/test is already present", () => {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-d-with-mock");
+    const tempDir = mkdtempSync(join(tmpdir(), `synth-bug037-noop-`));
+    tempCleanup.push(tempDir);
+    cpSync(join(fixtureSrc, ".claude"), join(tempDir, ".claude"), {
+      recursive: true,
+    });
+    cpSync(join(fixtureSrc, "docs"), join(tempDir, "docs"), {
+      recursive: true,
+    });
+    const webDir = join(tempDir, "apps/web");
+    const fs = require("node:fs") as typeof import("node:fs");
+    fs.mkdirSync(webDir, { recursive: true });
+    const original = {
+      name: "@repo/web",
+      version: "0.0.0",
+      devDependencies: {
+        "@playwright/test": "^1.50.0",
+        typescript: "^5.6.0",
+      },
+    };
+    fs.writeFileSync(
+      join(webDir, "package.json"),
+      JSON.stringify(original, null, 2) + "\n",
+      "utf8",
+    );
+
+    const result = runSynthesizerOn(tempDir);
+    expect(result.ok).toBe(true);
+
+    // No-op: pinned version preserved; no auto-added warning.
+    const pkg = JSON.parse(
+      fs.readFileSync(join(webDir, "package.json"), "utf8"),
+    );
+    expect(pkg.devDependencies["@playwright/test"]).toBe("^1.50.0");
+    expect(
+      result.warnings.some(
+        (w) => w.includes("@playwright/test") && w.includes("auto-added"),
+      ),
+    ).toBe(false);
+  });
+});
