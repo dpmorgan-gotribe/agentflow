@@ -92,6 +92,20 @@ describe("BugEntrySchema", () => {
     );
   });
 
+  // bug-039 (2026-05-02): nullable expectedScreenId. The v2.0 synthesizer
+  // emit path can't populate it; bug-yaml entries created from those flow
+  // failures pass the screen-id through as null.
+  it("accepts a flow-failure bug with null expectedScreenId (v2.0 synth path)", () => {
+    const parsed = BugEntrySchema.parse({
+      ...validFlowEntry,
+      flow: {
+        ...validFlowEntry.flow!,
+        expectedScreenId: null,
+      },
+    });
+    expect(parsed.flow?.expectedScreenId).toBeNull();
+  });
+
   it("defaults severity, status, attempts, flapResets, errorLog when omitted", () => {
     const parsed = BugEntrySchema.parse({
       id: "bug-orphan-foo",

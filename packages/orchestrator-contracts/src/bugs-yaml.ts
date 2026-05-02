@@ -59,7 +59,11 @@ export const BugFlowContextSchema = z.object({
   id: z.string().min(1), // e.g. "flow-4"
   name: z.string().min(1), // e.g. "Open detail-edit modal"
   failedStep: z.number().int().nonnegative(),
-  expectedScreenId: z.string().min(1),
+  // bug-039 (2026-05-02): nullable to match FlowFailure.expectedScreenId
+  // — the v2.0 synthesizer emit path can't populate this (its catch's
+  // error message doesn't carry screen-id metadata). Bug template +
+  // fix-loop dispatch must handle null gracefully.
+  expectedScreenId: z.string().nullable(),
   actualScreenId: z.string().nullable(),
   selector: z.string().nullable(),
   screenshot: z.string().nullable(),

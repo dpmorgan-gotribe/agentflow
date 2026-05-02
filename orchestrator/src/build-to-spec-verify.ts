@@ -629,6 +629,12 @@ function correlateFlowFailureToOrphan(
   failure: FlowFailure,
   orphans: readonly OrphanComponent[],
 ): OrphanComponent | undefined {
+  // bug-039 (2026-05-02): expectedScreenId is nullable for v2.0 synth
+  // path. When null, we have no screen-id to correlate on — skip
+  // correlation; the bug entry is filed without a correlated orphan,
+  // which is correct (correlation is heuristic + nice-to-have, not
+  // load-bearing for the fix-loop dispatch).
+  if (failure.expectedScreenId === null) return undefined;
   const screenId = failure.expectedScreenId.toLowerCase();
   const screenSlug = screenId.replace(/-/g, "");
   for (const orphan of orphans) {

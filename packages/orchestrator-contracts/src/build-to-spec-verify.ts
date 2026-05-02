@@ -163,8 +163,16 @@ export const FlowFailure = z.object({
   flowId: z.string().min(1),
   flowName: z.string().min(1),
   step: z.number().int().nonnegative(),
-  fromScreenId: z.string().min(1),
-  expectedScreenId: z.string().min(1),
+  // bug-039 (2026-05-02): nullable. The v2.0 synthesizer emit path (post
+  // feat-038 Phase 2A) wraps step actions in a try/catch whose error
+  // message only includes __stepIndex + the underlying error — NOT the
+  // `from-screen-id:` / `toward-screen-id:` markers the runner's regex
+  // looks for in `parseFailureMeta`. Producer therefore can't populate
+  // these fields for v2.0 specs; null is the honest signal.
+  // Phase B (synthesizer embeds the markers in v2.0 catch messages) will
+  // restore production; until then, downstream consumers MUST handle null.
+  fromScreenId: z.string().nullable(),
+  expectedScreenId: z.string().nullable(),
   actualScreenId: z.string().nullable(),
   selector: z.string().nullable(),
   screenshotPath: z.string().nullable(),

@@ -172,6 +172,32 @@ describe("FlowFailure", () => {
     ).toThrow();
   });
 
+  // ── bug-039 (2026-05-02): nullable fromScreenId + expectedScreenId ────────
+  // The v2.0 synthesizer emit path can't populate these (its catch's error
+  // message doesn't carry screen-id markers); runner now emits null, schema
+  // accepts null. Empty string is intentionally still rejected — that would
+  // mask "we don't know" vs "we got bad data".
+
+  it("accepts null fromScreenId + null expectedScreenId (v2.0 synthesizer reality)", () => {
+    const parsed = FlowFailure.parse({
+      ...validFlowFailure,
+      fromScreenId: null,
+      expectedScreenId: null,
+    });
+    expect(parsed.fromScreenId).toBeNull();
+    expect(parsed.expectedScreenId).toBeNull();
+  });
+
+  it("still accepts populated fromScreenId + expectedScreenId (v1.0 + future v2.0 Phase B)", () => {
+    const parsed = FlowFailure.parse({
+      ...validFlowFailure,
+      fromScreenId: "home",
+      expectedScreenId: "card-modal",
+    });
+    expect(parsed.fromScreenId).toBe("home");
+    expect(parsed.expectedScreenId).toBe("card-modal");
+  });
+
   // ── feat-025 Phase 3: optional `screenshot` + `html` aliases ─────────────
 
   it("accepts the runner-populated `screenshot` + `html` shorthand fields", () => {

@@ -524,8 +524,15 @@ function parseReporterJson(stdout, warnings, stderr = "") {
         flowId,
         flowName: spec.title ?? flowId,
         step: meta.step ?? 0,
-        fromScreenId: meta.fromScreenId ?? "",
-        expectedScreenId: meta.expectedScreenId ?? "",
+        // bug-039 (2026-05-02): emit null (not "") when meta missing.
+        // The v2.0 synthesizer emit path doesn't include
+        // `from-screen-id:` / `toward-screen-id:` markers in catch
+        // messages, so meta.fromScreenId / .expectedScreenId are
+        // routinely undefined. The schema is now nullable; sending null
+        // is the honest signal vs. empty-string (which used to cause
+        // schema validation failure → entire flow-failure array dropped).
+        fromScreenId: meta.fromScreenId ?? null,
+        expectedScreenId: meta.expectedScreenId ?? null,
         actualScreenId: meta.actualScreenId ?? null,
         selector: meta.selector ?? null,
         screenshotPath: screenshot,

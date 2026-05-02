@@ -273,8 +273,9 @@ function buildRetryContextMessage(bug: BugEntry): string {
   const lines: string[] = [];
   lines.push(`Bug ${bug.id} (iteration ${bug.iteration}): ${bug.summary}`);
   if (bug.flow) {
+    // bug-039 (2026-05-02): expectedScreenId is nullable for v2.0 synth path.
     lines.push(
-      `  Flow ${bug.flow.id} step ${bug.flow.failedStep}: clicked ${bug.flow.selector ?? "(no selector)"} on ${bug.flow.expectedScreenId}; landed on ${bug.flow.actualScreenId ?? "(no screen-id)"}`,
+      `  Flow ${bug.flow.id} step ${bug.flow.failedStep}: clicked ${bug.flow.selector ?? "(no selector)"} on ${bug.flow.expectedScreenId ?? "(unknown screen)"}; landed on ${bug.flow.actualScreenId ?? "(no screen-id)"}`,
     );
     if (bug.flow.screenshot) lines.push(`  Screenshot: ${bug.flow.screenshot}`);
     if (bug.flow.htmlDump) lines.push(`  HTML dump: ${bug.flow.htmlDump}`);
