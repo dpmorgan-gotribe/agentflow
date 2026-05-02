@@ -28,7 +28,9 @@ import {
   installIfPackageJsonChanged as defaultInstallIfPackageJsonChanged,
 } from "./invoke-agent.js";
 import type { RetryCounters } from "./retry-counters.js";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { join as pathJoin } from "node:path";
 import { pausedStatePath, pauseRun } from "./pause.js";
 import { saveState, writeFeatureGraphProgress } from "./state-persistence.js";
 
@@ -545,6 +547,193 @@ async function acquireCheckoutLock(projectRoot: string): Promise<() => void> {
   };
 }
 
+// bug-034 Phase A: deterministic additive-same-region merge resolver.
+// When `git merge --no-ff feat/X` fires from project root and hits
+// CONFLICT (content) on a file, the conflict region looks like:
+//   <<<<<<< HEAD
+//   <ours-side lines>
+//   =======
+//   <theirs-side lines>
+//   >>>>>>> feat/X
+// For "additive" patterns — both sides only ADDED new lines, neither
+// modified or deleted lines that existed in the common ancestor —
+// the correct resolution is to concat both sides. git can't infer
+// this; the LLM handoff path is expensive + unreliable for this
+// pattern. This helper detects the additive case + resolves
+// deterministically. Mixed-modify cases (one side changed an existing
+// line while the other added) are NOT additive; helper returns
+// `unresolved` for those + the existing LLM handoff path takes over.
+//
+// Empirical motivation: 2026-05-01/02 finance-track-01 — feat-transactions-crud
+// (manual recovery via bug-002) + feat-accounts-ui (in-flight as this
+// ships) both hit identical additive-same-region conflicts in
+// `apps/api/src/app.ts` (route registration block) and
+// `packages/types/src/index.ts` (barrel exports). Pattern is
+// structurally guaranteed to recur on every project with central
+// registration files + parallel feature waves.
+const CONFLICT_HEAD_RE = /^<{7}\s+\S/;
+const CONFLICT_BASE_RE = /^={7}\s*$/;
+const CONFLICT_TAIL_RE = /^>{7}\s+\S/;
+
+interface ConflictResolveResult {
+  resolved: boolean;
+  reason?: string;
+}
+
+export function tryAdditiveConcatResolve(fileContent: string): {
+  resolvedContent: string | null;
+  reason?: string;
+} {
+  const lines = fileContent.split(/\r?\n/);
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    if (!CONFLICT_HEAD_RE.test(line)) {
+      out.push(line);
+      i++;
+      continue;
+    }
+    // Found a conflict region. Walk to ======= and >>>>>>>
+    const ourLines: string[] = [];
+    const theirLines: string[] = [];
+    let j = i + 1;
+    while (j < lines.length && !CONFLICT_BASE_RE.test(lines[j]!)) {
+      if (
+        CONFLICT_HEAD_RE.test(lines[j]!) ||
+        CONFLICT_TAIL_RE.test(lines[j]!)
+      ) {
+        return {
+          resolvedContent: null,
+          reason: "nested or malformed conflict markers",
+        };
+      }
+      ourLines.push(lines[j]!);
+      j++;
+    }
+    if (j >= lines.length) {
+      return { resolvedContent: null, reason: "missing ======= marker" };
+    }
+    j++; // skip =======
+    while (j < lines.length && !CONFLICT_TAIL_RE.test(lines[j]!)) {
+      if (
+        CONFLICT_HEAD_RE.test(lines[j]!) ||
+        CONFLICT_BASE_RE.test(lines[j]!)
+      ) {
+        return {
+          resolvedContent: null,
+          reason: "nested or malformed conflict markers",
+        };
+      }
+      theirLines.push(lines[j]!);
+      j++;
+    }
+    if (j >= lines.length) {
+      return { resolvedContent: null, reason: "missing >>>>>>> marker" };
+    }
+    // Heuristic: additive iff neither side is empty AND both blocks look
+    // like NEW lines (not deletions). We err conservative: if EITHER
+    // side is empty, that's a delete/add modification (one side removed
+    // content the other kept) — NOT additive. Concat would silently
+    // restore deleted content. Fall through to LLM handoff for that.
+    if (ourLines.length === 0 || theirLines.length === 0) {
+      return {
+        resolvedContent: null,
+        reason: `non-additive: one side is empty (ours=${ourLines.length}, theirs=${theirLines.length})`,
+      };
+    }
+    // Concat: ours first (preserves master's order — feature branches
+    // append after master's lines), then theirs.
+    out.push(...ourLines, ...theirLines);
+    i = j + 1; // skip past >>>>>>> line
+  }
+  return { resolvedContent: out.join("\n") };
+}
+
+/**
+ * bug-034 Phase A: end-to-end resolver invoked from `attemptCloseFeature`
+ * conflict path. Reads each conflicting file from project root, attempts
+ * `tryAdditiveConcatResolve`, writes back, and commits the merge if all
+ * files resolved cleanly. Returns `resolved: true` only when ALL
+ * conflicts were additive + the merge committed successfully.
+ */
+function tryAdditiveConcatMergeResolution(
+  projectRoot: string,
+  conflictingFiles: readonly string[],
+  branch: string,
+): ConflictResolveResult {
+  if (conflictingFiles.length === 0) {
+    return { resolved: false, reason: "no conflicting files reported" };
+  }
+  const resolutionLog: string[] = [];
+  for (const relPath of conflictingFiles) {
+    const absPath = pathJoin(projectRoot, relPath);
+    let raw: string;
+    try {
+      raw = readFileSync(absPath, "utf8");
+    } catch (err) {
+      return {
+        resolved: false,
+        reason: `failed to read ${relPath}: ${(err as Error).message}`,
+      };
+    }
+    const result = tryAdditiveConcatResolve(raw);
+    if (result.resolvedContent === null) {
+      return {
+        resolved: false,
+        reason: `non-additive conflict in ${relPath}: ${result.reason}`,
+      };
+    }
+    try {
+      writeFileSync(absPath, result.resolvedContent, "utf8");
+    } catch (err) {
+      return {
+        resolved: false,
+        reason: `failed to write ${relPath}: ${(err as Error).message}`,
+      };
+    }
+    resolutionLog.push(relPath);
+  }
+  // Stage + commit the merge.
+  const addRes = spawnSync("git", ["add", ...conflictingFiles], {
+    cwd: projectRoot,
+    encoding: "utf8",
+  });
+  if (addRes.status !== 0) {
+    return {
+      resolved: false,
+      reason: `git add failed: ${addRes.stderr || addRes.stdout}`,
+    };
+  }
+  const commitMsg = `merge ${branch} (additive-concat resolver — bug-034 Phase A)\n\nResolved files (concat ours+theirs):\n${resolutionLog.map((f) => `  - ${f}`).join("\n")}\n`;
+  const commitRes = spawnSync(
+    "git",
+    ["commit", "--no-verify", "-m", commitMsg],
+    { cwd: projectRoot, encoding: "utf8" },
+  );
+  if (commitRes.status !== 0) {
+    return {
+      resolved: false,
+      reason: `git commit failed: ${commitRes.stderr || commitRes.stdout}`,
+    };
+  }
+  return { resolved: true };
+}
+
+/**
+ * Roll back a failed `git merge --no-ff` so the worktree state is clean
+ * for the LLM handoff path. Equivalent to `git merge --abort` if the
+ * merge is in progress; no-op (and tolerated) if the merge isn't in a
+ * conflicted state for any reason.
+ */
+function abortFailedMerge(projectRoot: string): void {
+  spawnSync("git", ["merge", "--abort"], {
+    cwd: projectRoot,
+    encoding: "utf8",
+  });
+  // Best-effort. If --abort fails (no merge in progress), silent skip.
+}
+
 /**
  * Per refactor-004 Appendix D: open a worktree, walk agent_sequence[]
  * with per-task retries, close the worktree (merge to main), handle
@@ -1050,6 +1239,28 @@ async function attemptCloseFeature(
         reason: `close-feature returned unrecognized conflict shape: ${JSON.stringify(parsed)}`,
       };
     }
+
+    // bug-034 Phase A: deterministic fast-path for additive-same-region
+    // conflicts. Try to resolve each conflicting file via concat
+    // (ours-then-theirs) BEFORE incrementing the retry counter and
+    // dispatching the expensive LLM handoff. If ALL conflicts resolve
+    // cleanly, commit the merge here and return success. If ANY file
+    // has a non-additive conflict (delete/modify/etc), abort the merge
+    // and fall through to the legacy handoff path.
+    const fastPath = tryAdditiveConcatMergeResolution(
+      ctx.projectRoot,
+      parsed.conflictingFiles,
+      feature.branch,
+    );
+    if (fastPath.resolved) {
+      // Merge committed via concat. Treat as success without burning
+      // a merge-conflict retry slot.
+      return { success: true, costUsd };
+    }
+    // Non-additive: roll back the partial merge so the worktree-state
+    // is clean for the LLM handoff. The LLM resolves in the worktree;
+    // a subsequent close-feature attempt re-runs `git merge --no-ff`.
+    abortFailedMerge(ctx.projectRoot);
 
     ctx.retryCounters.increment("merge-conflict", feature.id);
     saveState(

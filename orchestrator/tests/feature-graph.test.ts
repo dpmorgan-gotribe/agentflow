@@ -13,6 +13,7 @@ import {
   agentSurface,
   runFeature,
   runFeatureGraph,
+  tryAdditiveConcatResolve,
   type InvokeAgentFn,
 } from "../src/feature-graph.js";
 import { RetryCounters } from "../src/retry-counters.js";
@@ -373,6 +374,161 @@ describe("runFeature — happy path", () => {
 // .git/index.lock; losers silently failed with worktree-seed-failed. The
 // mutex around the checkout-feature step now serializes that step (and ONLY
 // that step) so all parallel features get their worktree.
+// bug-034 Phase A: deterministic additive-concat merge resolver. Pure
+// helper test — the end-to-end merge-commit flow is covered by the
+// `attemptCloseFeature` describe block (filesystem + git side-effects
+// require real worktree fixtures).
+describe("tryAdditiveConcatResolve (bug-034 Phase A)", () => {
+  it("concats both sides for a single additive same-region conflict", () => {
+    const input = [
+      "import a from 'a';",
+      "<<<<<<< HEAD",
+      "import b from 'b';",
+      "=======",
+      "import c from 'c';",
+      ">>>>>>> feat/X",
+      "import d from 'd';",
+    ].join("\n");
+    const result = tryAdditiveConcatResolve(input);
+    expect(result.resolvedContent).toBe(
+      [
+        "import a from 'a';",
+        "import b from 'b';",
+        "import c from 'c';",
+        "import d from 'd';",
+      ].join("\n"),
+    );
+  });
+
+  it("resolves multiple additive conflict regions in one file", () => {
+    const input = [
+      "// imports",
+      "<<<<<<< HEAD",
+      "import b from 'b';",
+      "=======",
+      "import c from 'c';",
+      ">>>>>>> feat/X",
+      "// registrations",
+      "<<<<<<< HEAD",
+      "app.register(b);",
+      "=======",
+      "app.register(c);",
+      ">>>>>>> feat/X",
+      "// trailing",
+    ].join("\n");
+    const result = tryAdditiveConcatResolve(input);
+    expect(result.resolvedContent).toBe(
+      [
+        "// imports",
+        "import b from 'b';",
+        "import c from 'c';",
+        "// registrations",
+        "app.register(b);",
+        "app.register(c);",
+        "// trailing",
+      ].join("\n"),
+    );
+  });
+
+  it("returns null when one side is empty (modify/delete pattern)", () => {
+    const input = [
+      "// before",
+      "<<<<<<< HEAD",
+      "kept on master",
+      "=======",
+      ">>>>>>> feat/X",
+      "// after",
+    ].join("\n");
+    const result = tryAdditiveConcatResolve(input);
+    expect(result.resolvedContent).toBeNull();
+    expect(result.reason).toMatch(/non-additive/);
+  });
+
+  it("returns null when the other side is empty", () => {
+    const input = [
+      "// before",
+      "<<<<<<< HEAD",
+      "=======",
+      "added on theirs",
+      ">>>>>>> feat/X",
+      "// after",
+    ].join("\n");
+    const result = tryAdditiveConcatResolve(input);
+    expect(result.resolvedContent).toBeNull();
+  });
+
+  it("returns content unchanged when no conflict markers present", () => {
+    const input = ["line1", "line2", "line3"].join("\n");
+    const result = tryAdditiveConcatResolve(input);
+    expect(result.resolvedContent).toBe(input);
+  });
+
+  it("returns null on missing ======= marker (malformed)", () => {
+    const input = ["<<<<<<< HEAD", "ours", ">>>>>>> feat/X"].join("\n");
+    const result = tryAdditiveConcatResolve(input);
+    expect(result.resolvedContent).toBeNull();
+  });
+
+  it("returns null on missing >>>>>>> marker (malformed)", () => {
+    const input = ["<<<<<<< HEAD", "ours", "=======", "theirs"].join("\n");
+    const result = tryAdditiveConcatResolve(input);
+    expect(result.resolvedContent).toBeNull();
+  });
+
+  it("realistic case: app.ts with parallel route registration", () => {
+    // Mirrors the empirical conflict from finance-track-01
+    // bug-002 + the recurring pattern bug-034 addresses.
+    const input = [
+      `import Fastify from "fastify";`,
+      `import { healthRoutes } from "./routes/health.js";`,
+      `<<<<<<< HEAD`,
+      `import { fxRoutes } from "./routes/fx.js";`,
+      `=======`,
+      `import { transactionsRoutes } from "./routes/transactions/transactions.routes.js";`,
+      `>>>>>>> feat/transactions-crud`,
+      ``,
+      `export async function buildApp() {`,
+      `  const app = Fastify({ logger: true });`,
+      `  await app.register(healthRoutes);`,
+      `<<<<<<< HEAD`,
+      `  await app.register(fxRoutes, { prefix: "/api" });`,
+      `=======`,
+      `  await app.register(transactionsRoutes, { prefix: "/api/transactions" });`,
+      `>>>>>>> feat/transactions-crud`,
+      `  return app;`,
+      `}`,
+    ].join("\n");
+    const result = tryAdditiveConcatResolve(input);
+    expect(result.resolvedContent).toBe(
+      [
+        `import Fastify from "fastify";`,
+        `import { healthRoutes } from "./routes/health.js";`,
+        `import { fxRoutes } from "./routes/fx.js";`,
+        `import { transactionsRoutes } from "./routes/transactions/transactions.routes.js";`,
+        ``,
+        `export async function buildApp() {`,
+        `  const app = Fastify({ logger: true });`,
+        `  await app.register(healthRoutes);`,
+        `  await app.register(fxRoutes, { prefix: "/api" });`,
+        `  await app.register(transactionsRoutes, { prefix: "/api/transactions" });`,
+        `  return app;`,
+        `}`,
+      ].join("\n"),
+    );
+  });
+
+  it("preserves CRLF in input lines (Windows-friendly)", () => {
+    // Input may have CRLF line endings; helper's split must handle.
+    const input =
+      "<<<<<<< HEAD\r\nours\r\n=======\r\ntheirs\r\n>>>>>>> feat/X\r\n";
+    const result = tryAdditiveConcatResolve(input);
+    expect(result.resolvedContent).toContain("ours");
+    expect(result.resolvedContent).toContain("theirs");
+    // Output normalizes to \n; that's acceptable since git treats both
+    // identically per the project's .gitattributes / autocrlf config.
+  });
+});
+
 describe("runFeature — checkout-feature mutex (bug-036)", () => {
   it("serializes concurrent checkout-feature calls against the same projectRoot", async () => {
     // Track the order checkout-feature ops enter + exit. If serialized, each
