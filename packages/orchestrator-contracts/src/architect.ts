@@ -63,6 +63,15 @@ export const ArchitectOutputSchema = z.object({
   // Task 041 delegation — usually no-op
   buildMcpServersAdded: z.array(z.string()).default([]),
 
+  /**
+   * bug-040 Phase B (2026-05-03): files the architect emitted via auto-fix
+   * scaffolding (e.g. multi-tier `scripts/dev.mjs` per architect/SKILL.md
+   * §7c). Lets the orchestrator surface what got generated for operator
+   * visibility. Empty array when nothing was auto-scaffolded (single-tier
+   * project, or all expected files already existed).
+   */
+  scaffoldedFiles: z.array(z.string()).default([]),
+
   warnings: z.array(z.string()).default([]),
 });
 export type ArchitectOutput = z.infer<typeof ArchitectOutputSchema>;

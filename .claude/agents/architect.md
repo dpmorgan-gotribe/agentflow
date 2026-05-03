@@ -123,6 +123,18 @@ After writing all outputs, verify:
 10. `.github/workflows/ci.yml` (or equivalent) exists.
 11. No `.env` read or write attempted anywhere in the run. Grep your own logic — this is a hard boundary.
 12. **bug-015 Phase 3 — feature-sliced store scaffold**: if any tier has shared client state, `apps/{tier}/src/store/` (or stack-skill equivalent) exists with one empty slice file per anticipated feature + a thin `index.ts` barrel. See §State module structure above.
+13. **bug-040 Phase B — multi-tier dev orchestrator emission**: when both `architecture.yaml.tooling.stack.web_framework` AND `backend_framework` are non-null (multi-tier project), `<projectDir>/scripts/dev.mjs` MUST exist. If missing, AUTO-FIX by resolving the canonical template per `architect/SKILL.md §7c`'s table:
+    ```
+    slug      = architecture.yaml.tooling.stack.backend_framework
+    template  = .claude/templates/dev-multi-tier-{slug}.mjs.template
+    if !exists(template):
+        HARD-FAIL — add the template to `.claude/templates/` and the
+        §dev-orchestrator block to the matching backend stack skill before
+        re-running architect. Do NOT silently fall back to a different stack's
+        template — that's the bug-040 root cause this check exists to prevent.
+    cp $template <projectDir>/scripts/dev.mjs
+    ```
+    On auto-fix, append the path to `scaffoldedFiles[]` in the return JSON (see below) so the orchestrator can surface it.
 
 ## Return JSON
 
@@ -150,6 +162,7 @@ Emit `ArchitectOutput` per `@repo/orchestrator-contracts`:
   "dockerComposePath": "docker-compose.yml",
   "ciWorkflowPath": ".github/workflows/ci.yml",
   "buildMcpServersAdded": [],
+  "scaffoldedFiles": ["scripts/dev.mjs"],
   "warnings": []
 }
 ```

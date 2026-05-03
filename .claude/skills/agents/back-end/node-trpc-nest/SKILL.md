@@ -213,6 +213,20 @@ db:seed:     pnpm --filter @repo/api prisma db seed
 
 Builder self-verify gate: `pnpm --filter @repo/api lint && pnpm --filter @repo/api typecheck && pnpm --filter @repo/api test`. Post-schema-change: also run `db:generate` before typecheck so `@prisma/client` types match.
 
+## §dev-orchestrator (multi-tier dev script) — bug-040 Phase A.5
+
+When `architecture.yaml.tooling.stack.web_framework` is non-null (multi-tier project), the architect MUST emit `<projectDir>/scripts/dev.mjs` per `architect/SKILL.md §7c`. **The canonical template for this stack is `.claude/templates/dev-multi-tier-node-trpc-nest.mjs.template` — copy it verbatim.** Do not author from scratch.
+
+The trpc-nest variant:
+
+- **Spawn command:** `pnpm --filter @repo/api start:dev` (Nest CLI watch-mode hot reload). NOT `dev` — Nest projects use `start:dev` by convention; the api package's `start:dev` script invokes `nest start --watch`.
+- **cwd:** monorepo root (`PROJECT_ROOT`). pnpm's `--filter` flag resolves the package by name from the workspace root.
+- **Port-default:** 4000 (matches `STACK_DEFAULT_BACKEND_PORT["node-trpc-nest"]` in `orchestrator/src/dev-server.ts:47`).
+
+The orchestrator's verifier-time auto-boot (`orchestrator/src/dev-server.ts spawnBackendDevServer`) uses the same shape per bug-043's `STACK_BACKEND_SPAWN_COMMAND["node-trpc-nest"]` — the project-side dev.mjs and the orchestrator-side spawn must agree.
+
+NOTE: this template is a PLACEHOLDER as of 2026-05-03 — no live trpc-nest project has smoke-tested it yet. book-swap (the planned first consumer) should validate + remove this NOTE in its first Mode B run.
+
 ## 5. Gotchas
 
 - **Circular module deps.** If `AuthModule` imports `UsersModule` and `UsersModule` imports `AuthModule`, NestJS DI fails silently. Break with `forwardRef(() => OtherModule)` on one side.

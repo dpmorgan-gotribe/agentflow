@@ -228,6 +228,17 @@ db:revise:   uv run alembic revision --autogenerate -m "msg"
 
 Builder self-verify gate: `uv run ruff check api && uv run mypy api && uv run pytest`. Runs in ~5-15s on a small project.
 
+## §dev-orchestrator (multi-tier dev script) — bug-040 Phase A.5
+
+When `architecture.yaml.tooling.stack.web_framework` is non-null (multi-tier project), the architect MUST emit `<projectDir>/scripts/dev.mjs` per `architect/SKILL.md §7c`. **The canonical template for this stack is `.claude/templates/dev-multi-tier-python-fastapi.mjs.template` — copy it verbatim.** Do not author from scratch.
+
+The FastAPI variant:
+
+- **Spawn command:** `uv run uvicorn api.main:app --app-dir src --host 0.0.0.0 --port <BACKEND_PORT>`. The `--app-dir src` flag is REQUIRED for src/ layout projects (apps/api/src/api/) — without it, uvicorn can't find the `api` package.
+- **cwd:** `apps/api/`. uv resolves its project (pyproject.toml) from the spawn cwd; running it from monorepo root would fail with "no pyproject.toml".
+
+The orchestrator's verifier-time auto-boot (`orchestrator/src/dev-server.ts spawnBackendDevServer`) uses the same shape per bug-043's `STACK_BACKEND_SPAWN_COMMAND["python-fastapi"]` — the project-side dev.mjs and the orchestrator-side spawn must agree.
+
 ## 5. Gotchas
 
 - **Circular imports between models.** When `user.py` references `SessionToken` and `session_token.py` references `User`, use `from typing import TYPE_CHECKING` + string type hints (`Mapped["SessionToken"]`). Runtime bypasses the import; type-checker resolves via the `TYPE_CHECKING` block.

@@ -57,13 +57,23 @@ describe("ArchitectOutputSchema — happy path", () => {
       configTemplatesEmitted: undefined,
       stackRationale: undefined,
       buildMcpServersAdded: undefined,
+      scaffoldedFiles: undefined,
       warnings: undefined,
     };
     const parsed = ArchitectOutputSchema.parse(minimal);
     expect(parsed.configTemplatesEmitted).toEqual([]);
     expect(parsed.stackRationale).toEqual([]);
     expect(parsed.buildMcpServersAdded).toEqual([]);
+    expect(parsed.scaffoldedFiles).toEqual([]);
     expect(parsed.warnings).toEqual([]);
+  });
+
+  it("bug-040 Phase B: scaffoldedFiles[] accepts dev.mjs auto-fix path", () => {
+    const parsed = ArchitectOutputSchema.parse({
+      ...baseOutput,
+      scaffoldedFiles: ["scripts/dev.mjs"],
+    });
+    expect(parsed.scaffoldedFiles).toEqual(["scripts/dev.mjs"]);
   });
 });
 

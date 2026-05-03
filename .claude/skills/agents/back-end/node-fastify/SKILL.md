@@ -225,6 +225,17 @@ db:reset:    pnpm --filter @repo/api db:reset
 
 Builder self-verify gate: `pnpm --filter @repo/api lint && pnpm --filter @repo/api typecheck && pnpm --filter @repo/api test`.
 
+## §dev-orchestrator (multi-tier dev script) — bug-040 Phase A.5
+
+When `architecture.yaml.tooling.stack.web_framework` is non-null (multi-tier project), the architect MUST emit `<projectDir>/scripts/dev.mjs` per `architect/SKILL.md §7c`. **The canonical template for this stack is `.claude/templates/dev-multi-tier-node-fastify.mjs.template` — copy it verbatim.** Do not author from scratch.
+
+The fastify variant differs from FastAPI in two key ways:
+
+- **Spawn command:** `pnpm --filter @repo/api dev` (which runs `tsx watch src/server.ts` per the api package's `dev` script). NOT `uv run uvicorn` — that's the Python path.
+- **cwd:** monorepo root (`PROJECT_ROOT`), NOT `apps/api/`. pnpm's `--filter` flag resolves the package by name from the workspace root.
+
+The orchestrator's verifier-time auto-boot (`orchestrator/src/dev-server.ts spawnBackendDevServer`) uses the same shape per bug-043's `STACK_BACKEND_SPAWN_COMMAND["node-fastify"]` — the project-side dev.mjs and the orchestrator-side spawn must agree.
+
 ## 5. Gotchas
 
 - **better-sqlite3 native binding.** Requires `node-gyp` + a C++ toolchain at install time on machines without prebuilt binaries (some Linux distros, some Apple Silicon configs). If `pnpm install` fails on `better-sqlite3`, the operator needs `apt install build-essential` or `xcode-select --install`. Document in the project's `README.md`.

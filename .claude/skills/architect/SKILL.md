@@ -250,24 +250,45 @@ For local dev, after editing .env:
   cp apps/api/.env.example apps/api/.env
 ```
 
-### 7c. Emit `scripts/dev.mjs` (multi-tier projects only) — bug-032 Phase C
+### 7c. Emit `scripts/dev.mjs` (multi-tier projects only) — bug-032 Phase C + bug-040 Phase A.5
 
-When the project has both tiers per step 7b, the architect MUST also emit a project-root `scripts/dev.mjs` that boots BOTH halves with port coordination. Copy from the factory template:
+When the project has both tiers per step 7b, the architect MUST also emit a project-root `scripts/dev.mjs` that boots BOTH halves with port coordination.
 
-```bash
-cp .claude/templates/dev-multi-tier.mjs.template <projectDir>/scripts/dev.mjs
+**The template is stack-specific.** Per bug-040 Phase A.5 (2026-05-03), the factory ships one template per backend stack:
+
+| `architecture.yaml.tooling.stack.backend_framework` | Canonical template                                             |
+| --------------------------------------------------- | -------------------------------------------------------------- |
+| `python-fastapi`                                    | `.claude/templates/dev-multi-tier-python-fastapi.mjs.template` |
+| `node-fastify`                                      | `.claude/templates/dev-multi-tier-node-fastify.mjs.template`   |
+| `node-trpc-nest`                                    | `.claude/templates/dev-multi-tier-node-trpc-nest.mjs.template` |
+| `node-express`                                      | `.claude/templates/dev-multi-tier-node-express.mjs.template`   |
+
+Resolution algorithm:
+
+```
+slug      = architecture.yaml.tooling.stack.backend_framework
+template  = .claude/templates/dev-multi-tier-{slug}.mjs.template
+
+if !exists(template):
+    HARD-FAIL with "no canonical dev.mjs template for backend_framework=<slug>;
+                    add it under .claude/templates/ before re-running architect"
+    (do NOT silently fall back — better to fail fast than ship a non-booting project)
+
+cp $template <projectDir>/scripts/dev.mjs
 ```
 
-The template handles:
+Each backend stack skill (`.claude/skills/agents/back-end/{slug}/SKILL.md`) carries a `§dev-orchestrator` subsection naming the canonical template + documenting the spawn-command shape; consult that section when authoring/extending stack support.
 
-- Reading `apps/api/.env` for the actual `PORT` value (defaults to 8000)
-- Spawning the backend with `cwd: apps/api/` and `uvicorn api.main:app --app-dir src --port $PORT` (works with `src/` layout without requiring `pip install -e .`)
+What every template handles:
+
+- Reading `.env` + `.env.local` for the actual `PORT` value (precedence chain matches bug-038's `resolveBackendPort`)
+- Spawning the backend with the stack-appropriate command (FastAPI: `uv run uvicorn ...` from `apps/api/`; node-\*: `pnpm --filter @repo/api dev` or `start:dev` from monorepo root)
 - Awaiting `/health` before booting frontend
 - Setting `NEXT_PUBLIC_API_BASE=http://localhost:<port>` in the Next.js spawn env so the frontend's API client points at the real backend
-- Pre-flight refuse-to-start when EITHER `:8000` or `:3000` is already taken (the latter matters because Next.js auto-falls-back to `:3001` outside the backend's CORS allowlist, silently breaking every API call)
-- Cross-platform spawn (Windows: `pnpm.cmd` + PATHEXT-resolved `uv`; POSIX: native commands + detached process group)
+- Pre-flight refuse-to-start when EITHER backend port or `:3000` is already taken (the latter matters because Next.js auto-falls-back to `:3001` outside the backend's CORS allowlist, silently breaking every API call)
+- Cross-platform spawn (Windows: `pnpm.cmd` + PATHEXT shim; POSIX: native commands + detached process group)
 
-If the backend stack isn't FastAPI, edit the template's `spawnBackend()` to use the appropriate spawn command (e.g. `pnpm -C apps/api dev` for an Express/tRPC backend). Document the override in `docs/deployment-checklist.md` so re-runs of `/architect` don't clobber it.
+DO NOT hand-edit the template after copy — the per-stack file already does the right thing. If the project's stack doesn't fit any shipped template, add a new template + stack skill `§dev-orchestrator` section first (factory work), then dispatch architect against the new stack. Inline edits to the project's `scripts/dev.mjs` get clobbered on `/architect` re-runs and put the project out-of-sync with the orchestrator's verifier-time spawn (`orchestrator/src/dev-server.ts STACK_BACKEND_SPAWN_COMMAND` — bug-043).
 
 ### 8. Emit docs/credentials-checklist.md
 
