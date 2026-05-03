@@ -105,7 +105,8 @@ Coverage floor: **≥60% line coverage** on YOUR-authored files. Below 60% → m
 3. Commit: `git add <files> && git commit -m "feat({task.id}): <summary>"`.
 4. Run stack skill's §Self-verify command block (install + typecheck + test + kit-validate-consumer) in full. Retry ≤2× on failure with error context.
 5. Parse coverage; assert ≥60%.
-6. On third failure: escalate via `tasksFailed[]`.
+6. **bug-041 Phase C — `webServer:` block presence** (when this task wrote `apps/web/playwright.config.ts`): immediately read the file back + grep for the `webServer:` substring. If absent, edit the file to add the block per your stack skill's `§3a.1 Required playwright.config.ts template` decision table (resolve `webServer.command` from `architecture.yaml.tooling.stack.persistence_layer`). Auto-fix is the right move here — bug-041 root cause was builder omitting the block silently. The synthesizer's bug-041 Phase A check ALSO catches this gap downstream, but emitting it correctly the first time is cheaper than triggering a synth-error retry round.
+7. On third failure: escalate via `tasksFailed[]`.
 
 After all tasks complete, update `.feature-context.json` + return `WebFrontendBuilderOutput` JSON.
 

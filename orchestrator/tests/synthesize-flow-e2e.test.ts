@@ -87,6 +87,7 @@ interface SynthOutput {
   strategy: string | null;
   generatedFiles: string[];
   warnings: string[];
+  errors?: string[];
 }
 
 function runSynthesizerOn(fixtureCopy: string): SynthOutput {
@@ -308,6 +309,150 @@ describe("synthesize-flow-e2e — auto-adds @playwright/test (bug-037 Phase A)",
       result.warnings.some(
         (w) => w.includes("@playwright/test") && w.includes("auto-added"),
       ),
+    ).toBe(true);
+  });
+
+  // ── bug-041 Phase A — webServer block enforcement ─────────────────────────
+  //
+  // Empirical case: 2026-05-02 finance-track-01. web-frontend-builder
+  // emitted apps/web/playwright.config.ts WITHOUT the webServer: block
+  // documented in react-next/SKILL.md §3a. Without webServer, playwright
+  // doesn't auto-boot the dev server during the test run; specs run
+  // against a down/empty backend and surface false-positive flow failures.
+  // Phase A: synthesizer reads playwright.config.ts content + emits a HARD
+  // error in errors[] when webServer is absent.
+  function seedFixtureWithPlaywrightConfig(
+    fixtureSrc: string,
+    tempDir: string,
+    configContent: string,
+  ): void {
+    const fs = require("node:fs") as typeof import("node:fs");
+    cpSync(join(fixtureSrc, ".claude"), join(tempDir, ".claude"), {
+      recursive: true,
+    });
+    cpSync(join(fixtureSrc, "docs"), join(tempDir, "docs"), {
+      recursive: true,
+    });
+    const webDir = join(tempDir, "apps/web");
+    fs.mkdirSync(webDir, { recursive: true });
+    fs.writeFileSync(
+      join(webDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "@repo/web",
+          version: "0.0.0",
+          devDependencies: { "@playwright/test": "^1.50.0" },
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+    fs.writeFileSync(
+      join(webDir, "playwright.config.ts"),
+      configContent,
+      "utf8",
+    );
+  }
+
+  const PLAYWRIGHT_CONFIG_WITHOUT_WEBSERVER = `
+import { defineConfig } from "@playwright/test";
+export default defineConfig({
+  testDir: "./e2e",
+  use: { baseURL: "http://localhost:3000" },
+});
+`.trim();
+
+  const PLAYWRIGHT_CONFIG_WITH_WEBSERVER = `
+import { defineConfig } from "@playwright/test";
+export default defineConfig({
+  testDir: "./e2e",
+  webServer: {
+    command: "node ../../scripts/dev.mjs",
+    url: "http://localhost:3000",
+    reuseExistingServer: !process.env.CI,
+    timeout: 180_000,
+  },
+  use: { baseURL: "http://localhost:3000" },
+});
+`.trim();
+
+  it("bug-041 Phase A: emits hard error when playwright.config.ts has no webServer block", () => {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-c-realdb");
+    const tempDir = mkdtempSync(join(tmpdir(), `synth-bug041-no-webserver-`));
+    tempCleanup.push(tempDir);
+    seedFixtureWithPlaywrightConfig(
+      fixtureSrc,
+      tempDir,
+      PLAYWRIGHT_CONFIG_WITHOUT_WEBSERVER,
+    );
+
+    const result = runSynthesizerOn(tempDir);
+    expect(result.ok).toBe(true); // synthesis still runs; the error is post-flight config validation
+    expect(result.errors).toBeDefined();
+    expect(result.errors!.length).toBeGreaterThan(0);
+    // Error names the missing block + points at the canonical fix location.
+    const webServerError = result.errors!.find((e) => e.includes("webServer"));
+    expect(webServerError).toBeDefined();
+    expect(webServerError).toContain("playwright.config.ts");
+    expect(webServerError).toContain("§3a");
+  });
+
+  it("bug-041 Phase A: NO error when playwright.config.ts has webServer block", () => {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-c-realdb");
+    const tempDir = mkdtempSync(join(tmpdir(), `synth-bug041-with-webserver-`));
+    tempCleanup.push(tempDir);
+    seedFixtureWithPlaywrightConfig(
+      fixtureSrc,
+      tempDir,
+      PLAYWRIGHT_CONFIG_WITH_WEBSERVER,
+    );
+
+    const result = runSynthesizerOn(tempDir);
+    expect(result.ok).toBe(true);
+    // errors[] may be undefined OR empty array — both are "no errors".
+    const webServerError = (result.errors ?? []).find((e) =>
+      e.includes("webServer"),
+    );
+    expect(webServerError).toBeUndefined();
+  });
+
+  it("bug-041 Phase A: NO error when playwright.config.ts is missing entirely (existing warning instead)", () => {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-c-realdb");
+    const tempDir = mkdtempSync(join(tmpdir(), `synth-bug041-no-config-`));
+    tempCleanup.push(tempDir);
+    const fs = require("node:fs") as typeof import("node:fs");
+    cpSync(join(fixtureSrc, ".claude"), join(tempDir, ".claude"), {
+      recursive: true,
+    });
+    cpSync(join(fixtureSrc, "docs"), join(tempDir, "docs"), {
+      recursive: true,
+    });
+    const webDir = join(tempDir, "apps/web");
+    fs.mkdirSync(webDir, { recursive: true });
+    fs.writeFileSync(
+      join(webDir, "package.json"),
+      JSON.stringify({
+        name: "@repo/web",
+        devDependencies: { "@playwright/test": "^1.50.0" },
+      }) + "\n",
+      "utf8",
+    );
+    // Note: NO playwright.config.ts written.
+
+    const result = runSynthesizerOn(tempDir);
+    expect(result.ok).toBe(true);
+    // The webServer-specific error fires only when the config exists. When
+    // the config is missing entirely, the existing "config missing" warning
+    // covers the gap (different fix surface — architect/builder must
+    // scaffold the config first).
+    const webServerError = (result.errors ?? []).find((e) =>
+      e.includes("webServer"),
+    );
+    expect(webServerError).toBeUndefined();
+    // Existing warning still present.
+    expect(
+      result.warnings.some((w) => w.includes("playwright.config.ts missing")),
     ).toBe(true);
   });
 

@@ -252,6 +252,17 @@ export async function runBuildToSpecVerify(
     if (!synthOk && parsed.reason) {
       warnings.push(`synth: ${parsed.reason}`);
     }
+    // bug-041 Phase A (2026-05-03): surface the synthesizer's warnings[] +
+    // errors[] arrays so config-level gaps reach the operator. errors[] are
+    // hard failures (specs generated but cannot run — e.g. webServer block
+    // absent); warnings[] are informational. Both flow into the verifier's
+    // warnings[] for now; auto-filing as bugs is a separate Phase D concern.
+    for (const w of parsed.warnings ?? []) {
+      warnings.push(`synth: ${w}`);
+    }
+    for (const e of parsed.errors ?? []) {
+      warnings.push(`synth ERROR: ${e}`);
+    }
   } catch (err) {
     warnings.push(
       `synth script output parse failed: ${(err as Error).message}; stderr: ${synthResult.stderr.slice(0, 200)}`,

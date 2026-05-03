@@ -67,10 +67,14 @@
 //   node scripts/synthesize-flow-e2e.mjs <projectDir>
 //
 // Output (stdout JSON):
-//   { ok, generatedFiles[], flowsCount, projectDir, warnings[],
+//   { ok, generatedFiles[], flowsCount, projectDir, warnings[], errors[],
 //     persistenceLayer, strategy }
 //
 // Exit code 0 always (synthesis errors are surfaced via JSON).
+//
+// errors[] are HARD failures (specs were generated but cannot run because
+// of missing config — e.g. bug-041 webServer block absent). Distinct from
+// warnings[] (informational; specs likely still run).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -770,6 +774,7 @@ for (let i = 0; i < manifest.flows.length; i++) {
 
 const PLAYWRIGHT_TEST_VERSION = "^1.48.0";
 const warnings = [];
+const errors = [];
 const webPkgPath = path.join(projectDir, "apps/web/package.json");
 const webConfigPath = path.join(projectDir, "apps/web/playwright.config.ts");
 let hasPlaywrightDep = false;
@@ -822,6 +827,35 @@ if (!hasPlaywrightConfig && generated.length > 0) {
   );
 }
 
+// bug-041 Phase A (2026-05-03): when playwright.config.ts EXISTS, also
+// verify it has a `webServer:` block. Without one, playwright doesn't
+// auto-boot the dev server during the test run; specs run against a down
+// backend → empty UI → false-positive flow failures (the 2026-05-02
+// finance-track-01 case where 9/9 synthesized E2E flows landed on
+// "No accounts yet" because the dashboard had no data to render).
+//
+// Hard error (errors[], not warnings[]): specs were generated but cannot
+// run as authored. The fix is owned by the web-frontend-builder per its
+// stack SKILL.md §3a — see the §dev-orchestrator decision table for the
+// stack-correct webServer.command.
+if (hasPlaywrightConfig && generated.length > 0) {
+  try {
+    const cfgContent = fs.readFileSync(webConfigPath, "utf8");
+    if (!/\bwebServer\s*:/.test(cfgContent)) {
+      errors.push(
+        "apps/web/playwright.config.ts missing required `webServer:` block — playwright will not auto-boot the dev server during tests. " +
+          "Specs will run against a down/empty backend and surface false-positive flow failures (bug-041 empirical case: 2026-05-02 finance-track-01). " +
+          "Add the block per .claude/skills/agents/front-end/{web_framework}/SKILL.md §3a's decision table " +
+          "(webServer.command resolves from architecture.yaml.tooling.stack.persistence_layer).",
+      );
+    }
+  } catch (err) {
+    warnings.push(
+      `failed to read apps/web/playwright.config.ts for webServer check: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 // Phase 2B — warn when a strategy was resolved but its helper file is
 // missing from the project. The architect skill is responsible for
 // copying the helper template; surface the gap as a non-fatal warning
@@ -852,6 +886,7 @@ console.log(
       persistenceLayer,
       strategy,
       warnings,
+      errors,
     },
     null,
     2,
