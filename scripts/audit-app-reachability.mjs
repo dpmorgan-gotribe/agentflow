@@ -296,6 +296,23 @@ function resolveCandidate(candidate) {
       return candidate + ext;
     }
   }
+  // bug-048: TS-as-ESM convention writes import specifiers with the RUNTIME
+  // extension (`.js`/`.mjs`/`.cjs`) but the source file is `.ts`/`.tsx`.
+  // When the literal `.js`-suffixed candidate doesn't exist, try the suffix
+  // swap. Without this, `from "../common/errors.js"` never resolves to
+  // `errors.ts` and the file is silently flagged orphan.
+  const swapMatch = candidate.match(/\.(?:js|jsx|mjs|cjs)$/);
+  if (swapMatch) {
+    const stripped = candidate.slice(0, -swapMatch[0].length);
+    for (const tsExt of [".ts", ".tsx"]) {
+      if (
+        fs.existsSync(stripped + tsExt) &&
+        fs.statSync(stripped + tsExt).isFile()
+      ) {
+        return stripped + tsExt;
+      }
+    }
+  }
   if (fs.existsSync(candidate)) {
     const stat = fs.statSync(candidate);
     if (stat.isFile()) return candidate;
@@ -316,6 +333,15 @@ function resolveCandidate(candidate) {
 // reaches it via `@/components/header → header/index.ts → ./header`.
 const IMPORT_RE =
   /(?:^|\n)\s*(?:import\s+(?:[^'"]*?from\s+)?['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)|export\s+(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s+from\s+['"]([^'"]+)['"])/g;
+
+// bug-049: relative-path string literals (e.g. Playwright config's
+// `globalSetup: "./playwright/global-setup.ts"`) reference workspace files
+// without using `import` syntax. Narrow to source-extension-suffixed paths
+// so noise is bounded — random doc strings rarely end in `.ts`/`.tsx`, and
+// `resolveImport` returns null for non-existent paths so unmatched strings
+// silently do nothing.
+const CONFIG_STRING_PATH_RE =
+  /['"](\.\.?\/[^'"\s]+?\.(?:ts|tsx|js|jsx|mjs|cjs))['"]/g;
 
 /** Map: importedFile → Set<importerFile> (importers in production only). */
 /** @type {Map<string, Set<string>>} */
@@ -338,6 +364,21 @@ for (const file of [...sourceFiles, ...testFiles]) {
   let m;
   while ((m = IMPORT_RE.exec(text)) !== null) {
     const spec = m[1] ?? m[2] ?? m[3];
+    const resolved = resolveImport(file, spec);
+    if (!resolved) continue;
+    if (isTestFile(file)) {
+      if (!testImportersOf.has(resolved))
+        testImportersOf.set(resolved, new Set());
+      testImportersOf.get(resolved).add(file);
+    } else {
+      recordImport(file, resolved);
+    }
+  }
+  // bug-049: also scan config-string property values (e.g. Playwright's
+  // `globalSetup: "./..."`) — the import regex above doesn't match those.
+  CONFIG_STRING_PATH_RE.lastIndex = 0;
+  while ((m = CONFIG_STRING_PATH_RE.exec(text)) !== null) {
+    const spec = m[1];
     const resolved = resolveImport(file, spec);
     if (!resolved) continue;
     if (isTestFile(file)) {
