@@ -499,29 +499,95 @@ function specForFlowInteractions(flow, flowIndex, strategy) {
   // flows so the test author can fill in the fixture map without rebuilding
   // the whole describe block. Read-only flows on Strategy C don't need
   // per-block seeding (globalSetup handles the baseline).
-  if (strategy === "C" && isMutation) {
-    lines.push(``);
-    lines.push(
-      `  // Strategy C (real-db) mutation flow — fill in the fixtures this test needs.`,
-    );
-    lines.push(
-      `  // The /test/seed endpoint must be enabled by ENABLE_TEST_SEED=1 on the backend;`,
-    );
-    lines.push(
-      `  // see .claude/skills/agents/back-end/python-fastapi/SKILL.md §Testing for the`,
-    );
-    lines.push(`  // canonical FastAPI implementation shape.`);
-    lines.push(`  // test.beforeAll(async ({ request }) => {`);
-    lines.push(`  //   await seedFixtures(request, {`);
-    lines.push(`  //     // <table_name>: [<row>, ...],`);
-    lines.push(`  //   });`);
-    lines.push(`  // });`);
-    lines.push(`  // test.afterAll(async ({ request }) => {`);
-    lines.push(
-      `  //   await cleanupFixtures(request, [/* tables touched */]);`,
-    );
-    lines.push(`  // });`);
-    lines.push(``);
+  //
+  // feat-050 (2026-05-03): when flow.requiredState is set, emit LIVE (non-
+  // commented) beforeAll/afterAll calls per the requiredState.kind. Closes
+  // the seed-mismatch class where a flow expects state contradicting the
+  // baseline (empirical: finance-track-01 flow-1 expects empty, baseline
+  // has 3 accounts; flow-9 expects stale fx, baseline is fresh).
+  if (strategy === "C") {
+    const reqState = flow.requiredState;
+    const kind = reqState && reqState.kind;
+    if (kind === "empty" || kind === "custom") {
+      lines.push(``);
+      lines.push(`  // feat-050 — per-flow requiredState: ${kind}`);
+      lines.push(`  test.beforeAll(async ({ request }) => {`);
+      const tables = JSON.stringify(reqState.tablesToCleanup);
+      lines.push(
+        `    const cleanupRes = await request.post("/test/cleanup", {`,
+      );
+      lines.push(`      data: { tables: ${tables} },`);
+      lines.push(`    });`);
+      lines.push(`    if (!cleanupRes.ok()) {`);
+      lines.push(`      const body = await cleanupRes.text();`);
+      lines.push(
+        `      throw new Error(\`feat-050 cleanup failed: \${cleanupRes.status()}: \${body.slice(0, 200)}\`);`,
+      );
+      lines.push(`    }`);
+      if (kind === "custom") {
+        const fixtures = JSON.stringify(reqState.fixtures, null, 6).replace(
+          /\n/g,
+          "\n    ",
+        );
+        lines.push(`    const seedRes = await request.post("/test/seed", {`);
+        lines.push(`      data: { fixtures: ${fixtures} },`);
+        lines.push(`    });`);
+        lines.push(`    if (!seedRes.ok()) {`);
+        lines.push(`      const body = await seedRes.text();`);
+        lines.push(
+          `      throw new Error(\`feat-050 seed failed: \${seedRes.status()}: \${body.slice(0, 200)}\`);`,
+        );
+        lines.push(`    }`);
+      }
+      lines.push(`  });`);
+      lines.push(``);
+      lines.push(`  test.afterAll(async ({ request }) => {`);
+      lines.push(
+        `    // Restore baseline so subsequent flows see clean state.`,
+      );
+      lines.push(
+        `    const restoreRes = await request.post("/test/seed-baseline", { data: {} });`,
+      );
+      lines.push(`    if (!restoreRes.ok()) {`);
+      lines.push(`      const body = await restoreRes.text();`);
+      lines.push(
+        `      throw new Error(\`feat-050 baseline-restore failed: \${restoreRes.status()}: \${body.slice(0, 200)}\`);`,
+      );
+      lines.push(`    }`);
+      lines.push(`  });`);
+      lines.push(``);
+    } else if (isMutation) {
+      // No requiredState OR kind === "baseline": fall back to the legacy
+      // commented TODO skeleton (mutation flows still need per-block guidance).
+      lines.push(``);
+      lines.push(
+        `  // Strategy C (real-db) mutation flow — fill in the fixtures this test needs.`,
+      );
+      lines.push(
+        `  // The /test/seed endpoint must be enabled by ENABLE_TEST_SEED=1 on the backend;`,
+      );
+      lines.push(
+        `  // see .claude/skills/agents/back-end/python-fastapi/SKILL.md §Testing for the`,
+      );
+      lines.push(`  // canonical FastAPI implementation shape.`);
+      lines.push(
+        `  // For non-baseline state (empty / custom fixtures), set flow.requiredState`,
+      );
+      lines.push(
+        `  // in the manifest — the synthesizer emits live beforeAll/afterAll then.`,
+      );
+      lines.push(`  // test.beforeAll(async ({ request }) => {`);
+      lines.push(`  //   await seedFixtures(request, {`);
+      lines.push(`  //     // <table_name>: [<row>, ...],`);
+      lines.push(`  //   });`);
+      lines.push(`  // });`);
+      lines.push(`  // test.afterAll(async ({ request }) => {`);
+      lines.push(
+        `  //   await cleanupFixtures(request, [/* tables touched */]);`,
+      );
+      lines.push(`  // });`);
+      lines.push(``);
+    }
   }
   lines.push(
     `  test("walks ${interactions.length} interaction(s) deterministically", async ({ page }) => {`,

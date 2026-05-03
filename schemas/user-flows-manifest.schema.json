@@ -386,6 +386,52 @@
               "read-only",
               "mutation"
             ]
+          },
+          "requiredState": {
+            "description": "feat-050 — per-flow required DB state. Closes the seed-mismatch class where a flow expects state contradicting the project baseline. Strategy C (real-db) only.",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": { "type": "string", "const": "baseline" }
+                },
+                "required": ["kind"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": { "type": "string", "const": "empty" },
+                  "tablesToCleanup": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 },
+                    "minItems": 1
+                  }
+                },
+                "required": ["kind", "tablesToCleanup"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": { "type": "string", "const": "custom" },
+                  "tablesToCleanup": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 },
+                    "minItems": 1
+                  },
+                  "fixtures": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "array",
+                      "items": { "type": "object" }
+                    }
+                  }
+                },
+                "required": ["kind", "tablesToCleanup", "fixtures"],
+                "additionalProperties": false
+              }
+            ]
           }
         },
         "required": [

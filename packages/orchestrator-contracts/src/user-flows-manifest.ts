@@ -282,10 +282,52 @@ export type Persona = z.infer<typeof PersonaSchema>;
 // ─── Flow ───────────────────────────────────────────────────────────────────
 
 /**
+ * feat-050 (2026-05-03) — per-flow required state declaration. Closes the
+ * seed-mismatch failure class where a flow expects DB state contradicting
+ * the project baseline (e.g. flow-1 "First-time setup" expects empty, but
+ * baseline seeds 3 accounts).
+ *
+ * Three `kind` variants:
+ *   - "baseline" (default; existing behavior) — call /test/seed-baseline
+ *     before flow runs. Maps to per-suite globalSetup behavior.
+ *   - "empty" — POST /test/cleanup on the listed tables; SKIP baseline
+ *     for this flow's beforeAll. Use for "first-time-X" / "onboarding"
+ *     flows whose first interaction asserts on the empty-state UI.
+ *   - "custom" — POST /test/cleanup then POST /test/seed with the
+ *     flow-specific fixtures. Use for synthetic-data flows (e.g. stale
+ *     fx_cache, account naming differs from baseline).
+ *
+ * After the flow completes, the synthesizer emits an `afterAll` that
+ * restores baseline so subsequent flows see clean state.
+ *
+ * The /test/seed and /test/cleanup endpoints already exist in all 3 backend
+ * stack skills per bug-042 Phase A.5 — this plan exercises them, doesn't add
+ * new endpoints.
+ */
+export const RequiredStateSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("baseline"),
+  }),
+  z.object({
+    kind: z.literal("empty"),
+    /** Tables to wipe before this flow runs (passed to /test/cleanup). */
+    tablesToCleanup: z.array(z.string().min(1)).min(1),
+  }),
+  z.object({
+    kind: z.literal("custom"),
+    /** Tables to wipe before seeding (cleanup runs first). */
+    tablesToCleanup: z.array(z.string().min(1)).min(1),
+    /** Fixtures POSTed to /test/seed; shape: { tableName: [row, ...] }. */
+    fixtures: z.record(z.string(), z.array(z.record(z.string(), z.unknown()))),
+  }),
+]);
+export type RequiredState = z.infer<typeof RequiredStateSchema>;
+
+/**
  * One user flow. `steps[]` (legacy) is required for backward compat with
  * existing manifests; `interactions[]` + `seedingTier` are the v2.0
  * additions and remain optional through the Phase 1 → Phase 3 migration
- * window.
+ * window. `requiredState` is feat-050 (v2.1).
  *
  * Cross-field invariants NOT enforced by the schema:
  *
@@ -297,6 +339,10 @@ export type Persona = z.infer<typeof PersonaSchema>;
  *     `personas[]`, but older manifests use freeform persona descriptions
  *     (see kanban-webapp's "Solo Task-Tracker (any user opening the app
  *     for the first time)") so the schema is lenient.
+ *   - `requiredState` is only meaningful for projects with persistence_layer
+ *     "real-db" (Strategy C). For "localStorage" / "external-api-only"
+ *     stacks, the synthesizer ignores requiredState and emits the
+ *     strategy-appropriate beforeEach instead.
  */
 export const FlowSchema = z.object({
   id: z.string().min(1),
@@ -323,6 +369,13 @@ export const FlowSchema = z.object({
    * Defaults to `read-only` when absent.
    */
   seedingTier: SeedingTierSchema.optional(),
+  /**
+   * v2.1 (feat-050) — per-flow required state. When absent, defaults to
+   * `{ kind: "baseline" }` (existing behavior). Closes the seed-mismatch
+   * class where a flow's first interaction expects state contradicting
+   * the project baseline.
+   */
+  requiredState: RequiredStateSchema.optional(),
 });
 export type Flow = z.infer<typeof FlowSchema>;
 

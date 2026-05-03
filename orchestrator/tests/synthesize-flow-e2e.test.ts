@@ -958,3 +958,138 @@ describe("synthesize-flow-e2e — assertUrlMatches path-shape rewrite (bug-047 P
     expect((spec.match(/\^https\?/g) ?? []).length).toBe(1);
   });
 });
+
+// ─── feat-050 Phase B: per-flow seed orchestration via requiredState ─────────
+//
+// Empirical case: 2026-05-03 finance-track-01 9-flow E2E run produced 3
+// failures from seed-vs-flow mismatch — flow-1 expects empty (baseline has
+// 3 accounts), flow-8 expects "USD Cash" (seed has "US Checking"), flow-9
+// expects stale fx_cache (seed is fresh).
+//
+// Fix: manifest schema gains `requiredState: { kind: "baseline" | "empty" |
+// "custom", tablesToCleanup, fixtures }`. Synthesizer emits per-flow
+// beforeAll/afterAll calling /test/cleanup + /test/seed + /test/seed-baseline
+// (already shipped per bug-042 Phase A.5). Strategy C only.
+describe("synthesize-flow-e2e — per-flow requiredState (feat-050 Phase B)", () => {
+  const tempCleanup: string[] = [];
+  afterEach(() => {
+    for (const dir of tempCleanup.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function seedFixtureWithManifest(
+    fixtureSrc: string,
+    tempDir: string,
+    manifestOverride: object,
+  ): void {
+    const fs = require("node:fs") as typeof import("node:fs");
+    cpSync(join(fixtureSrc, ".claude"), join(tempDir, ".claude"), {
+      recursive: true,
+    });
+    const docsDir = join(tempDir, "docs");
+    fs.mkdirSync(docsDir, { recursive: true });
+    fs.writeFileSync(
+      join(docsDir, "user-flows-manifest.json"),
+      JSON.stringify(manifestOverride, null, 2),
+      "utf8",
+    );
+  }
+
+  function runWithRequiredState(
+    requiredState: object | undefined,
+    seedingTier: "read-only" | "mutation" = "mutation",
+  ): string {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-c-realdb");
+    const tempDir = mkdtempSync(join(tmpdir(), `synth-feat050-`));
+    tempCleanup.push(tempDir);
+    const flow: Record<string, unknown> = {
+      id: "flow-1",
+      platform: "webapp",
+      name: "Test flow",
+      description: "feat-050 emission test",
+      primaryPersona: "alice",
+      steps: [],
+      interactions: [{ kind: "navigate", to: "/" }],
+      seedingTier,
+    };
+    if (requiredState) flow.requiredState = requiredState;
+    seedFixtureWithManifest(fixtureSrc, tempDir, {
+      version: "2.0",
+      flows: [flow],
+    });
+    runSynthesizerOn(tempDir);
+    const fs = require("node:fs") as typeof import("node:fs");
+    return fs.readFileSync(
+      join(tempDir, "apps/web/e2e/synthesized/flow-1.spec.ts"),
+      "utf8",
+    );
+  }
+
+  it("requiredState.kind='empty' emits beforeAll cleanup + afterAll baseline-restore", () => {
+    const spec = runWithRequiredState({
+      kind: "empty",
+      tablesToCleanup: ["accounts", "transactions"],
+    });
+    expect(spec).toContain("feat-050 — per-flow requiredState: empty");
+    expect(spec).toContain("test.beforeAll(async ({ request })");
+    expect(spec).toContain('request.post("/test/cleanup"');
+    expect(spec).toContain('"accounts"');
+    expect(spec).toContain('"transactions"');
+    // No /test/seed call for kind=empty (only cleanup + restore).
+    expect(spec.match(/request\.post\("\/test\/seed"/g)).toBeNull();
+    expect(spec).toContain("test.afterAll(async ({ request })");
+    expect(spec).toContain('request.post("/test/seed-baseline"');
+  });
+
+  it("requiredState.kind='custom' emits cleanup + seed with fixtures + restore", () => {
+    const spec = runWithRequiredState({
+      kind: "custom",
+      tablesToCleanup: ["fx_cache"],
+      fixtures: {
+        fx_cache: [
+          {
+            base: "EUR",
+            quote: "USD",
+            rate: 1.08,
+            last_refreshed_at: "2026-04-15T00:00:00Z",
+          },
+        ],
+      },
+    });
+    expect(spec).toContain("feat-050 — per-flow requiredState: custom");
+    expect(spec).toContain('request.post("/test/cleanup"');
+    expect(spec).toContain('request.post("/test/seed"');
+    expect(spec).toContain('"fx_cache"');
+    expect(spec).toContain('"last_refreshed_at"');
+    expect(spec).toContain("2026-04-15T00:00:00Z");
+    expect(spec).toContain('request.post("/test/seed-baseline"');
+  });
+
+  it("requiredState absent on mutation flow falls back to commented TODO skeleton", () => {
+    const spec = runWithRequiredState(undefined, "mutation");
+    // Legacy commented stub stays as-is.
+    expect(spec).toContain("// test.beforeAll(async ({ request }) => {");
+    expect(spec).toContain("// });");
+    // No live beforeAll emission.
+    expect(spec).not.toContain("feat-050 — per-flow requiredState");
+    expect(spec).not.toMatch(/^\s+test\.beforeAll/m);
+  });
+
+  it("requiredState.kind='baseline' emits NO per-flow hooks (uses globalSetup)", () => {
+    const spec = runWithRequiredState({ kind: "baseline" }, "read-only");
+    // Read-only flow on baseline state — only globalSetup seeds. No
+    // per-flow beforeAll/afterAll should be emitted.
+    expect(spec).not.toContain("feat-050 — per-flow requiredState");
+    expect(spec).not.toMatch(/^\s+test\.beforeAll\(/m);
+  });
+
+  it("emits cleanup error-handling for non-200 responses", () => {
+    const spec = runWithRequiredState({
+      kind: "empty",
+      tablesToCleanup: ["foo"],
+    });
+    expect(spec).toContain("if (!cleanupRes.ok())");
+    expect(spec).toContain("feat-050 cleanup failed");
+  });
+});
