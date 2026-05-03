@@ -152,32 +152,53 @@ export async function runSynthesizedFlows({
   }
 
   // ── Step 3: spawn dev server + wait for ready ─────────────────────────────
+  // bug-052 (2026-05-03): if playwright.config.ts has a `webServer:` block
+  // (mandatory for Strategy C per bug-041), skip the runner's own dev-server
+  // boot — Playwright handles it via the webServer command which runs the
+  // multi-tier orchestrator (`node scripts/dev.mjs`). The runner's legacy
+  // boot only spawns `pnpm -C apps/web dev` (frontend only), which on
+  // multi-tier projects leaves the backend unbooted → `reuseExistingServer:
+  // true` makes Playwright skip its own webServer boot → global-setup fails
+  // because backend is unreachable → tests never run, runner returns 0/0/0.
   const baseUrl = baseUrlOverride ?? readBaseUrlFromConfig(cfgPath, fsApi);
-  const devServerStart = now();
-  const devProc = spawnDevServer(spawnFn, projectDir);
+  let devProc = null;
   let devServerStartedMs = 0;
-
+  let cfgText = "";
   try {
-    await waitForDevServer(
-      baseUrl,
-      devServerTimeoutMs,
-      httpGet,
-      now,
-      pollIntervalMs,
+    cfgText = fsApi.readFileSync(cfgPath, "utf8");
+  } catch {
+    cfgText = "";
+  }
+  const hasWebServerBlock = /\bwebServer\s*:/.test(cfgText);
+  if (!hasWebServerBlock) {
+    const devServerStart = now();
+    devProc = spawnDevServer(spawnFn, projectDir);
+    try {
+      await waitForDevServer(
+        baseUrl,
+        devServerTimeoutMs,
+        httpGet,
+        now,
+        pollIntervalMs,
+      );
+      devServerStartedMs = now() - devServerStart;
+    } catch (err) {
+      teardownDevServer(devProc, spawnSyncFn);
+      return {
+        ok: false,
+        reason: "dev-server-not-ready",
+        remediation: `dev server at ${baseUrl} did not respond within ${devServerTimeoutMs}ms: ${err.message}`,
+        browser,
+        flows: { passed: [], failed: [], skipped: [] },
+        devServerStartedMs: now() - devServerStart,
+        totalRunMs: now() - startedAt,
+        warnings,
+      };
+    }
+  } else {
+    warnings.push(
+      "dev-server: deferring to playwright.config.ts webServer block (per bug-041 Phase B)",
     );
-    devServerStartedMs = now() - devServerStart;
-  } catch (err) {
-    teardownDevServer(devProc, spawnSyncFn);
-    return {
-      ok: false,
-      reason: "dev-server-not-ready",
-      remediation: `dev server at ${baseUrl} did not respond within ${devServerTimeoutMs}ms: ${err.message}`,
-      browser,
-      flows: { passed: [], failed: [], skipped: [] },
-      devServerStartedMs: now() - devServerStart,
-      totalRunMs: now() - startedAt,
-      warnings,
-    };
   }
 
   // ── Step 4: run playwright + capture JSON reporter ────────────────────────
@@ -231,12 +252,27 @@ export async function runSynthesizedFlows({
     );
   }
 
+  // bug-052 (2026-05-03) — defensive warning. If we generated specs but
+  // Playwright reported 0 results AND the entire run was suspiciously short
+  // (< 15s — a single test takes longer than that to boot Chromium + render
+  // a page), something failed before tests ran. Without this warning the
+  // verifier silently returns 0 failures + bug-router files 0 plans, masking
+  // dev-server collisions / pnpm exec failures / config glitches.
+  const totalRunMs = now() - startedAt;
+  const noResults = flows.passed.length + flows.failed.length === 0;
+  const suspiciouslyShort = totalRunMs < 15000;
+  if (specFiles.length > 0 && noResults && suspiciouslyShort) {
+    warnings.push(
+      `runner returned 0 tests in ${totalRunMs}ms despite ${specFiles.length} synthesized spec(s) — Playwright likely failed to start. Common causes: webServer port collision (CI=1 disables reuseExistingServer), pnpm exec resolution failure, missing browser install. stderr (last 300 chars): ${reporterStderr.slice(-300)}`,
+    );
+  }
+
   return {
     ok: flows.failed.length === 0,
     browser,
     flows,
     devServerStartedMs,
-    totalRunMs: now() - startedAt,
+    totalRunMs,
     warnings,
   };
 }
@@ -350,6 +386,17 @@ function runPlaywright(spawnFn, projectDir, browser, specFiles) {
   return new Promise((resolveP) => {
     const isWin = process.platform === "win32";
     const cmd = isWin ? "pnpm.cmd" : "pnpm";
+    // bug-052 (2026-05-03): do NOT propagate CI=1 to Playwright. The runner
+    // has already spawned the dev server (Step 3); playwright.config.ts uses
+    // `reuseExistingServer: !CI`, so CI=1 would force Playwright to boot
+    // ITS OWN webServer (per the bug-041 webServer block) → port collision
+    // on 3000/3001 → Playwright exits fast with NO tests run → runner
+    // returns ok:true with empty flows arrays + no warning. Strip CI from
+    // the child env so Playwright reuses the existing server. Side-effect:
+    // retries:0 instead of CI's 1 (acceptable — verifier loop has its own
+    // retry layer).
+    const childEnv = { ...process.env, FORCE_COLOR: "0" };
+    delete childEnv.CI;
     const child = spawnFn(
       cmd,
       [
@@ -367,7 +414,7 @@ function runPlaywright(spawnFn, projectDir, browser, specFiles) {
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
         shell: isWin,
-        env: { ...process.env, FORCE_COLOR: "0", CI: "1" },
+        env: childEnv,
       },
     );
     let stdout = "";
@@ -743,14 +790,26 @@ function parseFailureMessage(msg) {
   //   - `locator('SELECTOR')` (single)
   //   - `locator('A').locator('B')` (chained — equivalent to `A >> B`)
   //   - `waiting for locator('SELECTOR')` (timeout case)
-  // Without this, v2.0 failures land in parseFailureMessage with no selector
-  // → classifier can't run → primaryCause stays `step-transition`.
+  //   - `Locator: locator('SELECTOR')` (multi-line toBeVisible failure)
+  //
+  // bug-052 (2026-05-03): the inner-string regex must respect quote pairing.
+  // A naive `[^'"]+` chokes on selectors that contain BOTH quote types
+  // (e.g. `'[data-kit-component="Card"]'` — single-quoted argument with a
+  // double-quoted CSS attribute inside). Empirically: 7-of-8 finance-track-01
+  // failure messages were silently mis-extracted because of this. Fix: when
+  // we see `locator('...`, extract until the next single-quote; same for
+  // double-quoted args. Use 2 separate regexes alternated.
   if (out.selector === undefined) {
     const locatorChain = [];
-    const locatorRe = /locator\(\s*['"]([^'"]+)['"]\s*\)/g;
+    // Match `locator('...')` where '...' may contain double quotes; OR
+    // `locator("...")` where "..." may contain single quotes. Two patterns
+    // alternated via `|` so we cover both quote styles without each one
+    // breaking on the OTHER quote character.
+    const locatorRe = /locator\(\s*'([^']*)'\s*\)|locator\(\s*"([^"]*)"\s*\)/g;
     let lm;
     while ((lm = locatorRe.exec(msg)) !== null) {
-      locatorChain.push(lm[1]);
+      const captured = lm[1] !== undefined ? lm[1] : lm[2];
+      if (captured) locatorChain.push(captured);
     }
     if (locatorChain.length > 0) {
       out.selector = locatorChain.join(" >> ");

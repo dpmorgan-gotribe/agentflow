@@ -1033,13 +1033,15 @@ describe("synthesize-flow-e2e — per-flow requiredState (feat-050 Phase B)", ()
     });
     expect(spec).toContain("feat-050 — per-flow requiredState: empty");
     expect(spec).toContain("test.beforeAll(async ({ request })");
-    expect(spec).toContain('request.post("/test/cleanup"');
+    expect(spec).toContain("request.post(`${__apiBase}/test/cleanup`");
     expect(spec).toContain('"accounts"');
     expect(spec).toContain('"transactions"');
     // No /test/seed call for kind=empty (only cleanup + restore).
-    expect(spec.match(/request\.post\("\/test\/seed"/g)).toBeNull();
+    expect(
+      spec.match(/request\.post\(`\$\{__apiBase\}\/test\/seed`/g),
+    ).toBeNull();
     expect(spec).toContain("test.afterAll(async ({ request })");
-    expect(spec).toContain('request.post("/test/seed-baseline"');
+    expect(spec).toContain("request.post(`${__apiBase}/test/seed-baseline`");
   });
 
   it("requiredState.kind='custom' emits cleanup + seed with fixtures + restore", () => {
@@ -1058,12 +1060,12 @@ describe("synthesize-flow-e2e — per-flow requiredState (feat-050 Phase B)", ()
       },
     });
     expect(spec).toContain("feat-050 — per-flow requiredState: custom");
-    expect(spec).toContain('request.post("/test/cleanup"');
-    expect(spec).toContain('request.post("/test/seed"');
+    expect(spec).toContain("request.post(`${__apiBase}/test/cleanup`");
+    expect(spec).toContain("request.post(`${__apiBase}/test/seed`");
     expect(spec).toContain('"fx_cache"');
     expect(spec).toContain('"last_refreshed_at"');
     expect(spec).toContain("2026-04-15T00:00:00Z");
-    expect(spec).toContain('request.post("/test/seed-baseline"');
+    expect(spec).toContain("request.post(`${__apiBase}/test/seed-baseline`");
   });
 
   it("requiredState absent on mutation flow falls back to commented TODO skeleton", () => {

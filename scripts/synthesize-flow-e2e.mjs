@@ -512,9 +512,18 @@ function specForFlowInteractions(flow, flowIndex, strategy) {
       lines.push(``);
       lines.push(`  // feat-050 — per-flow requiredState: ${kind}`);
       lines.push(`  test.beforeAll(async ({ request }) => {`);
+      // bug-052 (2026-05-03): emit absolute URL for /test/* endpoints. The
+      // backend routes live on the API tier (e.g. http://localhost:3001),
+      // NOT on the frontend (use.baseURL = http://localhost:3000). Without
+      // an explicit base, request.post("/test/cleanup") goes to the frontend
+      // which returns a 404 Next.js page → throws "feat-050 cleanup failed:
+      // 404". Use the same env var as seed-db.ts helpers for consistency.
+      lines.push(
+        `    const __apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";`,
+      );
       const tables = JSON.stringify(reqState.tablesToCleanup);
       lines.push(
-        `    const cleanupRes = await request.post("/test/cleanup", {`,
+        `    const cleanupRes = await request.post(\`\${__apiBase}/test/cleanup\`, {`,
       );
       lines.push(`      data: { tables: ${tables} },`);
       lines.push(`    });`);
@@ -529,7 +538,9 @@ function specForFlowInteractions(flow, flowIndex, strategy) {
           /\n/g,
           "\n    ",
         );
-        lines.push(`    const seedRes = await request.post("/test/seed", {`);
+        lines.push(
+          `    const seedRes = await request.post(\`\${__apiBase}/test/seed\`, {`,
+        );
         lines.push(`      data: { fixtures: ${fixtures} },`);
         lines.push(`    });`);
         lines.push(`    if (!seedRes.ok()) {`);
@@ -546,7 +557,10 @@ function specForFlowInteractions(flow, flowIndex, strategy) {
         `    // Restore baseline so subsequent flows see clean state.`,
       );
       lines.push(
-        `    const restoreRes = await request.post("/test/seed-baseline", { data: {} });`,
+        `    const __apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";`,
+      );
+      lines.push(
+        `    const restoreRes = await request.post(\`\${__apiBase}/test/seed-baseline\`, { data: {} });`,
       );
       lines.push(`    if (!restoreRes.ok()) {`);
       lines.push(`      const body = await restoreRes.text();`);

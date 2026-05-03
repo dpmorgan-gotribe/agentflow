@@ -217,6 +217,22 @@ export function spawnBackendDevServer(
         port: number,
       ) => BackendSpawnSpec
     )(port);
+  // bug-052 (2026-05-03): inject the test-mode env conventions established
+  // by bug-041 / bug-042 (Strategy C contract). Without these, backends with
+  // strict env validation (e.g. node-fastify finance-track-01's env.ts plugin
+  // requires DATABASE_PATH) crash on plugin-init before binding /health →
+  // parity-verify times out at 60s + degrades to screensChecked:0.
+  // Playwright's webServer block already injects these for test runs; parity-
+  // verify needs the same conventions.
+  // Operator can still override via process.env.* (spread last in the runner
+  // would precede; spread first here lets caller-overrides win).
+  const backendEnv = {
+    ENABLE_TEST_SEED: "1",
+    DATABASE_PATH: "./data/finance-track-test.db",
+    LOG_LEVEL: "warn",
+    ...process.env,
+    PORT: String(port),
+  };
   const child = spawn(spec.cmd, spec.args, {
     cwd: spec.cwdRelativeToProject
       ? join(projectDir, spec.cwdRelativeToProject)
@@ -228,7 +244,7 @@ export function spawnBackendDevServer(
     // PORT in env covers both stacks: FastAPI ignores it (port is in args) but
     // node-* stacks read it (their `dev` scripts pick it up via dotenv-flow or
     // similar). Setting it unconditionally keeps the spec interface uniform.
-    env: { ...process.env, PORT: String(port) },
+    env: backendEnv,
   });
   if (!isWin && typeof child.unref === "function") child.unref();
   if (child.stdout) child.stdout.on("data", () => {});
