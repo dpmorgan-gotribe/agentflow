@@ -2,7 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolveBackendPort } from "../src/dev-server.js";
+import {
+  resolveBackendPort,
+  resolveBackendSpawnSpec,
+} from "../src/dev-server.js";
 
 /**
  * bug-038 Phase A regression tests for `resolveBackendPort`. Covers the
@@ -182,5 +185,129 @@ describe("resolveBackendPort (bug-038 Phase A)", () => {
     // Should hit tier 3 (.env.local PORT) → 4000, NOT tier 5 stack-default 3001
     // and definitely NOT legacy 8000 (the bug-038 broken behavior).
     expect(resolveBackendPort(tempDir)).toBe(4000);
+  });
+});
+
+/**
+ * bug-043 Phase A regression tests for `resolveBackendSpawnSpec`. Sister to
+ * bug-038's `resolveBackendPort` tests above — same surface, same lookup-table
+ * pattern, complementary concern (port vs spawn command).
+ *
+ * The legacy `spawnBackendDevServer` hardcoded `uv run uvicorn api.main:app`
+ * for ALL backends — fails on every non-FastAPI stack. The resolver returns
+ * a stack-shaped spec or null when the slug is absent / unknown (caller falls
+ * back to FastAPI for backward compat).
+ */
+describe("resolveBackendSpawnSpec (bug-043 Phase A)", () => {
+  let tempDir: string;
+  const isWin = process.platform === "win32";
+  const pnpmCmd = isWin ? "pnpm.cmd" : "pnpm";
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "dev-server-bug043-"));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("returns null when architecture.yaml is absent (caller falls back to FastAPI)", () => {
+    expect(resolveBackendSpawnSpec(tempDir, 8000)).toBeNull();
+  });
+
+  it("returns null when backend_framework slug is unknown (caller falls back to FastAPI)", () => {
+    seedArchitecture(tempDir, "elixir-phoenix"); // not in STACK_BACKEND_SPAWN_COMMAND
+    expect(resolveBackendSpawnSpec(tempDir, 4000)).toBeNull();
+  });
+
+  it("returns null when architecture.yaml is malformed (no throw)", () => {
+    mkdirSync(join(tempDir, ".claude"), { recursive: true });
+    writeFileSync(
+      join(tempDir, ".claude", "architecture.yaml"),
+      "this is not valid yaml at all\n[[[",
+      "utf8",
+    );
+    expect(resolveBackendSpawnSpec(tempDir, 8000)).toBeNull();
+  });
+
+  it("python-fastapi: spawns `uv run uvicorn ...` from apps/api with port in args", () => {
+    seedArchitecture(tempDir, "python-fastapi");
+    const spec = resolveBackendSpawnSpec(tempDir, 8000);
+    expect(spec).not.toBeNull();
+    expect(spec!.cmd).toBe("uv");
+    expect(spec!.args).toEqual([
+      "run",
+      "uvicorn",
+      "api.main:app",
+      "--app-dir",
+      "src",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "8000",
+    ]);
+    expect(spec!.cwdRelativeToProject).toBe("apps/api");
+  });
+
+  it("python-fastapi: port is interpolated into args at the --port slot", () => {
+    seedArchitecture(tempDir, "python-fastapi");
+    const spec = resolveBackendSpawnSpec(tempDir, 9999);
+    expect(spec!.args).toContain("9999");
+    expect(spec!.args[spec!.args.indexOf("--port") + 1]).toBe("9999");
+  });
+
+  it("node-fastify: spawns `pnpm --filter @repo/api dev` from monorepo root", () => {
+    seedArchitecture(tempDir, "node-fastify");
+    const spec = resolveBackendSpawnSpec(tempDir, 3001);
+    expect(spec).not.toBeNull();
+    expect(spec!.cmd).toBe(pnpmCmd);
+    expect(spec!.args).toEqual(["--filter", "@repo/api", "dev"]);
+    // pnpm-filter resolves @repo/api from workspace root — cwd is project root.
+    expect(spec!.cwdRelativeToProject).toBe("");
+  });
+
+  it("node-trpc-nest: spawns `pnpm --filter @repo/api start:dev` (Nest CLI convention)", () => {
+    seedArchitecture(tempDir, "node-trpc-nest");
+    const spec = resolveBackendSpawnSpec(tempDir, 4000);
+    expect(spec).not.toBeNull();
+    expect(spec!.cmd).toBe(pnpmCmd);
+    // Nest CLI: `start:dev` is the watch-mode hot-reload script.
+    expect(spec!.args).toEqual(["--filter", "@repo/api", "start:dev"]);
+    expect(spec!.cwdRelativeToProject).toBe("");
+  });
+
+  it("node-express: spawns `pnpm --filter @repo/api dev` (same shape as fastify)", () => {
+    seedArchitecture(tempDir, "node-express");
+    const spec = resolveBackendSpawnSpec(tempDir, 4000);
+    expect(spec).not.toBeNull();
+    expect(spec!.cmd).toBe(pnpmCmd);
+    expect(spec!.args).toEqual(["--filter", "@repo/api", "dev"]);
+    expect(spec!.cwdRelativeToProject).toBe("");
+  });
+
+  it("node-* stacks: PORT does not appear in args (stacks read it from env)", () => {
+    for (const slug of ["node-fastify", "node-trpc-nest", "node-express"]) {
+      mkdirSync(join(tempDir, ".claude"), { recursive: true });
+      writeFileSync(
+        join(tempDir, ".claude", "architecture.yaml"),
+        `tooling:\n  stack:\n    backend_framework: ${slug}\n`,
+        "utf8",
+      );
+      const spec = resolveBackendSpawnSpec(tempDir, 7777);
+      expect(spec).not.toBeNull();
+      // No "--port" or "7777" anywhere in args — node-* dev scripts read PORT
+      // from env (dotenv-flow / process.env.PORT), not CLI flags.
+      expect(spec!.args.join(" ")).not.toContain("--port");
+      expect(spec!.args.join(" ")).not.toContain("7777");
+    }
+  });
+
+  it("empirical case: finance-track-01-shape (node-fastify) returns the fastify spec", () => {
+    seedArchitecture(tempDir, "node-fastify");
+    const spec = resolveBackendSpawnSpec(tempDir, 3001);
+    // The bug-043 root-cause: pre-fix, spawnBackendDevServer would have run
+    // `uv run uvicorn ...` here; post-fix, this returns the fastify spec.
+    expect(spec!.cmd).toBe(pnpmCmd);
+    expect(spec!.args[0]).toBe("--filter");
   });
 });

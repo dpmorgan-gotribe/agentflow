@@ -48,6 +48,82 @@ const STACK_DEFAULT_BACKEND_PORT: Record<string, number> = {
   "node-express": 4000,
 };
 
+/**
+ * bug-043 Phase A (2026-05-03): stack-aware backend dev-server spawn command.
+ * The legacy `spawnBackendDevServer` hardcoded `uv run uvicorn api.main:app` for
+ * ALL backends — fails on every non-FastAPI stack (node-fastify, node-trpc-nest,
+ * node-express). The resolver now consults
+ * `architecture.yaml.tooling.stack.backend_framework` and picks a stack-shaped
+ * spawn command. Unknown / absent backend_framework falls back to FastAPI for
+ * backward compat (mirrors STACK_DEFAULT_BACKEND_PORT's fallback shape).
+ *
+ * Sister to bug-038 (port resolution): same surface, same lookup-table pattern,
+ * complementary concern.
+ */
+export interface BackendSpawnSpec {
+  /** Command to spawn (already platform-resolved: "pnpm.cmd" on Win32, "pnpm" elsewhere). */
+  cmd: string;
+  /** Args list with PORT already substituted where the stack expects it on the command line. */
+  args: string[];
+  /**
+   * cwd relative to the projectDir. Empty string = monorepo root (typical for
+   * `pnpm --filter @repo/api dev` which Pnpm resolves from the workspace root).
+   * "apps/api" = inside the api package (typical for FastAPI's `uv run uvicorn`,
+   * which needs to find pyproject.toml in cwd).
+   */
+  cwdRelativeToProject: string;
+}
+
+const STACK_BACKEND_SPAWN_COMMAND: Record<
+  string,
+  (port: number) => BackendSpawnSpec
+> = {
+  "python-fastapi": (port) => ({
+    cmd: "uv",
+    args: [
+      "run",
+      "uvicorn",
+      "api.main:app",
+      "--app-dir",
+      "src",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      String(port),
+    ],
+    cwdRelativeToProject: "apps/api",
+  }),
+  "node-fastify": (_port) => ({
+    cmd: process.platform === "win32" ? "pnpm.cmd" : "pnpm",
+    // pnpm-filter resolves @repo/api from the monorepo root; the api package's
+    // own `dev` script (e.g. `tsx watch src/server.ts`) reads PORT from env.
+    args: ["--filter", "@repo/api", "dev"],
+    cwdRelativeToProject: "",
+  }),
+  "node-trpc-nest": (_port) => ({
+    cmd: process.platform === "win32" ? "pnpm.cmd" : "pnpm",
+    // Nest CLI convention: `start:dev` runs in watch mode with hot reload.
+    args: ["--filter", "@repo/api", "start:dev"],
+    cwdRelativeToProject: "",
+  }),
+  "node-express": (_port) => ({
+    cmd: process.platform === "win32" ? "pnpm.cmd" : "pnpm",
+    args: ["--filter", "@repo/api", "dev"],
+    cwdRelativeToProject: "",
+  }),
+};
+
+const HINTS_BY_SLUG: Record<string, string> = {
+  "python-fastapi":
+    "Verify uv is on PATH (where.exe uv / which uv) and apps/api/pyproject.toml is valid.",
+  "node-fastify":
+    "Verify pnpm is on PATH and apps/api/package.json declares a `dev` script (e.g. `tsx watch src/server.ts`).",
+  "node-trpc-nest":
+    "Verify pnpm is on PATH and apps/api/package.json declares a `start:dev` script (Nest CLI).",
+  "node-express":
+    "Verify pnpm is on PATH and apps/api/package.json declares a `dev` script.",
+};
+
 export interface DevServerHandle {
   /** Frontend (Next.js / Vite / SvelteKit) child process. */
   process: ChildProcess;
@@ -106,11 +182,19 @@ export function spawnDevServer(
 }
 
 /**
- * bug-032 Phase C: spawn the FastAPI backend via `uv run uvicorn ...` from
- * `<projectDir>/apps/api/`. Returns null when the project has no
- * `apps/api/` tier (single-tier project; caller skips backend boot).
+ * bug-032 Phase C: spawn the backend dev server from `<projectDir>/apps/api/`.
+ * Returns null when the project has no `apps/api/` tier (single-tier project;
+ * caller skips backend boot).
  *
- * Empirical fixes from operator smoke-test on 2026-04-30:
+ * bug-043 Phase A (2026-05-03): stack-aware spawn command. The function used
+ * to hardcode `uv run uvicorn api.main:app` for every project, breaking every
+ * non-FastAPI backend. Now resolves the spawn spec from
+ * `architecture.yaml.tooling.stack.backend_framework` via
+ * `STACK_BACKEND_SPAWN_COMMAND`. Unknown / absent slug falls back to FastAPI
+ * for backward compat with pre-bug-043 projects.
+ *
+ * Empirical fixes from operator smoke-test on 2026-04-30 (preserved for
+ * FastAPI path):
  *   - `uv` not `uv.exe` (cmd.exe PATHEXT resolves under `shell: true`)
  *   - spawn cwd at apps/api/ (uv's `-C` is `--config-setting`, not -d)
  *   - `uvicorn api.main:app --app-dir src` (not `python -m api`) — works
@@ -123,30 +207,78 @@ export function spawnBackendDevServer(
   const apiDir = join(projectDir, "apps", "api");
   if (!existsSync(apiDir)) return null;
   const isWin = process.platform === "win32";
-  const cmd = "uv";
-  const args = [
-    "run",
-    "uvicorn",
-    "api.main:app",
-    "--app-dir",
-    "src",
-    "--host",
-    "0.0.0.0",
-    "--port",
-    String(port),
-  ];
-  const child = spawn(cmd, args, {
-    cwd: apiDir,
+  const spec =
+    resolveBackendSpawnSpec(projectDir, port) ??
+    // Backward-compat fallback: when architecture.yaml is absent OR the slug
+    // isn't in STACK_BACKEND_SPAWN_COMMAND, assume FastAPI. Matches the
+    // pre-bug-043 hardcoded behavior.
+    (
+      STACK_BACKEND_SPAWN_COMMAND["python-fastapi"] as (
+        port: number,
+      ) => BackendSpawnSpec
+    )(port);
+  const child = spawn(spec.cmd, spec.args, {
+    cwd: spec.cwdRelativeToProject
+      ? join(projectDir, spec.cwdRelativeToProject)
+      : projectDir,
     stdio: ["ignore", "pipe", "pipe"],
     detached: !isWin,
     windowsHide: true,
     shell: isWin,
+    // PORT in env covers both stacks: FastAPI ignores it (port is in args) but
+    // node-* stacks read it (their `dev` scripts pick it up via dotenv-flow or
+    // similar). Setting it unconditionally keeps the spec interface uniform.
     env: { ...process.env, PORT: String(port) },
   });
   if (!isWin && typeof child.unref === "function") child.unref();
   if (child.stdout) child.stdout.on("data", () => {});
   if (child.stderr) child.stderr.on("data", () => {});
   return child;
+}
+
+/**
+ * bug-043 Phase A: resolve the backend spawn spec for the project's
+ * `architecture.yaml.tooling.stack.backend_framework`. Returns null when (a)
+ * the file is absent, (b) parsing fails, or (c) the framework slug isn't in
+ * `STACK_BACKEND_SPAWN_COMMAND` — caller falls back to the FastAPI default
+ * for backward compat.
+ */
+export function resolveBackendSpawnSpec(
+  projectDir: string,
+  port: number,
+): BackendSpawnSpec | null {
+  const slug = readBackendFrameworkSlug(projectDir);
+  if (!slug) return null;
+  const factory = STACK_BACKEND_SPAWN_COMMAND[slug];
+  if (!factory) return null;
+  return factory(port);
+}
+
+/**
+ * Read the `backend_framework` slug from `<projectDir>/.claude/architecture.yaml`.
+ * Returns null when the file is absent, parsing fails, or the field is unset.
+ *
+ * Lightweight regex parse: avoids pulling in js-yaml just for one field. The
+ * architecture.yaml's `backend_framework:` line is canonical per
+ * `.claude/skills/architect/SKILL.md`.
+ *
+ * Shared between bug-038 (`resolveStackDefaultBackendPort`) and bug-043
+ * (`resolveBackendSpawnSpec`) — both consume the same field.
+ */
+function readBackendFrameworkSlug(projectDir: string): string | null {
+  const archPath = join(projectDir, ".claude", "architecture.yaml");
+  if (!existsSync(archPath)) return null;
+  try {
+    const text = readFileSync(archPath, "utf8");
+    // Match `backend_framework: <slug>` (allows comments + indentation).
+    // Stops at whitespace OR newline; framework slugs are kebab-case
+    // identifiers (no spaces/quotes typically — but tolerate optional quotes).
+    const m = text.match(/^\s*backend_framework:\s*"?([\w-]+)"?\s*(?:#.*)?$/m);
+    if (!m || !m[1]) return null;
+    return m[1];
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -210,32 +342,20 @@ export function resolveBackendPort(projectDir: string): number | null {
 }
 
 /**
- * Read `<projectDir>/.claude/architecture.yaml` and return the
- * stack-appropriate default backend port for the configured
- * `tooling.stack.backend_framework`. Returns null when (a) the file is
- * absent, (b) parsing fails, or (c) the framework slug isn't in the
- * STACK_DEFAULT_BACKEND_PORT table — caller falls back to legacy 8000.
+ * Return the stack-appropriate default backend port for the project's
+ * `architecture.yaml.tooling.stack.backend_framework`. Returns null when (a)
+ * the file is absent, (b) parsing fails, or (c) the framework slug isn't in
+ * the STACK_DEFAULT_BACKEND_PORT table — caller falls back to legacy 8000.
  *
- * Lightweight regex-based parse: avoids pulling in js-yaml just for one
- * field. The architecture.yaml's `backend_framework:` line is canonical
- * per .claude/skills/architect/SKILL.md.
+ * bug-043 Phase A (2026-05-03): refactored to share `readBackendFrameworkSlug`
+ * with `resolveBackendSpawnSpec`; both consume the same architecture.yaml
+ * field, no point in two regex parsers.
  */
 function resolveStackDefaultBackendPort(projectDir: string): number | null {
-  const archPath = join(projectDir, ".claude", "architecture.yaml");
-  if (!existsSync(archPath)) return null;
-  try {
-    const text = readFileSync(archPath, "utf8");
-    // Match `backend_framework: <slug>` (allows comments + indentation).
-    // Stops at whitespace OR newline; framework slugs are kebab-case
-    // identifiers (no spaces/quotes typically — but tolerate optional quotes).
-    const m = text.match(/^\s*backend_framework:\s*"?([\w-]+)"?\s*(?:#.*)?$/m);
-    if (!m || !m[1]) return null;
-    const slug = m[1];
-    const port = STACK_DEFAULT_BACKEND_PORT[slug];
-    return typeof port === "number" ? port : null;
-  } catch {
-    return null;
-  }
+  const slug = readBackendFrameworkSlug(projectDir);
+  if (!slug) return null;
+  const port = STACK_DEFAULT_BACKEND_PORT[slug];
+  return typeof port === "number" ? port : null;
 }
 
 /**
@@ -371,20 +491,27 @@ export async function bootDevServer(
         await waitForDevServer(`${backendUrl}/health`, timeoutMs);
       } catch (err) {
         killChildTree(backendProcess);
-        // bug-038 Phase A (2026-05-02): error message used to hardcode
-        // "verify uv is on PATH and pyproject.toml is valid" — FastAPI-
-        // specific advice that misleads on node-fastify / node-trpc-nest /
-        // node-express stacks. Surface the resolved port + the resolution
-        // chain so the operator can audit which step landed on the wrong
-        // value.
+        // bug-043 Phase B (2026-05-03): name the actual spawn command attempted
+        // + give a stack-specific hint, instead of always assuming FastAPI
+        // (legacy bug-038 behavior). Falls back to FastAPI hint when slug is
+        // unknown — matches spawnBackendDevServer's backward-compat fallback.
+        const slug = readBackendFrameworkSlug(projectDir) ?? "python-fastapi";
+        const spec =
+          resolveBackendSpawnSpec(projectDir, backendPort) ??
+          (
+            STACK_BACKEND_SPAWN_COMMAND["python-fastapi"] as (
+              port: number,
+            ) => BackendSpawnSpec
+          )(backendPort);
+        const cwdLabel = spec.cwdRelativeToProject || "<projectDir>";
+        const hint =
+          HINTS_BY_SLUG[slug] ?? (HINTS_BY_SLUG["python-fastapi"] as string);
         throw new Error(
-          `backend (apps/api/) did not respond on ${backendUrl}/health within ` +
-            `${timeoutMs}ms. Resolved backend port: ${backendPort}. ` +
-            `Resolution chain (bug-038): process.env.PORT > process.env.BACKEND_PORT > ` +
-            `apps/api/.env.local > apps/api/.env > architecture.yaml backend_framework stack-default > 8000. ` +
-            `If the wrong port is being used, set BACKEND_PORT=<port> in apps/api/.env.local. ` +
-            `If the backend tooling failed to start, check the project's stack-specific dev command ` +
-            `(uv/pnpm/etc per architecture.yaml.tooling.stack.backend_framework). ` +
+          `backend (${slug}) did not respond on ${backendUrl}/health within ` +
+            `${timeoutMs}ms. Resolved spawn: \`${spec.cmd} ${spec.args.join(" ")}\` from \`${cwdLabel}\`. ` +
+            `Resolved port: ${backendPort} (resolution chain — process.env.PORT > BACKEND_PORT > ` +
+            `apps/api/.env.local > apps/api/.env > architecture.yaml backend_framework stack-default > 8000). ` +
+            `${hint} ` +
             `Underlying: ${(err as Error).message}`,
         );
       }
