@@ -520,6 +520,16 @@ export async function runFixBugsLoop(
     let completedCount = 0;
     let failedCount = 0;
     for (const bug of pendingThisIter) {
+      // bug-050 Phase B (2026-05-03) — bugs with empty agentSequence have
+      // no Mode-B-resolvable agent (e.g. manifest-author needs design-stage
+      // /user-flows-generator regen). Mark `needs-operator-review` and
+      // skip dispatch — saves $$ on no-op agent calls + surfaces the bug
+      // for operator triage in the iteration summary.
+      if (!bug.agentSequence || bug.agentSequence.length === 0) {
+        bug.status = "needs-operator-review";
+        writeBugsYaml(bugsYamlPath, doc);
+        continue;
+      }
       bug.attempts = (bug.attempts ?? 0) + 1;
       bug.status = "in-progress";
       attemptedCount += 1;

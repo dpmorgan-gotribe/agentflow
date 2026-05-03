@@ -135,13 +135,30 @@ export type RuntimeErrors = z.infer<typeof RuntimeErrors>;
  *   4. test timed out with no synthesizer-recorded transition meta →
  *      `timeout-no-evidence` (pre-feat-027 black-box state — surface so the
  *      auto-fix loop knows it lacks signal)
- *   5. default → `step-transition` (the synthesizer's own assertion fired)
+ *   5. feat-049 Phase C — when the failure has a `selector` field AND the
+ *      runner has a screens catalog (built from `docs/screens/**.html`), call
+ *      `classifySelector` to discriminate:
+ *        - selector NOT in design (no kit-component / role+name match in
+ *          any mockup) → `manifest-author` (flow author hallucinated; route
+ *          to /user-flows-generator regen, NOT a builder)
+ *        - selector IN design (catalog has the element) → `build-gap` (design
+ *          intends X, build is missing or rendering it differently — could
+ *          ALSO be a seed-mismatch where build IS rendering but seeded data
+ *          contradicts; seed-mismatch isn't separately classified at v1
+ *          since it requires runtime DOM inspection — deferred per bug-050
+ *          §Approach.)
+ *   6. default → `step-transition` (selector field absent or catalog missing —
+ *      the synthesizer's own assertion fired but we have no classification
+ *      signal)
  *
  * The bug-author + iteration router consume this to (a) emit the right bug
  * template (`runtimeErrorBody` vs `flowFailureBody` vs `seedSetupBody`),
  * and (b) sort runtime-error / dev-server-compile / seed-setup bugs FIRST
  * so the auto-fix loop resolves the cascade-root before chasing dependent
  * timeouts.
+ *
+ * Routing per primaryCause is owned by `defaultAgentSequence` in
+ * `scripts/file-bug-plan.mjs` (bug-050 Phase B).
  */
 export const FlowPrimaryCause = z.enum([
   "step-transition",
@@ -149,6 +166,9 @@ export const FlowPrimaryCause = z.enum([
   "dev-server-compile",
   "timeout-no-evidence",
   "seed-setup",
+  // feat-049 Phase C — classifier-driven values:
+  "build-gap",
+  "manifest-author",
 ]);
 export type FlowPrimaryCause = z.infer<typeof FlowPrimaryCause>;
 

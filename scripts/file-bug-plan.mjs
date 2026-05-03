@@ -669,11 +669,44 @@ function shortBugIdFor(planId) {
 }
 
 function defaultAgentSequence(violation) {
-  // Per plan §Phase A: orphan/flow → web-frontend-builder, tester, reviewer.
-  // (Future: pm-coverage-omission → [pm, ...] — not emitted by file-bug-plan
-  // today; coverage gate fails earlier in Mode A.)
-  void violation;
-  return ["web-frontend-builder", "tester", "reviewer"];
+  // bug-050 Phase B (2026-05-03) — route by primaryCause when present.
+  // Pre-bug-050: this function literally `void violation;` and returned the
+  // same agent sequence for every bug class. Empirical evidence on
+  // finance-track-01 9-flow run: 5 of 9 failures would have misrouted —
+  // builders dispatched against seed-mismatch / manifest-author bugs either
+  // produce wrong fixes (rename source to match a wrong test expectation) or
+  // fail-loop indefinitely. The classifier (feat-049 Phase B) supplies the
+  // primaryCause; this function maps cause → agent sequence.
+  //
+  // Routing table:
+  //   - build-gap         → web-frontend-builder, tester, reviewer (default)
+  //   - seed-setup        → backend-builder, tester, reviewer
+  //                         (Strategy C `/test/seed-baseline` endpoint missing/
+  //                         broken — backend's lane, not frontend's)
+  //   - manifest-author   → []  (NO dispatch — flow author hallucinated;
+  //                         fix is /user-flows-generator regen which lives
+  //                         in design-stage skill, not Mode B builders. Loop
+  //                         surfaces these for operator review instead of
+  //                         burning $ on builder dispatches that cannot fix.)
+  //   - dev-server-compile / runtime-error / timeout-no-evidence /
+  //     step-transition / unknown → default (web-frontend-builder, ...)
+  //                         These haven't been narrowed to a specific lane yet;
+  //                         web-frontend-builder is the best general guess.
+  //
+  // Orphan-component / orphan-route violations have no primaryCause field
+  // (they come from the reachability analyzer, not the flow runner) — they
+  // fall through to default which is correct (always a frontend wiring job).
+  const cause = violation && violation.primaryCause;
+  switch (cause) {
+    case "build-gap":
+      return ["web-frontend-builder", "tester", "reviewer"];
+    case "seed-setup":
+      return ["backend-builder", "tester", "reviewer"];
+    case "manifest-author":
+      return [];
+    default:
+      return ["web-frontend-builder", "tester", "reviewer"];
+  }
 }
 
 function deriveAffectsFiles(violation, relatedOrphan) {

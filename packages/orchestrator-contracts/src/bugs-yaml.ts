@@ -43,6 +43,13 @@ export const BugStatusSchema = z.enum([
   "completed",
   "failed", // hit per-bug attempt cap or flapping detector
   "skipped", // dependency-failed cascade
+  // bug-050 Phase B (2026-05-03) — terminal status for bugs whose
+  // primaryCause routes to `agentSequence: []` (e.g. manifest-author
+  // failures need /user-flows-generator regeneration in design stage,
+  // not a Mode B builder dispatch). Loop never auto-dispatches; the
+  // operator decides whether to fix the manifest, re-run /user-flows-
+  // generator, or extend manifest schema (per feat-050 per-flow seed).
+  "needs-operator-review",
 ]);
 export type BugStatus = z.infer<typeof BugStatusSchema>;
 

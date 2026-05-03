@@ -158,3 +158,94 @@ describe("fileBugPlan — parity-divergence", () => {
     );
   });
 });
+
+// ─── bug-050 Phase B: defaultAgentSequence routes by primaryCause ────────────
+//
+// Pre-bug-050 every flow-failure bug got `[web-frontend-builder, tester,
+// reviewer]` regardless of cause. This block validates the routing table:
+//   - build-gap → web-frontend-builder (default; correct for design-intent gaps)
+//   - manifest-author → [] (no dispatch; flow-author needs to regen, not a builder)
+//   - seed-setup → backend-builder (Strategy C /test/seed-baseline endpoint)
+//
+// The classifier (feat-049 Phase B/C) populates primaryCause from the runner;
+// here we test fileBugPlan respects it.
+describe("fileBugPlan — bug-050 Phase B agent routing by primaryCause", () => {
+  const stubFlowFailure = (primaryCause: string) => ({
+    kind: "flow-failure" as const,
+    flowId: "flow-1",
+    flowName: "Test flow",
+    step: 2,
+    fromScreenId: null,
+    expectedScreenId: "destination",
+    actualScreenId: null,
+    selector: '[data-kit-component="Foo"]',
+    screenshotPath: null,
+    htmlDumpPath: null,
+    message: "test message",
+    primaryCause,
+  });
+
+  it("primaryCause=build-gap → [web-frontend-builder, tester, reviewer]", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: stubFlowFailure("build-gap"),
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual([
+      "web-frontend-builder",
+      "tester",
+      "reviewer",
+    ]);
+  });
+
+  it("primaryCause=manifest-author → [] (skip dispatch)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: stubFlowFailure("manifest-author"),
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual([]);
+  });
+
+  it("primaryCause=seed-setup → [backend-builder, tester, reviewer]", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: stubFlowFailure("seed-setup"),
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual([
+      "backend-builder",
+      "tester",
+      "reviewer",
+    ]);
+  });
+
+  it("primaryCause=step-transition (legacy) → default web-frontend-builder", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: stubFlowFailure("step-transition"),
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual([
+      "web-frontend-builder",
+      "tester",
+      "reviewer",
+    ]);
+  });
+});

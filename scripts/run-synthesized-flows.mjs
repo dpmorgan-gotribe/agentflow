@@ -47,6 +47,10 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import {
+  buildScreensCatalog,
+  classifySelector,
+} from "./build-screens-catalog.mjs";
 
 const args = process.argv.slice(2);
 const positional = args.filter((a) => !a.startsWith("--"));
@@ -192,8 +196,32 @@ export async function runSynthesizedFlows({
     teardownDevServer(devProc, spawnSyncFn);
   }
 
+  // ── feat-049 Phase C: build screens catalog for failure classification ────
+  // Catalog discriminates `build-gap` (selector matches a design element) from
+  // `manifest-author` (selector targets an element no mockup contains). Built
+  // ONCE here; passed into parseReporterJson for per-failure classifySelector.
+  // If docs/screens/ is absent or fails to parse, catalog will be empty +
+  // classifier falls back to legacy `step-transition` behavior — graceful.
+  let screensCatalog = null;
+  try {
+    const catalogResult = buildScreensCatalog(projectDir);
+    screensCatalog = catalogResult.catalog;
+    for (const w of catalogResult.warnings ?? []) {
+      warnings.push(`screens-catalog: ${w}`);
+    }
+  } catch (err) {
+    warnings.push(
+      `screens-catalog build threw: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   // ── Step 5: parse reporter JSON ───────────────────────────────────────────
-  const flows = parseReporterJson(reporterStdout, warnings, reporterStderr);
+  const flows = parseReporterJson(
+    reporterStdout,
+    warnings,
+    reporterStderr,
+    screensCatalog,
+  );
 
   // playwright exit code 1 = test failures; we don't treat that as runner-fail.
   // Exit code > 1 typically means runner crashed (no JSON to parse).
@@ -395,7 +423,12 @@ function teardownDevServer(devProc, spawnSyncFn) {
  * first PNG attachment as screenshot + the first HTML attachment as
  * htmlDumpPath (the synthesizer writes both alongside the test).
  */
-function parseReporterJson(stdout, warnings, stderr = "") {
+function parseReporterJson(
+  stdout,
+  warnings,
+  stderr = "",
+  screensCatalog = null,
+) {
   const flows = { passed: [], failed: [], skipped: [] };
   if (!stdout || !stdout.trim()) {
     if (stderr && stderr.trim()) {
@@ -508,6 +541,21 @@ function parseReporterJson(stdout, warnings, stderr = "") {
       const isSeedSetupFailure =
         typeof errorMsg === "string" &&
         /^seedFixtures:|^cleanupFixtures:/m.test(errorMsg);
+      // feat-049 Phase C: when the failure carries a selector AND we have a
+      // screens catalog, classify it. `not-in-design` → manifest-author (flow
+      // hallucinated; no builder dispatch); `in-design` → build-gap (design
+      // intends X, build missing/diverging — could ALSO be seed-mismatch but
+      // that's not separately classified at v1, see schema doc).
+      let selectorClass = null;
+      if (typeof meta.selector === "string" && screensCatalog) {
+        try {
+          selectorClass = classifySelector(meta.selector, screensCatalog);
+        } catch (err) {
+          warnings.push(
+            `classifySelector threw on selector "${meta.selector}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
       let primaryCause;
       if (runtimeErrors?.devServerOverlay) {
         primaryCause = "dev-server-compile";
@@ -517,6 +565,10 @@ function parseReporterJson(stdout, warnings, stderr = "") {
         primaryCause = "runtime-error";
       } else if (isTimedOut && !meta.step) {
         primaryCause = "timeout-no-evidence";
+      } else if (selectorClass === "not-in-design") {
+        primaryCause = "manifest-author";
+      } else if (selectorClass === "in-design") {
+        primaryCause = "build-gap";
       } else {
         primaryCause = "step-transition";
       }
@@ -684,6 +736,33 @@ function parseFailureMessage(msg) {
   if (fromM) out.fromScreenId = fromM[1];
   const selM = msg.match(/selector:\s*([^)]+)\)/);
   if (selM) out.selector = selM[1].trim();
+
+  // feat-049 Phase C: extract selector from Playwright error messages emitted
+  // by the v2.0 synthesizer (which carries a try/catch that re-throws the
+  // verbatim Playwright error). Common shapes:
+  //   - `locator('SELECTOR')` (single)
+  //   - `locator('A').locator('B')` (chained — equivalent to `A >> B`)
+  //   - `waiting for locator('SELECTOR')` (timeout case)
+  // Without this, v2.0 failures land in parseFailureMessage with no selector
+  // → classifier can't run → primaryCause stays `step-transition`.
+  if (out.selector === undefined) {
+    const locatorChain = [];
+    const locatorRe = /locator\(\s*['"]([^'"]+)['"]\s*\)/g;
+    let lm;
+    while ((lm = locatorRe.exec(msg)) !== null) {
+      locatorChain.push(lm[1]);
+    }
+    if (locatorChain.length > 0) {
+      out.selector = locatorChain.join(" >> ");
+    } else {
+      // getByRole('button', { name: 'X' }) → role=button[name="X"]
+      const rolM = msg.match(
+        /getByRole\(\s*['"]([^'"]+)['"]\s*,\s*\{\s*name\s*:\s*['"]([^'"]+)['"]/,
+      );
+      if (rolM) out.selector = `role=${rolM[1]}[name="${rolM[2]}"]`;
+    }
+  }
+
   return out;
 }
 
