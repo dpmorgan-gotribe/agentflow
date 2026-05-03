@@ -12,8 +12,15 @@ branch: fix/architect-emits-dev-mjs
 affected-files:
   - .claude/agents/architect.md
   - .claude/skills/architect/SKILL.md
-  - .claude/templates/dev-multi-tier.mjs.template
-feature-area: architect/scaffold-compliance
+  - .claude/templates/dev-multi-tier-python-fastapi.mjs.template # renamed from dev-multi-tier.mjs.template
+  - .claude/templates/dev-multi-tier-node-fastify.mjs.template # NEW
+  - .claude/templates/dev-multi-tier-node-trpc-nest.mjs.template # NEW (placeholder until first consumer)
+  - .claude/templates/dev-multi-tier-node-express.mjs.template # NEW (placeholder until first consumer)
+  - .claude/skills/agents/back-end/python-fastapi/SKILL.md # §dev-orchestrator pointer
+  - .claude/skills/agents/back-end/node-fastify/SKILL.md # §dev-orchestrator pointer
+  - .claude/skills/agents/back-end/node-trpc-nest/SKILL.md # §dev-orchestrator pointer
+  - .claude/skills/agents/back-end/node-express/SKILL.md # §dev-orchestrator pointer (if shipped)
+feature-area: architect/scaffold-compliance + per-stack-dev-template
 priority: P0
 attempt-count: 0
 max-attempts: 5
@@ -30,6 +37,11 @@ stack-trace: null
 
 > "When the project has both tiers per step 7b, the architect MUST also emit a project-root `scripts/dev.mjs` that boots BOTH halves with port coordination. Copy from the factory template:
 > `cp .claude/templates/dev-multi-tier.mjs.template <projectDir>/scripts/dev.mjs`"
+
+**Two compounding factory bugs in this surface, not one:**
+
+1. **Architect compliance gap** — even when SKILL.md §7c is followed, the agent skipped the emission step on finance-track-01.
+2. **The template itself is FastAPI-only** — `.claude/templates/dev-multi-tier.mjs.template` hardcodes `uv run uvicorn api.main:app --app-dir src` + port-default 8000. A `cp` of this template into a `node-fastify` / `node-trpc-nest` project produces a `scripts/dev.mjs` that cannot boot the backend. The "stack-aware" expansion is **mandatory** for the fix to work across stacks; otherwise enforcing the cp just creates broken scripts everywhere.
 
 Empirically, finance-track-01 has both tiers (`apps/api/` + `apps/web/`) per its `architecture.yaml`, but `projects/finance-track-01/scripts/dev.mjs` does NOT exist. Only validation scripts live in `scripts/`:
 
@@ -96,25 +108,62 @@ This is technically a separate gap (sister bug to bug-038) but compounds bug-040
 
 ## Fix Approach
 
-### Phase A — verify + retroactively repair finance-track-01 (P0, immediate)
+### Phase A.5 — make `dev-multi-tier.mjs.template` stack-aware (P0, prerequisite)
 
-1. **Confirm finance-track-01's missing scripts/dev.mjs** by running `cp .claude/templates/dev-multi-tier.mjs.template projects/finance-track-01/scripts/dev.mjs` manually.
-2. **Run `node projects/finance-track-01/scripts/dev.mjs`** from project root to confirm the template works for this project's stack (fastify + react-next + better-sqlite3).
-3. **Commit the manually-copied dev.mjs to finance-track-01's git** — unblocks the verifier rerun.
+**This phase MUST ship before Phase B can land** — without it, enforcing the cp from a single FastAPI-only template just produces broken `scripts/dev.mjs` on every node-\* project.
 
-### Phase B — architect agent enforcement (P0)
+Adopt **fix-shape B** (per-stack templates with thin SKILL.md pointer). Rationale: the bulk of `dev.mjs` (~400 lines: env-file parsing, port pre-flight, cross-platform process trees, signal teardown) is stack-agnostic; only `spawnBackend()` (~30 lines) is stack-specific. Embedding 400 lines per backend stack into SKILL.md is duplication; one shared scaffold per stack as a dedicated file keeps cross-platform plumbing lintable + testable. Matches the existing factory pattern (`playwright-global-setup.ts.template`, `seed-db.ts.template`).
 
-4. **Add a SELF-VERIFY check to architect.md / architect/SKILL.md**: after the architect's main scaffold loop completes, for multi-tier projects assert that `<projectDir>/scripts/dev.mjs` exists. If missing, copy it from `.claude/templates/dev-multi-tier.mjs.template` automatically (don't fail; auto-fix).
-5. **Update architect's return JSON** to include a `scaffoldedFiles[]` field that lists what was emitted, with `dev.mjs` callout when present. The orchestrator can surface this for operator visibility.
+1. **Rename existing template** to make stack explicit:
+   - `mv .claude/templates/dev-multi-tier.mjs.template .claude/templates/dev-multi-tier-python-fastapi.mjs.template`
+2. **Author `.claude/templates/dev-multi-tier-node-fastify.mjs.template`** — same structure as the FastAPI one but `spawnBackend()` runs `pnpm --filter @repo/api dev` (which `tsx watch src/server.ts` per node-fastify SKILL.md). Port-default 3001 (matches `STACK_DEFAULT_BACKEND_PORT["node-fastify"]` in `orchestrator/src/dev-server.ts:46`). Keep `loadEnvFiles` / `redactEnvForLog` / `killTree` / pre-flight port-collision check / `waitForBackend` / SIGINT teardown identical.
+3. **Author `.claude/templates/dev-multi-tier-node-trpc-nest.mjs.template`** — placeholder mirroring node-fastify but with `pnpm --filter @repo/api start:dev` (Nest CLI default). Port-default 4000.
+4. **Author `.claude/templates/dev-multi-tier-node-express.mjs.template`** — placeholder mirroring node-fastify. Port-default 4000.
+5. **Add a §dev-orchestrator subsection to each backend stack skill** (`.claude/skills/agents/back-end/{python-fastapi,node-fastify,node-trpc-nest,node-express}/SKILL.md`) — 5-line pointer naming the canonical template file the architect should `cp` for that stack:
+
+   ```
+   ## §dev-orchestrator (multi-tier dev script)
+   When `architecture.yaml.tooling.stack.web_framework` is non-null, the architect MUST emit
+   `<projectDir>/scripts/dev.mjs` as part of step 7c. The canonical template for this stack is
+   `.claude/templates/dev-multi-tier-{stack-slug}.mjs.template`. Copy it verbatim.
+   ```
+
+6. **Smoke-test each new template** in isolation: `cp` it into a sandbox project, set `apps/api/`+`apps/web/` to a minimal stub, run `node scripts/dev.mjs`, confirm both halves boot + `/health` returns 200.
+
+### Phase A — retroactively repair finance-track-01 (P0, post-Phase-A.5)
+
+7. `cp .claude/templates/dev-multi-tier-node-fastify.mjs.template projects/finance-track-01/scripts/dev.mjs`
+8. Run `node projects/finance-track-01/scripts/dev.mjs`; confirm backend on :3001 + frontend on :3000 both respond.
+9. Commit the file to finance-track-01's git.
+
+### Phase B — architect agent enforcement (P0, post-Phase-A.5)
+
+10. **Update architect/SKILL.md §7c** to look up the canonical template per backend stack:
+
+    ```
+    Resolve template path:
+      template = `.claude/templates/dev-multi-tier-{architecture.yaml.tooling.stack.backend_framework}.mjs.template`
+    cp $template <projectDir>/scripts/dev.mjs
+    ```
+
+    Hard-fail (not warn) if `architecture.yaml.tooling.stack.backend_framework` is unset or no matching template exists.
+
+11. **Add a SELF-VERIFY check** to `.claude/agents/architect.md`: after the main scaffold loop, for multi-tier projects assert `<projectDir>/scripts/dev.mjs` exists. If missing, perform the stack-aware cp automatically (don't fail; auto-fix).
+12. **Update architect's return JSON** to include `scaffoldedFiles[]` — the orchestrator surfaces this for operator visibility.
 
 ### Phase C — orchestrator post-architect verifier (P1, defense-in-depth)
 
-6. **Add an orchestrator post-architect check**: after architect dispatch completes, if `apps/api/` + `apps/web/` both exist BUT `scripts/dev.mjs` doesn't, fail the architect stage with an actionable error pointing to bug-040.
-7. **Also enforce**: `apps/api/.env.local` exists (per bug-033 canonical port-config location); `apps/web/playwright.config.ts` has a `webServer` block (sister bug-041).
+13. **Add an orchestrator post-architect check**: when `apps/api/` + `apps/web/` both exist BUT `scripts/dev.mjs` doesn't, fail the architect stage with an actionable error pointing to bug-040.
+14. **Also enforce**: `apps/api/.env.local` exists (per bug-033 canonical port-config); `apps/web/playwright.config.ts` has a `webServer` block (sister bug-041).
+15. **Sanity-check stack alignment**: parse the first ~30 lines of the emitted `scripts/dev.mjs` to verify it matches the expected `spawnBackend()` shape for the project's `backend_framework`. Catches "wrong template was copied" silently. (Cheap regex check; doesn't need full JS parse.)
 
 ### Phase D — empirical re-validation
 
-8. After Phases A+B+C ship, dispatch /architect on a fresh test project; confirm `scripts/dev.mjs` lands automatically.
+16. After Phases A.5 + B + C ship, dispatch /architect on a fresh node-fastify test project AND a fresh python-fastapi test project; confirm both produce a working `scripts/dev.mjs` for their respective stacks without operator intervention.
+
+### Cross-stack interaction with bug-043
+
+`scripts/dev.mjs` is the OPERATOR-side dev orchestrator. The orchestrator's verifier-time auto-boot path (`orchestrator/src/dev-server.ts spawnBackendDevServer`) is a SEPARATE surface that ALSO needs stack-awareness — filed as **bug-043**. Both must ship for end-to-end E2E to work on non-FastAPI stacks. Sequence: bug-043 → bug-040 (Phase A.5 + Phase A) → bug-041 → bug-042 (per the operator's Wave 0 / Wave 1 plan).
 
 ## Rejected Fixes
 
@@ -124,32 +173,45 @@ This is technically a separate gap (sister bug to bug-038) but compounds bug-040
 
 ## Validation Criteria
 
+### Phase A.5 (per-stack templates)
+
+- [ ] `.claude/templates/dev-multi-tier-python-fastapi.mjs.template` exists (renamed from `dev-multi-tier.mjs.template`).
+- [ ] `.claude/templates/dev-multi-tier-node-fastify.mjs.template` exists + smoke-tested (boots fastify backend + Next frontend on a sandbox project).
+- [ ] `.claude/templates/dev-multi-tier-node-trpc-nest.mjs.template` exists (placeholder, structurally complete).
+- [ ] `.claude/templates/dev-multi-tier-node-express.mjs.template` exists (placeholder, structurally complete).
+- [ ] Each backend stack skill has a §dev-orchestrator subsection naming the canonical template file.
+
 ### Phase A (finance-track-01 specific)
 
-- [ ] `projects/finance-track-01/scripts/dev.mjs` exists + is committed.
-- [ ] `node projects/finance-track-01/scripts/dev.mjs` boots both backend (port 4000 per bug-038 resolved) + frontend (port 3000) without errors.
-- [ ] `curl http://localhost:4000/health` returns 200.
+- [ ] `projects/finance-track-01/scripts/dev.mjs` exists + is committed (sourced from `dev-multi-tier-node-fastify.mjs.template`).
+- [ ] `node projects/finance-track-01/scripts/dev.mjs` boots both backend (port 3001 per `STACK_DEFAULT_BACKEND_PORT["node-fastify"]`) + frontend (port 3000) without errors.
+- [ ] `curl http://localhost:3001/health` returns 200.
 
 ### Phase B (factory)
 
-- [ ] `architect.md` self-verify check enforces `scripts/dev.mjs` for multi-tier projects.
+- [ ] `architect/SKILL.md §7c` resolves the template by `backend_framework` slug (no longer hardcoded).
+- [ ] `architect.md` self-verify check enforces `scripts/dev.mjs` for multi-tier projects + auto-fixes via stack-aware cp.
 - [ ] Architect's return JSON includes `scaffoldedFiles[]`.
-- [ ] Regression test: architect dispatch on fresh multi-tier project produces scripts/dev.mjs without operator intervention.
+- [ ] Regression test: architect dispatch on a fresh multi-tier project produces a stack-correct `scripts/dev.mjs` without operator intervention.
+- [ ] Hard-fail when `backend_framework` is set to a slug with no matching template (rather than silently copying nothing or copying a stale FastAPI default).
 
 ### Phase C (defense-in-depth)
 
-- [ ] Orchestrator's post-architect check fails with actionable error if scripts/dev.mjs missing.
+- [ ] Orchestrator's post-architect check fails with actionable error if `scripts/dev.mjs` missing.
+- [ ] Orchestrator's post-architect check parses the emitted `scripts/dev.mjs` first ~30 lines + verifies the `spawnBackend()` shape matches `architecture.yaml.tooling.stack.backend_framework` (catches "wrong template was copied" silently).
 
 ### Phase D (empirical)
 
-- [ ] Fresh project (book-swap-pre-build OR a synthesized test) demonstrates the full chain: architect → scripts/dev.mjs lands → verifier auto-boots correctly → seed-loop fires → flows actually exercise data.
+- [ ] Fresh node-fastify project (e.g. clone finance-track-01's brief) demonstrates: architect → `scripts/dev.mjs` lands stack-correct → verifier auto-boots correctly → seed-loop fires → flows exercise populated data.
+- [ ] Fresh python-fastapi project demonstrates the same end-to-end chain (regression — make sure FastAPI path didn't regress when we added node-\* paths).
 
 ## Cross-references
 
 - **Empirical case**: 2026-05-02 finance-track-01 — first link in 5-step seeding-pipeline failure chain.
 - **Sister bugs**: bug-041 (playwright.config.ts missing webServer block), bug-042 (global-setup baseline incomplete) — together with bug-040 they comprise the full broken-seeding story.
-- **Predecessor**: bug-033 (dev-multi-tier.mjs.template) — created the template that bug-040 says should be copied.
-- **Verifier-side compounding**: orchestrator/src/dev-server.ts's auto-boot uses FastAPI-specific `uv run uvicorn` even for node-fastify projects — separate factory gap, sister to bug-038.
+- **Predecessor**: bug-033 (dev-multi-tier.mjs.template) — created the template that bug-040 says should be copied (in its FastAPI-only form).
+- **Verifier-side compounding (now filed as bug-043)**: `orchestrator/src/dev-server.ts spawnBackendDevServer` uses FastAPI-specific `uv run uvicorn` even for node-fastify projects — separate orchestrator surface, sister to bug-038. Both must ship for end-to-end E2E to work on non-FastAPI stacks.
+- **Sequencing**: bug-043 SOLO first (Wave 0), then bug-040 + bug-041 + bug-042 in PARALLEL (Wave 1), then empirical end-to-end validation on finance-track-01 (Wave 2).
 
 ## Attempt Log
 

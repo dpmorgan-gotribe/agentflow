@@ -11,11 +11,14 @@ superseded-by: null
 branch: fix/global-setup-baseline-coverage
 affected-files:
   - .claude/templates/playwright-global-setup.ts.template
-  - .claude/skills/agents/back-end/node-fastify/SKILL.md
-  - .claude/skills/agents/back-end/python-fastapi/SKILL.md
-  - .claude/skills/agents/back-end/node-trpc-nest/SKILL.md
+  - .claude/skills/agents/back-end/node-fastify/SKILL.md # NEW §test-seed-contract block + /test/seed-baseline route convention
+  - .claude/skills/agents/back-end/python-fastapi/SKILL.md # NEW §test-seed-contract block + /test/seed-baseline route convention
+  - .claude/skills/agents/back-end/node-trpc-nest/SKILL.md # NEW §test-seed-contract block + /test/seed-baseline route convention
+  - .claude/skills/agents/back-end/node-express/SKILL.md # NEW §test-seed-contract block (if shipped)
+  - .claude/rules/testing-policy.md # NEW §Strategy-C-baseline-spec section + /test/seed contract reference
   - .claude/agents/web-frontend-builder.md
-feature-area: stack-skills/seed-baseline + Strategy-C-contract
+  - scripts/synthesize-flow-e2e.mjs # required-baseline.json inference
+feature-area: stack-skills/seed-baseline + Strategy-C-contract + uniform-test-seed-endpoint
 priority: P0
 attempt-count: 0
 max-attempts: 5
@@ -114,7 +117,35 @@ The verifier's flow-execution stage runs the specs but reports them as failures 
 
 ## Fix Approach
 
-### Phase A — synthesizer-time inference of required baseline (P0, immediate)
+### Phase A.5 — uniform `/test/seed` + `/test/cleanup` + `/test/seed-baseline` backend contract across all backend stacks (P0, prerequisite)
+
+**This phase MUST ship before Phase A** — the synthesizer's `required-baseline.json` is only useful if there's a uniform endpoint shape for global-setup to POST against. Right now the contract is implicit (documented in `.claude/rules/testing-policy.md` text but no stack skill enforces "your backend MUST expose POST /test/seed gated on ENABLE_TEST_SEED=1 with this request schema"). `repo-health-dashboard-01` doesn't ship one (Strategy D / external-API only). `finance-track-01` ships it organically (`apps/api/src/routes/test-seed.ts`, node-fastify). `book-swap` will need it (python-fastapi or node-trpc-nest, TBD). Without a canonical contract, every project re-derives the shape and global-setup can't be portable.
+
+1. **Add a §test-seed-contract subsection to each backend stack skill** (`.claude/skills/agents/back-end/{python-fastapi,node-fastify,node-trpc-nest,node-express}/SKILL.md`). Canonical spec (uniform across stacks):
+   - **Endpoint** `POST /test/seed`
+     - Request body: `{ "fixtures": { "<table_name>": [<row1>, <row2>, ...], ... } }`
+     - Response: `204 No Content` on success; `400` on schema error; `500` on DB error
+     - Behavior: bulk-insert each row in a single transaction; tables not in the per-project whitelist throw `400`
+   - **Endpoint** `POST /test/cleanup`
+     - Request body: `{ "tables": ["<table_name>", ...] }`
+     - Response: `204 No Content` on success
+     - Behavior: `DELETE FROM <table>` for each whitelisted table; unknown tables silently ignored (per finance-track-01's empirical pattern)
+   - **Endpoint** `POST /test/seed-baseline` (NEW — closes the duplication gap)
+     - Request body: empty (or optional `{ "preset": "<name>" }` for future presets; v1 ignores)
+     - Response: `204 No Content`
+     - Behavior: invokes the project's existing `db/seed.ts` (or equivalent) to populate the read-only baseline (accounts + transactions + settings + fx_cache + ...). This is the ONE call global-setup makes for the bulk of fixture data, instead of duplicating ~150 lines of fixtures into the playwright global-setup.
+   - **Gate**: all 3 endpoints MUST be gated on `ENABLE_TEST_SEED=1` env var. When unset/0, the routes are NOT registered. Both 404-with-warning (matches finance-track-01's empirical pattern in `apps/web/playwright/global-setup.ts:35-39`).
+   - **Mounting convention**: under `/test/*` namespace (no auth, no rate-limit). NEVER mounted in production.
+
+2. **Per-stack reference implementations in each SKILL.md**:
+   - `node-fastify`: `apps/api/src/routes/test-seed.ts` (FastifyPluginAsync, registered conditionally on `process.env.ENABLE_TEST_SEED === "1"`). finance-track-01's existing implementation is the canonical pattern; copy verbatim into the SKILL.md.
+   - `python-fastapi`: `apps/api/src/api/routes/test_seed.py` (`APIRouter`, `app.include_router(...)` conditional). Author from scratch, mirroring node-fastify's request shape 1:1.
+   - `node-trpc-nest`: equivalent NestJS controller. Already partially specced per feat-041 archive entry; extend with `/test/seed-baseline`.
+   - `node-express`: equivalent Express router. Placeholder until first consumer.
+
+3. **Add `.claude/rules/testing-policy.md §Strategy-C-test-seed-contract section** referencing the per-stack implementations as canonical. Establishes the contract is universal, not stack-specific.
+
+### Phase A — synthesizer-time inference of required baseline (P0, post-Phase-A.5)
 
 1. **Extend the synthesizer (`scripts/synthesize-flow-e2e.mjs`)** to compute a `readOnlyBaseline[]` derived from each `flow.interactions[]` of read-only-tier flows:
    - Find every `assertVisible` step's selector
@@ -154,6 +185,14 @@ The verifier's flow-execution stage runs the specs but reports them as failures 
 
 ## Validation Criteria
 
+### Phase A.5 (uniform `/test/seed*` contract)
+
+- [ ] Each backend stack skill has §test-seed-contract subsection with canonical request/response schema.
+- [ ] Each backend stack skill includes a reference implementation snippet for `/test/seed`, `/test/cleanup`, `/test/seed-baseline` in its native idiom.
+- [ ] All endpoints gated on `ENABLE_TEST_SEED=1`; routes NOT mounted in production.
+- [ ] testing-policy.md has §Strategy-C-test-seed-contract section pointing at the stack-skill implementations as canonical.
+- [ ] Empirical: finance-track-01's existing `apps/api/src/routes/test-seed.ts` matches the canonical contract verbatim (post-`/test/seed-baseline` addition).
+
 ### Phase A
 
 - [ ] Synthesizer extension produces `apps/web/playwright/required-baseline.json` per flow's read-only assertions.
@@ -167,7 +206,7 @@ The verifier's flow-execution stage runs the specs but reports them as failures 
 
 ### Phase C
 
-- [ ] `.claude/templates/playwright-global-setup.ts.template` updated with clear seeding-all-tables pattern.
+- [ ] `.claude/templates/playwright-global-setup.ts.template` updated with clear seeding-all-tables pattern that calls `POST /test/seed-baseline` first, then optional per-test fixture overrides via `POST /test/seed`.
 
 ### Phase D
 
@@ -176,13 +215,16 @@ The verifier's flow-execution stage runs the specs but reports them as failures 
 ### Phase E
 
 - [ ] finance-track-01 re-run: flow-3 passes (or fails on a REAL UI bug); other read-only flows similarly exercise populated UI.
+- [ ] Cross-stack regression: `/test/seed-baseline` works on python-fastapi reference project (or sandbox) — confirms contract is genuinely uniform, not just node-fastify-shaped.
 
 ## Cross-references
 
 - **Empirical case**: 2026-05-02 finance-track-01 — third link in 5-step seeding-pipeline failure chain. ALL 9 read-only + mutation flows landed on empty states because dashboard had no data to render.
-- **Sister bugs**: bug-040 (architect skips scripts/dev.mjs), bug-041 (playwright.config.ts missing webServer) — together with bug-042 they comprise the full broken-seeding story.
-- **Related investigation**: investigate-013 (seed state coverage from brief) — the seed-script-data path Phase A. bug-042 is the analog for E2E baseline rather than dev-seed.
+- **Sister bugs**: bug-040 (architect skips scripts/dev.mjs + per-stack template work), bug-041 (playwright.config.ts missing webServer), bug-043 (orchestrator dev-server.ts stack-aware spawn command) — together with bug-042 they comprise the full broken-seeding + non-FastAPI-stack-support story.
+- **Related investigation**: investigate-013 (seed state coverage from brief) — the seed-script-data path. bug-042 is the analog for E2E baseline rather than dev-seed.
 - **Predecessor specs**: feat-038 Phase 0 (E2E data-seeding strategy decision) defined Strategy C as "globalSetup seeds read-only baseline." bug-042 is the enforcement gap — the policy was specced but not OPERATIONALIZED.
+- **Empirical reference implementation**: `projects/finance-track-01/apps/api/src/routes/test-seed.ts` already implements `/test/seed` + `/test/cleanup` for node-fastify. Phase A.5 lifts this verbatim into the stack skill (with `/test/seed-baseline` added) as the canonical pattern.
+- **Sequencing**: bug-043 SOLO first (Wave 0), then bug-040 + bug-041 + bug-042 in PARALLEL (Wave 1), then empirical end-to-end validation on finance-track-01 (Wave 2).
 
 ## Attempt Log
 
