@@ -576,7 +576,7 @@ describe("synthesize-flow-e2e — selector engine-mix lint (bug-046 Phase B)", (
     expect(engineMixError).toContain("bug-046");
   });
 
-  it("does NOT flag valid `[CSS] >> role=button` (proper engine chain)", () => {
+  it("does NOT flag valid `[CSS] >> role=button[name=...]` (proper engine chain + bug-051 terminal)", () => {
     const fixtureSrc = join(FIXTURES_DIR, "strategy-c-realdb");
     const tempDir = mkdtempSync(join(tmpdir(), `synth-bug046-valid-chain-`));
     tempCleanup.push(tempDir);
@@ -587,15 +587,17 @@ describe("synthesize-flow-e2e — selector engine-mix lint (bug-046 Phase B)", (
           id: "flow-1",
           platform: "webapp",
           name: "Good chain",
-          description: "Properly chained selector",
+          description: "Properly chained selector with terminal [name=]",
           primaryPersona: "alice",
           steps: [],
           interactions: [
             { kind: "navigate", to: "/" },
             {
               kind: "click",
+              // bug-051: chained child MUST carry [name=...] or :nth-of-type
+              // to avoid the :has-text strict-mode trap.
               selector:
-                '[data-kit-component="Card"]:has-text("Import CSV") >> role=button',
+                '[data-kit-component="Card"]:has-text("Import CSV") >> role=button[name="Import CSV"]',
             },
           ],
           seedingTier: "read-only",
@@ -608,6 +610,10 @@ describe("synthesize-flow-e2e — selector engine-mix lint (bug-046 Phase B)", (
       e.includes("malformed selector"),
     );
     expect(engineMixError).toBeUndefined();
+    const hasTextTrapError = (result.errors ?? []).find((e) =>
+      e.includes("strict-mode"),
+    );
+    expect(hasTextTrapError).toBeUndefined();
   });
 
   it("does NOT flag pure-CSS descendant chain `[Card] [Button]`", () => {
@@ -675,6 +681,195 @@ describe("synthesize-flow-e2e — selector engine-mix lint (bug-046 Phase B)", (
       e.includes("malformed selector"),
     );
     expect(engineMixError).toBeDefined();
+  });
+});
+
+// ─── bug-051 Phase B+C: :has-text strict-mode trap + backend-API mock warning ─
+//
+// Empirical case (Phase B): 2026-05-03 finance-track-01 flow-2 authored
+// `[data-kit-component="Card"]:has-text("Import CSV") >> role=button` —
+// Playwright threw `strict mode violation: locator resolved to 2 elements`
+// because the settings card contains both Import CSV + Export JSON buttons.
+// `:has-text()` matches the WHOLE subtree (not a descendant filter), so
+// the parent matched ambiguously and the chained child found 2 buttons.
+//
+// Empirical case (Phase C): 2026-05-03 finance-track-01 flow-4 mocked
+// `api.frankfurter.app` via `kind: "mock"` — but the call originates from
+// the BACKEND not the browser → page.route() never fires → 30s timeout.
+//
+// Fix: synthesizer post-flight detects both patterns. Phase B is hard-error
+// (errors[]); Phase C is warning (warnings[]) since the operator may
+// genuinely want to mock for synthetic-state testing.
+describe("synthesize-flow-e2e — :has-text strict-mode trap + mock-layer (bug-051 Phase B+C)", () => {
+  const tempCleanup: string[] = [];
+  afterEach(() => {
+    for (const dir of tempCleanup.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function seedFixtureWithManifest(
+    fixtureSrc: string,
+    tempDir: string,
+    manifestOverride: object,
+  ): void {
+    const fs = require("node:fs") as typeof import("node:fs");
+    cpSync(join(fixtureSrc, ".claude"), join(tempDir, ".claude"), {
+      recursive: true,
+    });
+    const docsDir = join(tempDir, "docs");
+    fs.mkdirSync(docsDir, { recursive: true });
+    fs.writeFileSync(
+      join(docsDir, "user-flows-manifest.json"),
+      JSON.stringify(manifestOverride, null, 2),
+      "utf8",
+    );
+  }
+
+  it("flags `:has-text(...) >> role=button` (no [name=]) — strict-mode trap", () => {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-c-realdb");
+    const tempDir = mkdtempSync(join(tmpdir(), `synth-bug051-strict-trap-`));
+    tempCleanup.push(tempDir);
+    seedFixtureWithManifest(fixtureSrc, tempDir, {
+      version: "2.0",
+      flows: [
+        {
+          id: "flow-1",
+          platform: "webapp",
+          name: "Strict-mode trap flow",
+          description: "Test :has-text scope without terminal [name=]",
+          primaryPersona: "alice",
+          steps: [],
+          interactions: [
+            { kind: "navigate", to: "/" },
+            {
+              kind: "click",
+              selector:
+                '[data-kit-component="Card"]:has-text("Import CSV") >> role=button',
+            },
+          ],
+          seedingTier: "read-only",
+        },
+      ],
+    });
+
+    const result = runSynthesizerOn(tempDir);
+    expect(result.ok).toBe(true);
+    expect(result.errors).toBeDefined();
+    const hasTextError = result.errors!.find((e) => e.includes("strict-mode"));
+    expect(hasTextError).toBeDefined();
+    expect(hasTextError).toContain("flow-1");
+    expect(hasTextError).toContain("[name=");
+    expect(hasTextError).toContain("bug-051");
+  });
+
+  it("does NOT flag `:has-text(...) >> role=button[name=...]` (proper terminal)", () => {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-c-realdb");
+    const tempDir = mkdtempSync(
+      join(tmpdir(), `synth-bug051-strict-with-name-`),
+    );
+    tempCleanup.push(tempDir);
+    seedFixtureWithManifest(fixtureSrc, tempDir, {
+      version: "2.0",
+      flows: [
+        {
+          id: "flow-1",
+          platform: "webapp",
+          name: "Proper terminal",
+          description: "Test :has-text scope WITH terminal [name=]",
+          primaryPersona: "alice",
+          steps: [],
+          interactions: [
+            { kind: "navigate", to: "/" },
+            {
+              kind: "click",
+              selector:
+                '[data-kit-component="Card"]:has-text("Import CSV") >> role=button[name="Import CSV"]',
+            },
+          ],
+          seedingTier: "read-only",
+        },
+      ],
+    });
+
+    const result = runSynthesizerOn(tempDir);
+    const hasTextError = (result.errors ?? []).find((e) =>
+      e.includes("strict-mode"),
+    );
+    expect(hasTextError).toBeUndefined();
+  });
+
+  it("warns on `kind: 'mock'` targeting backend-originated API (frankfurter)", () => {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-c-realdb");
+    const tempDir = mkdtempSync(join(tmpdir(), `synth-bug051-backend-mock-`));
+    tempCleanup.push(tempDir);
+    seedFixtureWithManifest(fixtureSrc, tempDir, {
+      version: "2.0",
+      flows: [
+        {
+          id: "flow-1",
+          platform: "webapp",
+          name: "Backend-API mock flow",
+          description: "Tries to mock api.frankfurter.app via page.route",
+          primaryPersona: "alice",
+          steps: [],
+          interactions: [
+            {
+              kind: "mock",
+              urlPattern: "api\\.frankfurter\\.app",
+              status: 200,
+              body: { rates: { USD: 1.08 } },
+            },
+            { kind: "navigate", to: "/settings" },
+          ],
+          seedingTier: "read-only",
+        },
+      ],
+    });
+
+    const result = runSynthesizerOn(tempDir);
+    expect(result.ok).toBe(true);
+    const mockWarning = (result.warnings ?? []).find(
+      (w) => w.includes("backend") || w.includes("BACKEND"),
+    );
+    expect(mockWarning).toBeDefined();
+    expect(mockWarning).toContain("frankfurter");
+    expect(mockWarning).toContain("bug-051");
+  });
+
+  it("does NOT warn on browser-originated API mock (e.g. /api/proxy)", () => {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-c-realdb");
+    const tempDir = mkdtempSync(join(tmpdir(), `synth-bug051-proxy-mock-`));
+    tempCleanup.push(tempDir);
+    seedFixtureWithManifest(fixtureSrc, tempDir, {
+      version: "2.0",
+      flows: [
+        {
+          id: "flow-1",
+          platform: "webapp",
+          name: "Proxy mock flow",
+          description: "Mocks the project proxy URL — correct layer",
+          primaryPersona: "alice",
+          steps: [],
+          interactions: [
+            {
+              kind: "mock",
+              urlPattern: "/api/fx/refresh",
+              status: 200,
+              body: { ok: true },
+            },
+            { kind: "navigate", to: "/settings" },
+          ],
+          seedingTier: "read-only",
+        },
+      ],
+    });
+
+    const result = runSynthesizerOn(tempDir);
+    const mockWarning = (result.warnings ?? []).find(
+      (w) => w.includes("BACKEND") || w.includes("backend"),
+    );
+    expect(mockWarning).toBeUndefined();
   });
 });
 

@@ -906,19 +906,118 @@ if (hasPlaywrightConfig && generated.length > 0) {
 // where the immediately preceding token is NOT `>>`. Hard-error to errors[]
 // (no auto-rewrite — synthesizer stays mechanical per operator decision).
 const ENGINE_MIX_RE = /(?:^|[^>])\s+(role|text|xpath|id|data-testid)=/;
+
+// bug-051 Phase B (2026-05-03): detect `:has-text("...")` followed by an
+// AMBIGUOUS chained child — `>>` followed by a selector that doesn't carry
+// a `[name=...]` qualifier or a `:nth-of-type(...)` qualifier. The
+// `:has-text()` matches the parent if the substring appears ANYWHERE inside
+// its DOM subtree (NOT a descendant filter), so a parent containing both
+// "Import CSV" and "Export JSON" matches `:has-text("Import CSV")` AND
+// `:has-text("Export JSON")` identically. The chained `>> role=button`
+// then resolves to multiple buttons → strict-mode violation at runtime.
+//
+// Empirical case: 2026-05-03 finance-track-01 flow-2 manifest authored
+// `[data-kit-component="Card"]:has-text("Import CSV") >> role=button`
+// — Playwright threw `strict mode violation: locator resolved to 2 elements`
+// because the settings card contains both Import CSV + Export JSON buttons.
+//
+// Idiomatic fix: use `role=button[name="Import CSV"]` directly, OR if the
+// parent scope is semantically necessary, terminate with `[name=...]`:
+// `[Card]:has-text("Import CSV") >> role=button[name="Import CSV"]`.
+//
+// Detection: split on `>>`; if any preceding fragment contains `:has-text(`
+// AND the IMMEDIATELY-FOLLOWING fragment lacks `[name=` AND lacks
+// `:nth-of-type(`, push hard error.
+function detectHasTextStrictModeTrap(selector) {
+  if (typeof selector !== "string") return false;
+  const segments = selector.split(/\s*>>\s*/);
+  for (let k = 0; k < segments.length - 1; k++) {
+    const left = segments[k];
+    const right = segments[k + 1];
+    if (!/:has-text\(/.test(left)) continue;
+    if (/\[name=/.test(right)) continue;
+    if (/:nth-of-type\(/.test(right)) continue;
+    if (/\bnth=/.test(right)) continue;
+    return true;
+  }
+  return false;
+}
+
+// bug-051 Phase C (2026-05-03): warn when a flow's `kind: "mock"` interaction
+// targets a known backend-originated upstream API. `page.route()` only
+// intercepts BROWSER-originated calls — backend-to-external calls (proxy
+// patterns) bypass the mock entirely, producing silent test timeouts.
+//
+// Empirical case: 2026-05-03 finance-track-01 flow-4 mocked
+// `api.frankfurter.app` but the call originates from the BACKEND
+// (apps/api/src/fx/frankfurter.client.ts) → mock never fires, test times
+// out 30s waiting for /api/fx/refresh response.
+//
+// Allowlist of known backend-originated upstreams. Conservative — only
+// services that are almost ALWAYS hit from the server side.
+const BACKEND_ORIGIN_API_ALLOWLIST = [
+  /api\.frankfurter\.app/i,
+  /api\.openai\.com/i,
+  /api\.anthropic\.com/i,
+  /generativelanguage\.googleapis\.com/i,
+  /api\.plaid\.com/i,
+  /api\.stripe\.com/i,
+  /api\.openexchangerates\.org/i,
+  /api\.fixer\.io/i,
+];
+
+function isLikelyBackendOriginatedMock(urlPattern) {
+  if (typeof urlPattern !== "string") return false;
+  // Manifest urlPatterns are regex SOURCE strings — `\.` means literal `.`.
+  // Strip the backslash escapes so allowlist-regexes (which use `.` as
+  // regex-meta) match both `api.frankfurter.app` and `api\.frankfurter\.app`.
+  const normalized = urlPattern.replace(/\\\./g, ".");
+  for (const re of BACKEND_ORIGIN_API_ALLOWLIST) {
+    if (re.test(normalized)) return true;
+  }
+  return false;
+}
+
 for (let i = 0; i < manifest.flows.length; i++) {
   const flow = manifest.flows[i];
   if (!Array.isArray(flow.interactions)) continue;
   for (let j = 0; j < flow.interactions.length; j++) {
     const step = flow.interactions[j];
-    if (typeof step.selector !== "string") continue;
-    if (ENGINE_MIX_RE.test(step.selector)) {
-      errors.push(
-        `flow-${i + 1} (${flow.id ?? "unknown"}) interaction ${j + 1} (kind="${step.kind}"): ` +
-          `malformed selector "${step.selector}" — mixes CSS and Playwright engine ` +
-          `(role= / text= / xpath= / id= / data-testid=) via SPACE (CSS descendant). ` +
-          `Use ' >> ' to chain across engines (e.g. '[Card]:has-text("X") >> role=button'). ` +
-          `See .claude/skills/user-flows-generator/SKILL.md §4b engine-mixing anti-pattern (bug-046).`,
+    if (typeof step.selector === "string") {
+      if (ENGINE_MIX_RE.test(step.selector)) {
+        errors.push(
+          `flow-${i + 1} (${flow.id ?? "unknown"}) interaction ${j + 1} (kind="${step.kind}"): ` +
+            `malformed selector "${step.selector}" — mixes CSS and Playwright engine ` +
+            `(role= / text= / xpath= / id= / data-testid=) via SPACE (CSS descendant). ` +
+            `Use ' >> ' to chain across engines (e.g. '[Card]:has-text("X") >> role=button'). ` +
+            `See .claude/skills/user-flows-generator/SKILL.md §4b engine-mixing anti-pattern (bug-046).`,
+        );
+      }
+      if (detectHasTextStrictModeTrap(step.selector)) {
+        errors.push(
+          `flow-${i + 1} (${flow.id ?? "unknown"}) interaction ${j + 1} (kind="${step.kind}"): ` +
+            `selector "${step.selector}" uses ':has-text(...)' as parent scope ` +
+            `then chains an ambiguous child without '[name=...]' or ':nth-of-type(...)'. ` +
+            `Playwright's :has-text matches the whole subtree (NOT a descendant filter); ` +
+            `the chained child will resolve to multiple elements when the parent contains ` +
+            `more than one matching descendant → strict-mode violation. ` +
+            `Use 'role=<role>[name="<name>"]' directly, or terminate with '[name=...]'. ` +
+            `See .claude/skills/user-flows-generator/SKILL.md §4b :has-text strict-mode trap (bug-051).`,
+        );
+      }
+    }
+    if (
+      step.kind === "mock" &&
+      isLikelyBackendOriginatedMock(step.urlPattern)
+    ) {
+      warnings.push(
+        `flow-${i + 1} (${flow.id ?? "unknown"}) interaction ${j + 1}: ` +
+          `kind="mock" targets "${step.urlPattern}" which is almost always called ` +
+          `from the BACKEND (proxy pattern). page.route() intercepts BROWSER calls only — ` +
+          `the mock will silently never fire and the test will time out waiting for the ` +
+          `real upstream response. Mock the proxy URL instead (e.g. "/api/fx/refresh"), ` +
+          `or test offline-fallback behavior, or mark as LIVE_API=1 smoke. ` +
+          `See .claude/skills/user-flows-generator/SKILL.md §4b mock-layer guidance (bug-051).`,
       );
     }
   }

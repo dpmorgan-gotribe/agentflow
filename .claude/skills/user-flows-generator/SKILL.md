@@ -224,6 +224,49 @@ parsing css selector`):
    whitespace and pushes a hard error to its `errors[]` output. If your
    manifest fails the check, fix the engine-mix or use `>>`.
 
+   **CRITICAL — `:has-text` strict-mode trap (bug-051).** Playwright's
+   `:has-text("X")` matches an element if `"X"` appears ANYWHERE inside
+   its DOM subtree — it's NOT a descendant filter. When you scope a
+   parent with `:has-text("X")` then chain `>> role=button` (or any
+   ambiguous child), Playwright resolves to the same parent regardless
+   of which surrounding text you used, then the inner selector returns
+   multiple buttons → strict-mode violation at runtime.
+
+   ❌ **WRONG** (parent scope ambiguous; child resolves to >1 element):
+
+   ```
+   [data-kit-component="Card"]:has-text("Import CSV") >> role=button
+   ```
+
+   A settings card containing BOTH "Import CSV" + "Export JSON" matches
+   `:has-text("Import CSV")` (true — text is present) AND `:has-text("Export JSON")`
+   (also true — same card). The chained `role=button` then finds 2 buttons
+   in that card → `strict mode violation: locator resolved to 2 elements`.
+
+   ✓ **RIGHT** (terminal selector with `[name=...]` — unique by default):
+
+   ```
+   role=button[name="Import CSV"]
+   ```
+
+   The accessible name disambiguates without needing parent scoping.
+   Empirically the strongest selector preference (per step 2.1 above).
+
+   ✓ **OK** (parent scope + terminal `[name=...]`) — when parent context
+   is semantically important (e.g. distinguishing a button on a modal
+   from one on the page behind it):
+
+   ```
+   [data-kit-component="Card"]:has-text("Import CSV") >> role=button[name="Import CSV"]
+   ```
+
+   Synthesizer-side enforcement (bug-051 Phase B): the synthesizer
+   post-flight detects `:has-text("...")` followed by an ambiguous child
+   (any selector chain that doesn't include a `[name=...]` qualifier or a
+   `:nth-of-type(...)` qualifier) and pushes a hard error to `errors[]`.
+   When your manifest fails the check, switch to a `[name=...]` terminal
+   or add an explicit `nth=` qualifier.
+
 3. **Form submission flows.** When the transition involves submitting a
    form (input fields visible, submit button triggers nav), emit:
    - One `{ kind: "fill", selector, value }` per input field with a sane
@@ -366,6 +409,59 @@ whether the flow CHANGES persisted state, not by the verb in isolation).
   `clearMocks` afterEach hook). Mocks for happy-path flows (where the
   real backend is reachable, e.g. with `GITHUB_TOKEN` set) are
   unnecessary — only use this for genuinely synthetic states.
+
+  **CRITICAL — mock-layer must match call-origin (bug-051).**
+  `page.route()` intercepts requests originating from the BROWSER
+  (frontend `fetch(...)` or `XMLHttpRequest`). It does NOT intercept
+  calls made from the BACKEND — those leave Node's network stack and
+  never cross the browser context. Mocking the wrong layer produces a
+  silent test timeout: the mock never fires, the real upstream
+  fails/succeeds, and the flow's assertion times out 30s later.
+
+  Trace each external-API touch through the architecture:
+
+  | Pattern                                          | Mockable layer                    | Use `page.route()`?                 |
+  | ------------------------------------------------ | --------------------------------- | ----------------------------------- |
+  | Frontend → external API directly                 | external API URL                  | ✓ yes                               |
+  | Frontend → `/api/proxy` → backend → external API | `/api/proxy` (browser-originated) | ✓ yes — mock the proxy URL          |
+  | Frontend → `/api/proxy` → backend → external API | external API URL                  | ✗ NO — call originates from backend |
+
+  **❌ wrong** (mocks the wrong layer):
+
+  ```json
+  { "kind": "mock", "urlPattern": "api\\.frankfurter\\.app", ... }
+  ```
+
+  finance-track's `/api/fx/refresh` proxy fetches `api.frankfurter.app`
+  from Node — `page.route()` never sees it.
+
+  **✓ right** (mock the proxy that the browser actually calls):
+
+  ```json
+  { "kind": "mock", "urlPattern": "/api/fx/refresh", "status": 200, "body": {...} }
+  ```
+
+  When mocking the proxy isn't enough (you need to control the upstream
+  side specifically — e.g. testing how the backend handles a 5xx from
+  the upstream), the alternatives are:
+  1. **Test offline-fallback behavior instead.** Most projects ship a
+     backend fallback (e.g. cached-FX-rates fallback). Re-author the
+     flow to assert on cached-fallback UI state — `assertVisible` on a
+     "stale" badge or "using cached rates" notice — instead of asserting
+     a successful upstream refresh.
+  2. **Skip in CI; mark as `LIVE_API=1` smoke test** (per
+     `.claude/rules/testing-policy.md §External-API-tests-must-mock`).
+  3. **Configure a backend-side mock server** (Playwright `webServer` +
+     a sidecar). Project-specific; only worth the wiring cost when
+     genuinely no other option works.
+
+  Synthesizer-side enforcement (bug-051 Phase C): the synthesizer
+  post-flight pushes a warning to `warnings[]` when a `kind: "mock"`
+  interaction's `urlPattern` matches a known-backend-API allowlist
+  (frankfurter, openai, anthropic, plaid, stripe, etc.) — those are
+  almost always backend-originated, and mocking them at the browser
+  layer is silently wrong. The warning prompts the manifest author to
+  reconsider the layer or pick one of the 3 alternatives above.
 
 - **No `interactions[]` if confidence is low.** If the LLM can't infer
   selectors with reasonable confidence (e.g. the screen HTML is heavily
