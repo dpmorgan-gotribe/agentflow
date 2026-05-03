@@ -22,7 +22,7 @@ import type { APIRequestContext } from "@playwright/test";
  *
  * ## Backend contract
  *
- * The project's API exposes two gated endpoints, only enabled when the
+ * The project's API exposes THREE gated endpoints, only enabled when the
  * `ENABLE_TEST_SEED=1` environment variable is set (NEVER in production):
  *
  *   POST /test/seed
@@ -33,10 +33,17 @@ import type { APIRequestContext } from "@playwright/test";
  *     body: { tables: <table_name>[] }
  *     response: 204 on success
  *
- * The python-fastapi stack skill (`.claude/skills/agents/back-end/
- * python-fastapi/SKILL.md §Testing`) documents the canonical FastAPI
- * implementation shape. Other backend stacks implement equivalent
- * endpoints per their idioms.
+ *   POST /test/seed-baseline                                  (bug-042 Phase A.5)
+ *     body: {} (empty)
+ *     response: 204 on success
+ *     behavior: wraps the project's canonical db/seed.{ts,py} so playwright
+ *               globalSetup gets the FULL read-only baseline with one call
+ *               (one source of truth with CLI `db:seed`).
+ *
+ * The python-fastapi / node-fastify / node-trpc-nest stack skills
+ * (`.claude/skills/agents/back-end/{slug}/SKILL.md §Testing`) document the
+ * canonical implementation shape per stack. Cross-stack contract documented
+ * at `.claude/rules/testing-policy.md §Strategy-C-test-seed-contract`.
  *
  * Empirical reference: book-swap will be the first DB-backed project to
  * ship; finance-track follows. No shipped reference yet — this template
@@ -107,6 +114,44 @@ export async function cleanupFixtures(
     // eslint-disable-next-line no-console
     console.warn(
       `cleanupFixtures: POST ${SEED_BASE_URL}/test/cleanup → ${status} ${body}`,
+    );
+  }
+}
+
+/**
+ * bug-042 Phase A.5 — wraps the project's canonical db/seed.{ts,py} so
+ * globalSetup populates the full read-only baseline with one call. Empirical
+ * motivator: 2026-05-02 finance-track-01 where global-setup seeded ONLY
+ * fx_cache (11 rows) — every read-only flow landed on "No accounts yet"
+ * because the dashboard's load query found zero accounts.
+ *
+ * The backend wires this to its existing `seed()` function (e.g. fastify
+ * imports from `../db/seed.js`; FastAPI imports from `api.db.seed`). One
+ * source of truth with the CLI db:seed script.
+ *
+ * Example (Strategy C globalSetup):
+ *
+ *   export default async function globalSetup() {
+ *     const ctx = await request.newContext();
+ *     try {
+ *       await seedBaseline(ctx);
+ *     } finally {
+ *       await ctx.dispose();
+ *     }
+ *   }
+ */
+export async function seedBaseline(
+  request: APIRequestContext,
+): Promise<void> {
+  const response = await request.post(`${SEED_BASE_URL}/test/seed-baseline`, {
+    data: {},
+    failOnStatusCode: false,
+  });
+  if (!response.ok()) {
+    const status = response.status();
+    const body = await response.text();
+    throw new Error(
+      `seedBaseline: POST ${SEED_BASE_URL}/test/seed-baseline → ${status} ${body}`,
     );
   }
 }

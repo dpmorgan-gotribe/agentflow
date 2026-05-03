@@ -160,6 +160,25 @@ export class TestSeedController {
       await this.prisma[delegate].deleteMany({});
     }
   }
+
+  // bug-042 Phase A.5 (2026-05-03): /test/seed-baseline wraps the project's
+  // existing prisma/seed.ts (or db/seed.ts) so playwright globalSetup can
+  // populate the read-only baseline (users, listings, ...) with ONE call
+  // instead of duplicating ~150 lines of fixtures into the playwright
+  // global-setup. Empirical case: 2026-05-02 finance-track-01 (sister
+  // node-fastify project), where global-setup seeded ONLY fx_cache (11 rows)
+  // — every read-only flow landed on an empty-state UI because the load
+  // queries found zero rows.
+  //
+  // Wraps the canonical `seed(prisma)` function which is also CLI-invokable
+  // via `pnpm --filter @repo/api db:seed` (Prisma's standard convention via
+  // package.json's `prisma.seed` field). One source of truth.
+  @Post("seed-baseline")
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async seedBaseline(): Promise<void> {
+    const { seed } = await import("../../prisma/seed");
+    await seed(this.prisma);
+  }
 }
 ```
 
@@ -187,10 +206,11 @@ export class AppModule {}
 
 Builder responsibilities:
 
-1. Author `apps/api/src/test-seed/{test-seed.controller.ts, test-seed.module.ts}` (the two endpoints + Zod request schemas) when the project is DB-backed.
+1. Author `apps/api/src/test-seed/{test-seed.controller.ts, test-seed.module.ts}` (the THREE endpoints — `/seed`, `/cleanup`, `/seed-baseline` per bug-042 Phase A.5 — plus Zod request schemas) when the project is DB-backed.
 2. Author the `MODEL_REGISTRY` map — `{ "users": "user", "listings": "listing", ... }` — so the controller dispatches table-name → Prisma delegate. PM groups this under a single feature labeled `test-seed-endpoint` (idempotent; depends on data-models being live).
-3. Add `ENABLE_TEST_SEED=1` to `apps/api/.env.example` with a comment documenting the prod-default-OFF contract.
-4. NEVER expose `/test/seed` or `/test/cleanup` in production — runtime guard via the env flag is the canonical defense; CI must ensure the flag is unset on prod deploys.
+3. Ensure `apps/api/prisma/seed.ts` exports a named `seed(prisma)` function that the `/test/seed-baseline` controller can import. The same function MUST be CLI-invokable via `pnpm --filter @repo/api db:seed` (Prisma convention via package.json's `prisma.seed` field).
+4. Add `ENABLE_TEST_SEED=1` to `apps/api/.env.example` with a comment documenting the prod-default-OFF contract.
+5. NEVER expose `/test/seed`, `/test/cleanup`, or `/test/seed-baseline` in production — runtime guard via the env flag is the canonical defense; CI must ensure the flag is unset on prod deploys.
 
 Tester responsibilities (when authoring E2E specs that consume `seedFixtures`):
 

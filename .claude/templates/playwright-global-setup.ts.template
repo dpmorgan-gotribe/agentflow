@@ -1,13 +1,26 @@
 import { request } from "@playwright/test";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { seedFixtures } from "../e2e/helpers/seed-db";
 
 /**
  * Strategy C — Playwright globalSetup.
  *
- * Runs once per test-run to seed the read-only baseline that every test
- * reads but no test mutates. Mutation-tier flows handle their own
- * fixture seeding via describe-block beforeAll/afterAll (see
+ * Runs once per test-run to populate the read-only baseline that every test
+ * reads but no test mutates. Mutation-tier flows handle their own fixture
+ * seeding via describe-block beforeAll/afterAll (see
  * `.claude/rules/testing-policy.md §E2E data-seeding strategy`).
+ *
+ * bug-042 Phase A+C (2026-05-03): the global-setup now BOTH (a) calls the
+ * project's `/test/seed-baseline` endpoint to populate the canonical baseline
+ * (accounts/users/listings/... — whatever `db/seed.{ts,py}` defines), AND (b)
+ * optionally seeds additional per-fixture rows below.
+ *
+ * Empirical motivator: 2026-05-02 finance-track-01, where global-setup
+ * seeded ONLY fx_cache (11 rows) and every read-only flow landed on
+ * "No accounts yet" because the dashboard's load query found zero accounts.
+ * `/test/seed-baseline` wraps the project's canonical seeder so the baseline
+ * is one source of truth (CLI `db:seed` and global-setup converge).
  *
  * Wired into `playwright.config.ts`:
  *
@@ -16,17 +29,79 @@ import { seedFixtures } from "../e2e/helpers/seed-db";
  *     // ...
  *   });
  *
- * Edit the `fixtures` block below to match your project's schema. The
- * shape is the same one the backend's `/test/seed` endpoint accepts:
- * top-level keys are table names; values are arrays of row objects.
+ * The synthesizer (`scripts/synthesize-flow-e2e.mjs`) emits
+ * `apps/web/playwright/required-baseline.json` for Strategy C projects with
+ * a `callSeedBaseline: true` signal. When that file is present, this script
+ * POSTs `/test/seed-baseline` first; otherwise it falls through to fixtures
+ * below (legacy / pre-bug-042 projects).
  */
 
 export default async function globalSetup(): Promise<void> {
   const ctx = await request.newContext();
   try {
+    // ── bug-042 Phase A: call /test/seed-baseline when synthesizer signals ──
+    const baselineSignalPath = path.join(
+      __dirname,
+      "required-baseline.json",
+    );
+    if (fs.existsSync(baselineSignalPath)) {
+      try {
+        const signal = JSON.parse(
+          fs.readFileSync(baselineSignalPath, "utf8"),
+        );
+        if (signal.callSeedBaseline === true) {
+          const seedBase =
+            process.env.SEED_BASE_URL ??
+            process.env.API_BASE_URL ??
+            process.env.NEXT_PUBLIC_API_BASE_URL ??
+            "http://127.0.0.1:8000";
+          const res = await ctx.post(`${seedBase}/test/seed-baseline`, {
+            data: {},
+            failOnStatusCode: false,
+          });
+          if (res.status() === 404) {
+            // 404 = endpoint not registered (likely ENABLE_TEST_SEED=0 OR the
+            // backend hasn't shipped /test/seed-baseline yet). Surface as a
+            // soft warning so the operator can debug without aborting the
+            // whole suite — read-only flows will fail visibly downstream
+            // anyway with empty-state UI assertions.
+            // eslint-disable-next-line no-console
+            console.warn(
+              "[global-setup] /test/seed-baseline returned 404 — ENABLE_TEST_SEED " +
+                "is not 1 OR the backend hasn't implemented /test/seed-baseline yet " +
+                "(see .claude/skills/agents/back-end/{stack}/SKILL.md §3 + " +
+                ".claude/rules/testing-policy.md §Strategy-C-test-seed-contract).",
+            );
+          } else if (!res.ok()) {
+            const body = await res.text();
+            throw new Error(
+              `[global-setup] /test/seed-baseline returned ${res.status()}: ${body.slice(0, 400)}`,
+            );
+          }
+        }
+      } catch (err) {
+        // Don't swallow non-HTTP errors (e.g. malformed signal JSON) — fail
+        // the test run loudly so the operator notices.
+        if (err instanceof SyntaxError) {
+          throw new Error(
+            `[global-setup] required-baseline.json malformed: ${err.message}`,
+          );
+        }
+        throw err;
+      }
+    }
+
+    // ── Optional per-fixture seeding (legacy / bug-042-pre projects) ────────
+    // Edit the `fixtures` block below to match your project's schema. The
+    // shape is the same one the backend's `/test/seed` endpoint accepts:
+    // top-level keys are table names; values are arrays of row objects.
+    //
+    // For Strategy C projects post-bug-042, the canonical baseline is
+    // populated via `/test/seed-baseline` above (one source of truth with the
+    // CLI db:seed). Use this block ONLY for fixtures the canonical seeder
+    // doesn't cover (e.g. test-only feature flags, ephemeral edge-case rows).
     await seedFixtures(ctx, {
-      // ── Baseline read-only fixtures ─────────────────────────────────
-      // These are seeded once per run and assumed present by every test.
+      // ── Baseline read-only fixtures (additive — runs AFTER /test/seed-baseline) ─
       // Mutation flows (test.describe.serial blocks) seed their own
       // additional rows in beforeAll and clean up in afterAll.
       //

@@ -174,6 +174,28 @@ Each shipped stack skill's `§Testing` block declares which strategy applies bas
 - `repo-health-dashboard-01` (shipped, external-API only) — Strategy D. `apps/web/e2e/compare.spec.ts:15` uses `page.route("**/api/report/**", ...)` to fake the GitHub-proxy responses. No backend needed.
 - `book-swap` / `finance-track` (pre-builds, real-DB) — would need Strategy C when E2E lands. No shipped pattern yet; first project to ship will define the canonical `/test/seed` endpoint shape.
 
+### Strategy-C-test-seed-contract (bug-042 Phase A.5/B — 2026-05-03)
+
+**Strategy C is uniform across backend stacks.** Whether the backend is FastAPI, Fastify, Nest, or Express, the project MUST expose THREE gated endpoints under `/test/*`, registered ONLY when `ENABLE_TEST_SEED=1` is set in the environment. Stack-specific implementations live in each backend skill's `§E2E data-seeding strategy` section; the contract below is the cross-stack canonical:
+
+| Endpoint                   | Request                                            | Response    | Behavior                                                                                                                                                                                                                                  |
+| -------------------------- | -------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /test/seed`          | `{ "fixtures": { "<table>": [<row>, ...], ... } }` | `204` on ok | Bulk-insert each row in a single transaction. Tables not in the per-project whitelist throw `400`.                                                                                                                                        |
+| `POST /test/cleanup`       | `{ "tables": ["<table>", ...] }`                   | `204` on ok | `DELETE FROM <table>` for each whitelisted table. Unknown tables silently ignored.                                                                                                                                                        |
+| `POST /test/seed-baseline` | `{}` (empty)                                       | `204` on ok | Wraps the project's existing `db/seed.{ts,py}` so playwright globalSetup gets the FULL read-only baseline (accounts/users/listings/...) with ONE call instead of duplicating ~150 lines of fixture data into the playwright global-setup. |
+
+**Why `/test/seed-baseline` is mandatory** (the bug-042 root cause): empirical case 2026-05-02 finance-track-01 — global-setup seeded ONLY fx_cache (11 rows), every read-only flow landed on "No accounts yet" because the dashboard's load query found zero accounts. The stack-skill `db/seed.ts` already had the canonical seeder; the global-setup just couldn't reach it. `/test/seed-baseline` closes the gap with one source of truth.
+
+**Cross-stack reference implementations** (added bug-042 Phase A.5):
+
+- `node-fastify`: `.claude/skills/agents/back-end/node-fastify/SKILL.md §3 → testSeedRoutes` — `app.post("/seed-baseline", ...)` imports `seed` from `../db/seed.js`
+- `python-fastapi`: `.claude/skills/agents/back-end/python-fastapi/SKILL.md §3 → /test/seed-baseline` — `seed_baseline` imports `seed` from `api.db.seed`
+- `node-trpc-nest`: `.claude/skills/agents/back-end/node-trpc-nest/SKILL.md §3 → TestSeedController.seedBaseline` — imports `seed` from `../../prisma/seed`
+
+The `seed()` function is ALSO CLI-invokable per each stack's package.json scripts (`pnpm --filter @repo/api db:seed` for node-\*; `uv run python -m api.db.seed` for python-fastapi). Two callers (CLI + test endpoint), one definition.
+
+**Empirical reference**: `projects/finance-track-01/apps/api/src/routes/test-seed.ts` already implements `/test/seed` + `/test/cleanup` for node-fastify (the canonical pattern; needs `/test/seed-baseline` added per Wave 2 project-side recovery).
+
 ### `synthesize-flow-e2e` synthesizer integration (feat-038 Phase 1+)
 
 When the synthesizer (`scripts/synthesize-flow-e2e.mjs`) deepens beyond the current `page.goto("/")`-only output, generated specs must opt into the right strategy:

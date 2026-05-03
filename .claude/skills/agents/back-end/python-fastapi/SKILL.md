@@ -188,6 +188,25 @@ async def cleanup_fixtures(payload: CleanupRequest, session: AsyncSession = Depe
         if model is not None:
             await session.execute(text(f"TRUNCATE TABLE {model.__tablename__} CASCADE"))
     await session.commit()
+
+# bug-042 Phase A.5 (2026-05-03): /test/seed-baseline wraps the project's
+# existing db/seed.py so playwright globalSetup can populate the read-only
+# baseline (users, listings, settings, ...) with ONE call instead of
+# duplicating ~150 lines of fixtures into the playwright global-setup.
+# Empirical case: 2026-05-02 finance-track-01 (node-fastify sister), where
+# global-setup seeded ONLY fx_cache (11 rows) — every read-only flow landed
+# on an empty-state UI because the dashboard's load query found zero rows.
+#
+# Wraps `seed()` from api.db.seed which is already the canonical dev-data
+# populator (invoked via `uv run python -m api.db.seed` or equivalent CLI).
+# Extracting the function as a wrapper keeps both CLI + test paths
+# converging on one fixture definition.
+@router.post("/seed-baseline", status_code=status.HTTP_204_NO_CONTENT)
+async def seed_baseline(session: AsyncSession = Depends(get_session)):
+    """POST /test/seed-baseline — wraps db/seed.py for the read-only baseline."""
+    from api.db.seed import seed
+    await seed(session)
+    await session.commit()
 ```
 
 Mount-time gate (in `apps/api/src/api/main.py`):
@@ -202,10 +221,11 @@ if os.environ.get("ENABLE_TEST_SEED") == "1":
 
 Builder responsibilities:
 
-1. Author `apps/api/src/api/routes/test_seed.py` (the two endpoints + Pydantic request models) when the project is DB-backed.
+1. Author `apps/api/src/api/routes/test_seed.py` (the THREE endpoints — `/seed`, `/cleanup`, `/seed-baseline` per bug-042 Phase A.5 — plus Pydantic request models) when the project is DB-backed.
 2. Author the `MODEL_REGISTRY` dict — `{ "users": User, "listings": Listing, ... }` — so the endpoint dispatches table-name → SQLAlchemy model. PM groups this under a single feature labeled `test-seed-endpoint` (idempotent; depends on data-models being live).
-3. Add `ENABLE_TEST_SEED=1` to `apps/api/.env.example` with a comment documenting the prod-default-OFF contract.
-4. NEVER expose `/test/seed` or `/test/cleanup` in production — runtime guard via the env flag is the canonical defense; CI must ensure the flag is unset on prod deploys.
+3. Ensure `apps/api/src/api/db/seed.py` exports an `async def seed(session)` function that the `/test/seed-baseline` route can import. The same function MUST be CLI-invokable (typically `uv run python -m api.db.seed`).
+4. Add `ENABLE_TEST_SEED=1` to `apps/api/.env.example` with a comment documenting the prod-default-OFF contract.
+5. NEVER expose `/test/seed`, `/test/cleanup`, or `/test/seed-baseline` in production — runtime guard via the env flag is the canonical defense; CI must ensure the flag is unset on prod deploys.
 
 Tester responsibilities (when authoring E2E specs that consume `seedFixtures`):
 

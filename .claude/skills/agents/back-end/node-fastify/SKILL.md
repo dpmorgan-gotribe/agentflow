@@ -177,6 +177,25 @@ export const testSeedRoutes: FastifyPluginAsync = async (app) => {
     }
     reply.code(204).send();
   });
+
+  // bug-042 Phase A.5 (2026-05-03): /test/seed-baseline wraps the project's
+  // existing db/seed.ts so playwright globalSetup can populate the read-only
+  // baseline (accounts, transactions, settings, ...) with ONE call instead of
+  // duplicating ~150 lines of fixtures into the playwright global-setup.
+  // Empirical case: 2026-05-02 finance-track-01, where global-setup seeded
+  // ONLY fx_cache (11 rows) — every read-only flow landed on "No accounts yet"
+  // because the dashboard's load query found zero accounts.
+  //
+  // Wraps `seed()` from src/db/seed.ts which is already the canonical
+  // dev-data populator (invoked via `pnpm --filter @repo/api db:seed` per
+  // package.json scripts). Extracting the function as a wrapper keeps both
+  // CLI + test paths converging on one fixture definition — the bug-119
+  // class lesson (one source of truth or drift is inevitable).
+  app.post("/seed-baseline", async (_req, reply) => {
+    const { seed } = await import("../db/seed.js");
+    seed(app.db);
+    reply.code(204).send();
+  });
 };
 ```
 
@@ -200,10 +219,11 @@ export async function buildApp(opts: { db: Database } = {}) {
 
 Builder responsibilities:
 
-1. Author `apps/api/src/routes/test-seed.ts` (the two endpoints + Zod request schemas) when the project is DB-backed.
+1. Author `apps/api/src/routes/test-seed.ts` (the THREE endpoints — `/seed`, `/cleanup`, `/seed-baseline` per bug-042 Phase A.5 — plus Zod request schemas) when the project is DB-backed.
 2. Author the `TABLE_REGISTRY` set — `new Set(["users", "listings", ...])` — so the route validates that fixture writes target known tables. PM groups this under a single feature labeled `test-seed-endpoint` (idempotent; depends on data-models being live).
-3. Add `ENABLE_TEST_SEED=1` to `apps/api/.env.example` with a comment documenting the prod-default-OFF contract.
-4. NEVER expose `/test/seed` or `/test/cleanup` in production — runtime guard via the env flag is the canonical defense; CI must ensure the flag is unset on prod deploys.
+3. Ensure `apps/api/src/db/seed.ts` exports a named `seed(db)` function that the `/test/seed-baseline` route can import. The same function MUST be CLI-invokable via `pnpm --filter @repo/api db:seed` (one source of truth — `seed()` is the canonical dev-data populator).
+4. Add `ENABLE_TEST_SEED=1` to `apps/api/.env.example` with a comment documenting the prod-default-OFF contract.
+5. NEVER expose `/test/seed`, `/test/cleanup`, or `/test/seed-baseline` in production — runtime guard via the env flag is the canonical defense; CI must ensure the flag is unset on prod deploys.
 
 Tester responsibilities (when authoring E2E specs that consume `seedFixtures`):
 
