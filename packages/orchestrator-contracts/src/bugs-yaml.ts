@@ -119,7 +119,14 @@ export const BugEntrySchema = z.object({
   affectsFiles: z.array(z.string()).default([]),
 
   // Assignment + retry
-  agentSequence: z.array(AgentSequenceMember).min(1),
+  // bug-052 follow-up (2026-05-03): allow empty agentSequence. bug-050 Phase B
+  // introduced `manifest-author` routing which returns `[]` to signal
+  // "skip dispatch — needs operator review". Pre-fix schema required min(1)
+  // → bugs.yaml with any manifest-author entry failed parse → fix-bugs-loop
+  // exited with status:"no-bugs" before processing ANY bug. The empty array
+  // is the canonical SKIP-DISPATCH marker per fix-bugs-loop's terminal
+  // `needs-operator-review` status (bugs-yaml.ts BugStatusSchema).
+  agentSequence: z.array(AgentSequenceMember),
   status: BugStatusSchema.default("pending"),
   attempts: z.number().int().min(0).default(0),
   maxAttempts: z.number().int().min(1).default(3),
