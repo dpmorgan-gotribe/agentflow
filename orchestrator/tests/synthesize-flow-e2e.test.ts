@@ -498,3 +498,268 @@ export default defineConfig({
     ).toBe(false);
   });
 });
+
+// ─── bug-046 Phase B: synthesizer detects engine-mixing in selectors ──────
+//
+// Empirical case: 2026-05-03 finance-track-01 manifest had 7+ instances of
+// patterns like `[data-kit-component="Card"]:has-text("Import CSV") role=button`
+// — at runtime Playwright threw `Unexpected token "=" while parsing css selector`.
+// /user-flows-generator (LLM-driven) mis-extrapolated SKILL.md §4b's CSS-only
+// descendant example to mix CSS with `role=` engine via SPACE.
+//
+// Fix: synthesizer regex-detects ` role=` / ` text=` / ` xpath=` after non-`>>`
+// whitespace mid-selector + pushes a hard error to errors[]. Hard error (no
+// auto-rewrite) — synthesizer stays mechanical per operator decision.
+describe("synthesize-flow-e2e — selector engine-mix lint (bug-046 Phase B)", () => {
+  const tempCleanup: string[] = [];
+  afterEach(() => {
+    for (const dir of tempCleanup.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function seedFixtureWithManifest(
+    fixtureSrc: string,
+    tempDir: string,
+    manifestOverride: object,
+  ): void {
+    const fs = require("node:fs") as typeof import("node:fs");
+    cpSync(join(fixtureSrc, ".claude"), join(tempDir, ".claude"), {
+      recursive: true,
+    });
+    const docsDir = join(tempDir, "docs");
+    fs.mkdirSync(docsDir, { recursive: true });
+    fs.writeFileSync(
+      join(docsDir, "user-flows-manifest.json"),
+      JSON.stringify(manifestOverride, null, 2),
+      "utf8",
+    );
+  }
+
+  it("flags malformed `[CSS] role=button` selector (CSS+role= via space)", () => {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-c-realdb");
+    const tempDir = mkdtempSync(join(tmpdir(), `synth-bug046-css-role-`));
+    tempCleanup.push(tempDir);
+    seedFixtureWithManifest(fixtureSrc, tempDir, {
+      version: "2.0",
+      flows: [
+        {
+          id: "flow-1",
+          platform: "webapp",
+          name: "Bad selector flow",
+          description: "Test flow with engine-mix anti-pattern",
+          primaryPersona: "alice",
+          steps: [],
+          interactions: [
+            { kind: "navigate", to: "/" },
+            {
+              kind: "click",
+              selector:
+                '[data-kit-component="Card"]:has-text("Import CSV") role=button',
+            },
+          ],
+          seedingTier: "read-only",
+        },
+      ],
+    });
+
+    const result = runSynthesizerOn(tempDir);
+    expect(result.ok).toBe(true);
+    expect(result.errors).toBeDefined();
+    const engineMixError = result.errors!.find((e) =>
+      e.includes("malformed selector"),
+    );
+    expect(engineMixError).toBeDefined();
+    expect(engineMixError).toContain("flow-1");
+    expect(engineMixError).toContain("role= / text= / xpath=");
+    expect(engineMixError).toContain(">>");
+    expect(engineMixError).toContain("bug-046");
+  });
+
+  it("does NOT flag valid `[CSS] >> role=button` (proper engine chain)", () => {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-c-realdb");
+    const tempDir = mkdtempSync(join(tmpdir(), `synth-bug046-valid-chain-`));
+    tempCleanup.push(tempDir);
+    seedFixtureWithManifest(fixtureSrc, tempDir, {
+      version: "2.0",
+      flows: [
+        {
+          id: "flow-1",
+          platform: "webapp",
+          name: "Good chain",
+          description: "Properly chained selector",
+          primaryPersona: "alice",
+          steps: [],
+          interactions: [
+            { kind: "navigate", to: "/" },
+            {
+              kind: "click",
+              selector:
+                '[data-kit-component="Card"]:has-text("Import CSV") >> role=button',
+            },
+          ],
+          seedingTier: "read-only",
+        },
+      ],
+    });
+
+    const result = runSynthesizerOn(tempDir);
+    const engineMixError = (result.errors ?? []).find((e) =>
+      e.includes("malformed selector"),
+    );
+    expect(engineMixError).toBeUndefined();
+  });
+
+  it("does NOT flag pure-CSS descendant chain `[Card] [Button]`", () => {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-c-realdb");
+    const tempDir = mkdtempSync(join(tmpdir(), `synth-bug046-css-only-`));
+    tempCleanup.push(tempDir);
+    seedFixtureWithManifest(fixtureSrc, tempDir, {
+      version: "2.0",
+      flows: [
+        {
+          id: "flow-1",
+          platform: "webapp",
+          name: "CSS descendant",
+          description: "Two CSS selectors via space (valid)",
+          primaryPersona: "alice",
+          steps: [],
+          interactions: [
+            { kind: "navigate", to: "/" },
+            {
+              kind: "click",
+              selector:
+                '[data-kit-component="Card"]:has-text("X") [data-kit-component="Button"]',
+            },
+          ],
+          seedingTier: "read-only",
+        },
+      ],
+    });
+
+    const result = runSynthesizerOn(tempDir);
+    const engineMixError = (result.errors ?? []).find((e) =>
+      e.includes("malformed selector"),
+    );
+    expect(engineMixError).toBeUndefined();
+  });
+
+  it("flags `[CSS] text=foo` (CSS + text= via space)", () => {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-c-realdb");
+    const tempDir = mkdtempSync(join(tmpdir(), `synth-bug046-text-mix-`));
+    tempCleanup.push(tempDir);
+    seedFixtureWithManifest(fixtureSrc, tempDir, {
+      version: "2.0",
+      flows: [
+        {
+          id: "flow-1",
+          platform: "webapp",
+          name: "Bad text mix",
+          description: "Test flow with text= engine-mix",
+          primaryPersona: "alice",
+          steps: [],
+          interactions: [
+            { kind: "navigate", to: "/" },
+            {
+              kind: "click",
+              selector: '[data-kit-component="Card"] text=Submit',
+            },
+          ],
+          seedingTier: "read-only",
+        },
+      ],
+    });
+
+    const result = runSynthesizerOn(tempDir);
+    const engineMixError = (result.errors ?? []).find((e) =>
+      e.includes("malformed selector"),
+    );
+    expect(engineMixError).toBeDefined();
+  });
+});
+
+// ─── bug-047 Phase B: synthesizer rewrites path-shape patterns to URL-shape ─
+//
+// Empirical case: 2026-05-03 finance-track-01 manifest had 5 broken `^/...`
+// patterns (`^/$`, `^/accounts`, `^/settings`, `^/transactions`, `^/reports`).
+// Synthesizer's emit `expect(page).toHaveURL(new RegExp("^/foo"))` never matches
+// `http://localhost:3000/foo` (Playwright's toHaveURL matches the full URL).
+//
+// Fix: synthesizer auto-rewrites path-shape patterns to URL-shape:
+//   `^/foo` → `^https?://[^/]+/foo`
+//   `^/$`   → `^https?://[^/]+/$`
+// Unanchored / URL-shape patterns are preserved unchanged.
+describe("synthesize-flow-e2e — assertUrlMatches path-shape rewrite (bug-047 Phase B)", () => {
+  const tempCleanup: string[] = [];
+  afterEach(() => {
+    for (const dir of tempCleanup.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function runWithUrlPattern(pattern: string): string {
+    const fixtureSrc = join(FIXTURES_DIR, "strategy-c-realdb");
+    const tempDir = mkdtempSync(join(tmpdir(), `synth-bug047-`));
+    tempCleanup.push(tempDir);
+    const fs = require("node:fs") as typeof import("node:fs");
+    cpSync(join(fixtureSrc, ".claude"), join(tempDir, ".claude"), {
+      recursive: true,
+    });
+    const docsDir = join(tempDir, "docs");
+    fs.mkdirSync(docsDir, { recursive: true });
+    fs.writeFileSync(
+      join(docsDir, "user-flows-manifest.json"),
+      JSON.stringify({
+        version: "2.0",
+        flows: [
+          {
+            id: "flow-1",
+            platform: "webapp",
+            name: "URL pattern test",
+            description: "Probes the assertUrlMatches rewrite",
+            primaryPersona: "alice",
+            steps: [],
+            interactions: [
+              { kind: "navigate", to: "/" },
+              { kind: "assertUrlMatches", pattern },
+            ],
+            seedingTier: "read-only",
+          },
+        ],
+      }),
+      "utf8",
+    );
+    runSynthesizerOn(tempDir);
+    const specPath = join(tempDir, "apps/web/e2e/synthesized/flow-1.spec.ts");
+    return fs.readFileSync(specPath, "utf8");
+  }
+
+  it("rewrites `^/foo` → `^https?://[^/]+/foo`", () => {
+    const spec = runWithUrlPattern("^/foo");
+    expect(spec).toContain("^https?://[^/]+/foo");
+    expect(spec).not.toContain('new RegExp("^/foo")');
+  });
+
+  it("rewrites `^/$` → `^https?://[^/]+/$` (root path)", () => {
+    const spec = runWithUrlPattern("^/$");
+    expect(spec).toContain("^https?://[^/]+/$");
+  });
+
+  it("rewrites `^/reports` → `^https?://[^/]+/reports` (empirical case)", () => {
+    const spec = runWithUrlPattern("^/reports");
+    expect(spec).toContain("^https?://[^/]+/reports");
+  });
+
+  it("preserves unanchored `/foo` (already partial-match-safe)", () => {
+    const spec = runWithUrlPattern("/foo");
+    expect(spec).toContain('new RegExp("/foo")');
+    expect(spec).not.toContain("^https?://");
+  });
+
+  it("preserves explicitly URL-shape `^https?://...` (operator authored)", () => {
+    const spec = runWithUrlPattern("^https?://api\\.example\\.com/v1/foo");
+    expect(spec).toContain("^https?://api");
+    // No double-rewrite (the `^https?://` shouldn't get prepended again)
+    expect((spec.match(/\^https\?/g) ?? []).length).toBe(1);
+  });
+});

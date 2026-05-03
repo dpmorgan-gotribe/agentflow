@@ -1,10 +1,10 @@
 ---
 id: bug-040-architect-skips-scripts-dev-mjs-emission-step
 type: bug
-status: draft
+status: completed
 author-agent: human
 created: 2026-05-02
-updated: 2026-05-02
+updated: 2026-05-03
 parent-plan: null
 supersedes: null
 superseded-by: null

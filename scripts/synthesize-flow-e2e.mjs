@@ -237,6 +237,34 @@ function strategyFromPersistence(persistenceLayer) {
 // canonical values; the default branch is a defensive throw.
 
 /**
+ * bug-047 Phase B (2026-05-03): translate path-shape regex patterns to
+ * URL-shape so they correctly match Playwright's full-URL `toHaveURL`
+ * semantics. /user-flows-generator authors patterns relative to the URL
+ * pathname (e.g. `^/foo`), but Playwright matches against the absolute
+ * URL `http://host:port/foo` — a `^`-anchored path pattern never matches.
+ *
+ * Algorithm:
+ *   `^/foo`           → `^https?://[^/]+/foo`   (anchor rewritten to URL start)
+ *   `^/$`             → `^https?://[^/]+/$`     (root path)
+ *   `/foo` (no `^`)   → unchanged (partial match anywhere in URL — works)
+ *   `^https?://...`   → unchanged (already URL-shape; trust author)
+ *   `foo` (no slash)  → unchanged (operator authored loose match)
+ *
+ * Empirical case: 2026-05-03 finance-track-01 had 5 broken `^/...`
+ * patterns; pre-fix all 5 failed `toHaveURL`; post-fix all 5 match.
+ */
+function rewritePathShapeToUrlShape(pattern) {
+  if (typeof pattern !== "string" || pattern.length === 0) return pattern;
+  // `^/...` → `^https?://[^/]+/...` (preserve everything after the leading `/`)
+  if (pattern.startsWith("^/")) {
+    return `^https?://[^/]+${pattern.slice(1)}`;
+  }
+  // Otherwise unchanged — partial-match patterns already work; URL-shape
+  // patterns the operator authored explicitly are trusted.
+  return pattern;
+}
+
+/**
  * Render a single TS source string for one InteractionStep. The emitted
  * line includes a `__stepIndex = N;` prefix so the surrounding try/catch
  * can name the failing step in its rethrown error message.
@@ -271,8 +299,13 @@ function emitInteraction(step, stepNum, flowFileBase) {
       return `      ${idx} await expect(page.locator(${JSON.stringify(step.selector)})).toBeVisible();`;
     case "assertText":
       return `      ${idx} await expect(page.locator(${JSON.stringify(step.selector)})).toHaveText(${JSON.stringify(step.text)});`;
-    case "assertUrlMatches":
-      return `      ${idx} await expect(page).toHaveURL(new RegExp(${JSON.stringify(step.pattern)}));`;
+    case "assertUrlMatches": {
+      // bug-047 Phase B (2026-05-03): rewrite path-shape patterns
+      // (`^/foo`) to URL-shape so they actually match Playwright's
+      // toHaveURL full-URL semantics. See rewritePathShapeToUrlShape.
+      const rewritten = rewritePathShapeToUrlShape(step.pattern);
+      return `      ${idx} await expect(page).toHaveURL(new RegExp(${JSON.stringify(rewritten)}));`;
+    }
     case "screenshot":
       // Screenshots land under FAILURE_DIR (the spec's artefact dump
       // directory) prefixed with the flow id so they're discoverable per
@@ -853,6 +886,41 @@ if (hasPlaywrightConfig && generated.length > 0) {
     warnings.push(
       `failed to read apps/web/playwright.config.ts for webServer check: ${err instanceof Error ? err.message : String(err)}`,
     );
+  }
+}
+
+// bug-046 Phase B (2026-05-03): validate manifest selectors for the
+// engine-mixing anti-pattern. The /user-flows-generator (LLM-driven)
+// occasionally authors selectors mixing CSS (`[data-kit-component="X"]:has-text("Y")`)
+// with Playwright's role= / text= / xpath= engines via SPACE — which is
+// the CSS descendant combinator and ONLY works between two CSS-shape
+// selectors. Cross-engine chaining requires the `>>` operator. The
+// LLM mis-extrapolates SKILL.md §4b's CSS-only descendant example.
+//
+// Empirical case: 2026-05-03 finance-track-01 manifest had 7+ instances
+// of patterns like `[data-kit-component="Card"]:has-text("Import CSV") role=button`
+// — at runtime Playwright threw `Unexpected token "=" while parsing css selector`.
+//
+// Detection: regex-match the selector for a SPACE followed by one of the
+// non-CSS engine prefixes (`role=`, `text=`, `xpath=`, `id=`, `data-testid=`)
+// where the immediately preceding token is NOT `>>`. Hard-error to errors[]
+// (no auto-rewrite — synthesizer stays mechanical per operator decision).
+const ENGINE_MIX_RE = /(?:^|[^>])\s+(role|text|xpath|id|data-testid)=/;
+for (let i = 0; i < manifest.flows.length; i++) {
+  const flow = manifest.flows[i];
+  if (!Array.isArray(flow.interactions)) continue;
+  for (let j = 0; j < flow.interactions.length; j++) {
+    const step = flow.interactions[j];
+    if (typeof step.selector !== "string") continue;
+    if (ENGINE_MIX_RE.test(step.selector)) {
+      errors.push(
+        `flow-${i + 1} (${flow.id ?? "unknown"}) interaction ${j + 1} (kind="${step.kind}"): ` +
+          `malformed selector "${step.selector}" — mixes CSS and Playwright engine ` +
+          `(role= / text= / xpath= / id= / data-testid=) via SPACE (CSS descendant). ` +
+          `Use ' >> ' to chain across engines (e.g. '[Card]:has-text("X") >> role=button'). ` +
+          `See .claude/skills/user-flows-generator/SKILL.md §4b engine-mixing anti-pattern (bug-046).`,
+      );
+    }
   }
 }
 

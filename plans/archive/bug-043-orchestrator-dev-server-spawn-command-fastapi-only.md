@@ -1,7 +1,7 @@
 ---
 id: bug-043-orchestrator-dev-server-spawn-command-fastapi-only
 type: bug
-status: approved
+status: completed
 author-agent: human
 created: 2026-05-03
 updated: 2026-05-03

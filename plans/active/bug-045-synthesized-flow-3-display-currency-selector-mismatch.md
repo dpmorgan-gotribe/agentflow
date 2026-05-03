@@ -58,7 +58,31 @@ Page snapshot at failure confirms dashboard rendered populated UI (heading "Dash
 
 ## Root Cause Analysis
 
-### Why the synthesizer guessed a button
+### 2026-05-03 diagnosis (Phase A complete — supersedes the inference-heuristic theory below)
+
+**The bug is NOT a synthesizer or selector-inference issue.** Investigated the chain:
+
+1. The manifest's flow-3 `interactions[]` explicitly authors `role=button[name="Display currency"]` (lines 369 + 375 of `docs/user-flows-manifest.json`). The synthesizer just emits exactly what the manifest specifies — it does NOT use `inferSelector` for v2.0 manifests with explicit selectors.
+2. The DESIGN (`docs/screens/webapp/dashboard-populated.html` line 776) has `<button class="currency-selector" aria-haspopup="listbox" aria-label="Display currency">` in the topbar. The manifest's selector matches the design verbatim.
+3. The BUILD (`apps/web/app/layout.tsx` + `apps/web/src/components/fx-status-indicator.tsx`) renders ONLY `<FxStatusIndicator />` in the AppShell `topBar` slot — a brand label + conditional FX-stale badge. **No currency selector control exists in the build at all.**
+
+So this is a **build-completeness gap**: the build diverged from the design by omitting the topbar currency selector. The hand-written flow-3 (`apps/web/e2e/flow-3.spec.ts`) works around this by navigating to `/settings` to change the display currency (the build's only path to do so). The synthesized flow trusts the design and fails when the topbar control isn't there.
+
+### Recommendation: defer to /build-to-spec-verify's fix-loop
+
+`/build-to-spec-verify` is the canonical surface for catching build-completeness gaps:
+
+1. Verifier runs the synthesized flow → flow-3 fails at interaction 4 with "waiting for locator..." timeout
+2. Verifier files a bug entry in `docs/bugs.yaml` with the failing test as context (`flowFailure` correlated to the orphan if any)
+3. Fix-loop dispatches a `web-frontend-builder` retry with the failing test as context
+4. Builder reads the design HTML + sees the missing topbar currency selector + adds it to layout/topbar (likely a new `<TopBarCurrencySelector />` component replacing or wrapping `<FxStatusIndicator />`)
+5. Re-run verifier → flow-3 passes
+
+This is the loop the factory was designed for. Pre-fixing the build manually would BYPASS the verifier's coverage role + leave no audit trail of the gap.
+
+### Original theory (REJECTED — kept for posterity)
+
+The original framing assumed the synthesizer's selector inference (`scripts/synthesize-flow-e2e.mjs:133 inferSelector`) was guessing. It is NOT — for v2.0 manifests the synthesizer copies the explicit selector verbatim. Below was the rejected theory.
 
 `scripts/synthesize-flow-e2e.mjs:133 inferSelector` walks fallback heuristics:
 
@@ -84,25 +108,17 @@ Likely best: **Option 1 (synthesizer reads design HTML)** — same source of tru
 
 ## Fix Approach
 
-### Phase A — diagnose the actual rendered control
+### Phase A — diagnosis (COMPLETE 2026-05-03)
 
-Inspect `projects/finance-track-01/docs/screens/webapp/dashboard.html` (or whichever screen the user-flows-manifest's flow-3 step 4 transitions through). Confirm what control renders the "display currency switch" — `<button>`, `<select>`, `<input role="combobox">`, etc. + what aria-label or accessible-name it has.
+Phase A finding: design HTML has `<button aria-label="Display currency">` in topbar; build's topBar slot renders only `<FxStatusIndicator />` (brand label + FX-stale badge); no currency selector control exists in the build.
 
-### Phase B — choose the intervention point
+### Phase B — choose intervention (COMPLETE 2026-05-03 — DEFER to verifier's fix-loop)
 
-Based on Phase A findings:
+Decision: don't pre-fix manually. Re-run `/build-to-spec-verify --bugs-yaml-mode=fresh` and let the verifier surface flow-3's failure as a real bug in `docs/bugs.yaml`. The fix-loop will dispatch a `web-frontend-builder` retry with the failing test as context; the builder will read the design HTML + add the missing topbar currency selector to `apps/web/app/layout.tsx`. This is the canonical loop the factory was designed for.
 
-- If the design HTML has a button with aria-label="Display currency" → bug is in build (web-frontend-builder didn't preserve the aria-label) → file as build bug
-- If the design HTML has a different element/label → synthesizer should match that → file as synthesizer-side fix (Option 1)
-- If the design HTML has no labeled control at all → manifest needs the right interaction step OR the design needs the control → file as design+flow rework
+### Phase C — empirical re-validation (PENDING verifier rerun)
 
-### Phase C — implementation
-
-TBD per Phase B finding.
-
-### Phase D — empirical re-validation
-
-Re-run synthesized flow-3 + confirm interaction 4+ passes.
+Re-run synthesized flow-3 after the fix-loop completes. Expect: interaction 4+ passes against the populated dashboard with the new topbar currency selector.
 
 ## Validation Criteria
 

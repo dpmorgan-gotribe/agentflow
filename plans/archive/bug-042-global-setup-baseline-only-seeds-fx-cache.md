@@ -1,10 +1,10 @@
 ---
 id: bug-042-global-setup-baseline-only-seeds-fx-cache
 type: bug
-status: draft
+status: completed
 author-agent: human
 created: 2026-05-02
-updated: 2026-05-02
+updated: 2026-05-03
 parent-plan: null
 supersedes: null
 superseded-by: null

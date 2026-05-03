@@ -168,15 +168,61 @@ the most stable disambiguator.
    1. **Visible-text role selector** — `role=button[name="Submit"]` or
       `role=link[name="Sign in"]` when the element's accessible name is
       unambiguous and matches a button/link triggering the transition.
-      Most stable across re-runs.
+      Most stable across re-runs. **STRONG PREFERENCE — try this first.**
+      Even when there are multiple buttons in a parent container, the
+      `name="..."` qualifier is usually enough to disambiguate (e.g.
+      `role=button[name="Add account"]` is unique even if other "Add"
+      buttons exist in cards above/below).
    2. **`data-kit-component` + text disambiguation** —
       `[data-kit-component="Button"]:has-text("Generate report")` when
-      multiple buttons exist and text discriminates.
+      multiple buttons exist and the role-name approach is genuinely
+      ambiguous (e.g. two buttons named "Continue" on the same page).
    3. **Plain text selector** — `text=Generate report` when no role
       attribute exists.
    4. **kit-component selector with sibling/parent narrowing** —
       `[data-kit-component="Card"]:has([data-kit-component="StarsChart"])`
       for compound elements.
+
+   **CRITICAL — engine-mixing anti-pattern (bug-046).** Playwright's
+   selector engines are **NOT chainable via space**. A SPACE between
+   selectors is the CSS descendant combinator — it ONLY works when both
+   halves are CSS-shape selectors. To chain across engines (e.g. CSS to
+   `role=`, `text=`, etc.) you MUST use Playwright's `>>` operator.
+
+   ❌ **WRONG** (invalid Playwright; throws `Unexpected token "=" while
+parsing css selector`):
+
+   ```
+   [data-kit-component="Card"]:has-text("Import CSV") role=button
+   [data-kit-component="Dialog"] role=button[name="Add account"]
+   ```
+
+   ✓ **RIGHT** (use `>>` to chain across engines):
+
+   ```
+   [data-kit-component="Card"]:has-text("Import CSV") >> role=button
+   [data-kit-component="Dialog"] >> role=button[name="Add account"]
+   ```
+
+   ✓ **BETTER** (skip the disambiguation entirely — most buttons have
+   unambiguous accessible names):
+
+   ```
+   role=button[name="Add account"]
+   ```
+
+   Same rule applies to chaining `text=` after CSS:
+   - ❌ `[data-kit-component="Card"]:has-text("Import CSV") text=Submit`
+   - ✓ `[data-kit-component="Card"]:has-text("Import CSV") >> text=Submit`
+
+   The CSS descendant combinator (space) DOES work between two CSS-shape
+   selectors:
+   - ✓ `[data-kit-component="Card"]:has-text("Project A") [data-kit-component="Button"]`
+
+   Synthesizer-side enforcement (bug-046 Phase B): the synthesizer
+   regex-detects ` role=` / ` text=` / ` xpath=` after non-`>>`
+   whitespace and pushes a hard error to its `errors[]` output. If your
+   manifest fails the check, fix the engine-mix or use `>>`.
 
 3. **Form submission flows.** When the transition involves submitting a
    form (input fields visible, submit button triggers nav), emit:
@@ -203,6 +249,20 @@ the most stable disambiguator.
    distinctive, emit
    `{ kind: "assertUrlMatches", pattern: "^/report/" }` so a flow that
    navigates client-side without changing the URL fails clearly.
+
+   **Pattern semantics (bug-047):** the `pattern` field is a regex source
+   matching the URL **pathname** (the part after `host:port`). The
+   synthesizer translates this to a full-URL regex at synthesis time —
+   a leading `^/` anchors to the path start, and the synthesizer rewrites
+   it to `^https?://[^/]+/...` so it correctly matches the absolute URL
+   Playwright's `toHaveURL` compares against. You DON'T need to author
+   `^https?://[^/]+/foo` directly — keep the path-shape form.
+
+   Examples:
+   - `pattern: "^/$"` — exactly the root path (synthesizer rewrites to `^https?://[^/]+/$`)
+   - `pattern: "^/accounts"` — anchored at `/accounts` start
+   - `pattern: "^/report/[^/]+"` — `/report/<segment>`
+   - `pattern: "/api/v1/"` — partial match anywhere in URL (no `^` anchor; useful when the URL might be absolute or relative depending on framework)
 
 **Worked example — "Generate a single repo health report"** (flow-1 from
 `repo-health-dashboard-01`):
