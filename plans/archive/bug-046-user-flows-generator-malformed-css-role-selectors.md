@@ -1,7 +1,7 @@
 ---
 id: bug-046-user-flows-generator-malformed-css-role-selectors
 type: bug
-status: draft
+status: completed
 author-agent: human
 created: 2026-05-03
 updated: 2026-05-03
