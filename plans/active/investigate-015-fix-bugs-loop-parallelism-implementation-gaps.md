@@ -164,12 +164,12 @@ Per-bug agent_sequence is sequential: builder ≈9min + tester ≈9min + reviewe
 
 For empirical N=53 (today's finance-track-01 case):
 
-| Concurrency | Batches | Iter-1 wall-clock | 5-iter cap |
-|---|---|---|---|
-| 1 (sequential) | 53 | 24.7h | 24.7h × 5 = capped by bucket reset; never completes |
-| 5 | 11 | 5.1h | 25.5h (still over reset window) |
-| 10 | 6 | 2.8h | 14h |
-| 15 | 4 | 1.9h | 9.4h |
+| Concurrency    | Batches | Iter-1 wall-clock | 5-iter cap                                          |
+| -------------- | ------- | ----------------- | --------------------------------------------------- |
+| 1 (sequential) | 53      | 24.7h             | 24.7h × 5 = capped by bucket reset; never completes |
+| 5              | 11      | 5.1h              | 25.5h (still over reset window)                     |
+| 10             | 6       | 2.8h              | 14h                                                 |
+| 15             | 4       | 1.9h              | 9.4h                                                |
 
 Sweet-spot: **C=10 for first dispatch** (gives 2.8h iter-1; fits comfortably within bucket-reset cycles). Ramp to 15 after empirical validation.
 
@@ -188,7 +188,7 @@ Read-only audit confirms all dev-server config flows via env vars:
 ```ts
 const slot = i; // 0..C-1
 const frontendPort = 3000 + slot * 2; // 3000, 3002, 3004...
-const backendPort = 3001 + slot * 2;  // 3001, 3003, 3005...
+const backendPort = 3001 + slot * 2; // 3001, 3003, 3005...
 const env = {
   PORT: String(backendPort),
   NEXT_PUBLIC_API_BASE_URL: `http://localhost:${backendPort}`,
@@ -223,11 +223,11 @@ Idempotent on crash mid-batch: bugs that didn't transition status remain `pendin
 
 Empirically audited 45 visual-parity bug plans. Each plan's `affected-files:` lists ONLY the mockup HTML (e.g. `docs/screens/webapp/account-archive-confirm.html`). The builder will edit the matching BUILT JSX (e.g. `apps/web/app/account-archive-confirm/page.tsx`). Pattern:
 
-| Screen | shell-stripping bug | layout-regrouping bug | Built JSX file |
-|---|---|---|---|
-| account-archive-confirm | bug-237 | bug-238 | apps/web/app/account-archive-confirm/page.tsx |
-| account-create-modal | bug-239 | bug-240 | apps/web/app/account-create-modal/page.tsx |
-| ... 22 more screens ... | | | |
+| Screen                  | shell-stripping bug | layout-regrouping bug | Built JSX file                                |
+| ----------------------- | ------------------- | --------------------- | --------------------------------------------- |
+| account-archive-confirm | bug-237             | bug-238               | apps/web/app/account-archive-confirm/page.tsx |
+| account-create-modal    | bug-239             | bug-240               | apps/web/app/account-create-modal/page.tsx    |
+| ... 22 more screens ... |                     |                       |                                               |
 
 **Per-screen 2-way overlap (matches investigate-014's orphan-component pattern); cross-screen ZERO overlap.** bug-034 Phase A's `tryAdditiveConcatResolve` empirically handles 2-way additive same-region merges.
 

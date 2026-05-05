@@ -238,6 +238,9 @@ describe("invokeAgent — git-agent happy paths", () => {
         match: /git rev-parse HEAD/,
         stdout: "abc1234def5678901234567890abcdef12345678\n",
       },
+      // feat-047 Phase A+B: post-merge cleanup
+      { match: /git worktree remove --force/, stdout: "" },
+      { match: /git branch -d/, stdout: "Deleted branch feat/auth\n" },
     ]);
     const invoke = createInvokeAgent({
       projectRoot,
@@ -261,9 +264,180 @@ describe("invokeAgent — git-agent happy paths", () => {
       success: true,
       conflict: false,
       featureId: "feat-auth",
+      // feat-047 Phase A+B: cleanup outcomes surfaced
+      worktreeRemoved: true,
+      branchDeleted: true,
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((result.gitAgentOutput as any).mergeSha).toMatch(/^[0-9a-f]{7,40}$/);
+  });
+
+  // feat-047 Phase A (2026-05-05): worktree-remove retry-with-backoff
+  it("close-feature post-merge cleanup retries on Windows file-lock then succeeds", async () => {
+    const budget = mkBudget();
+    let removeAttempts = 0;
+    const execGit = makeExecGit([
+      { match: /git rev-parse main/, stdout: "abc1234\n" },
+      { match: /git status --porcelain/, stdout: "" },
+      { match: /git fetch origin main/, stdout: "" },
+      { match: /git rev-parse "?feat\/auth"?/, stdout: "deadbeef\n" },
+      { match: /git checkout main/, stdout: "" },
+      { match: /git merge --no-ff/, stdout: "Fast-forward\n" },
+      {
+        match: /git rev-parse HEAD/,
+        stdout: "abc1234def5678901234567890abcdef12345678\n",
+      },
+      { match: /git branch -d/, stdout: "Deleted branch feat/auth\n" },
+    ]);
+    // Wrap execGit to inject lock-failure on first 2 worktree-remove calls.
+    const originalExec = execGit;
+    const wrappedExec: ExecGitFn = async (cmd, cwd) => {
+      if (/git worktree remove --force/.test(cmd)) {
+        removeAttempts++;
+        if (removeAttempts <= 2) {
+          return {
+            stdout: "",
+            stderr: "fatal: 'foo' is not empty (Directory not empty)",
+            code: 1,
+          };
+        }
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      return originalExec(cmd, cwd);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      execGit: wrappedExec,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: true,
+      worktreeRemoved: true,
+    });
+    expect(removeAttempts).toBe(3); // 2 lock failures + 1 success
+  });
+
+  // feat-047 Phase A: worktree-remove failure is non-fatal
+  // (Long timeout: real backoff is 1+2+4+8+16=31s for 5 retries.)
+  it(
+    "close-feature stays success even when worktree-remove fails after 5 retries",
+    { timeout: 45000 },
+    async () => {
+      const budget = mkBudget();
+      const execGit = makeExecGit([
+        { match: /git rev-parse main/, stdout: "abc1234\n" },
+        { match: /git status --porcelain/, stdout: "" },
+        { match: /git fetch origin main/, stdout: "" },
+        { match: /git rev-parse "?feat\/auth"?/, stdout: "deadbeef\n" },
+        { match: /git checkout main/, stdout: "" },
+        { match: /git merge --no-ff/, stdout: "Fast-forward\n" },
+        {
+          match: /git rev-parse HEAD/,
+          stdout: "abc1234def5678901234567890abcdef12345678\n",
+        },
+        // worktree-remove fails 5× with persistent lock
+        {
+          match: /git worktree remove --force/,
+          stdout: "",
+          stderr: "fatal: 'X' is not empty",
+          code: 1,
+        },
+      ]);
+      const invoke = createInvokeAgent({
+        projectRoot,
+        budget,
+        flags: [],
+        execGit,
+      });
+      const result = await invoke({
+        agent: "git-agent",
+        cwd: projectRoot,
+        featureContext,
+        tasks: [],
+        gitOp: {
+          op: "close-feature",
+          worktree: "feat-auth",
+          featureId: "feat-auth",
+        },
+      });
+      // close-feature still succeeds — the merge landed; worktree is just dormant.
+      expect(result.gitAgentOutput).toMatchObject({
+        op: "close-feature",
+        success: true,
+        worktreeRemoved: false,
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const out = result.gitAgentOutput as any;
+      expect(out.worktreeRemoveReason).toMatch(/still locked after 5 retries/);
+      // Branch-delete NOT attempted when worktree-remove failed.
+      expect(out.branchDeleted).toBeUndefined();
+    },
+  );
+
+  // feat-047 Phase A: non-lock errors fail-fast (no retry)
+  it("close-feature worktree-remove fail-fasts on non-lock error", async () => {
+    const budget = mkBudget();
+    let removeAttempts = 0;
+    const execGit = makeExecGit([
+      { match: /git rev-parse main/, stdout: "abc1234\n" },
+      { match: /git status --porcelain/, stdout: "" },
+      { match: /git fetch origin main/, stdout: "" },
+      { match: /git rev-parse "?feat\/auth"?/, stdout: "deadbeef\n" },
+      { match: /git checkout main/, stdout: "" },
+      { match: /git merge --no-ff/, stdout: "Fast-forward\n" },
+      {
+        match: /git rev-parse HEAD/,
+        stdout: "abc1234def5678901234567890abcdef12345678\n",
+      },
+    ]);
+    const wrappedExec: ExecGitFn = async (cmd, cwd) => {
+      if (/git worktree remove --force/.test(cmd)) {
+        removeAttempts++;
+        return {
+          stdout: "",
+          stderr: "fatal: not a worktree (no such directory)",
+          code: 1,
+        };
+      }
+      return execGit(cmd, cwd);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      execGit: wrappedExec,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "close-feature",
+        worktree: "feat-auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "close-feature",
+      success: true,
+      worktreeRemoved: false,
+    });
+    // Fail-fast: only 1 attempt (no retry on non-lock error).
+    expect(removeAttempts).toBe(1);
   });
 
   it("close-feature (merge conflict) parses conflicting files + aborts merge", async () => {

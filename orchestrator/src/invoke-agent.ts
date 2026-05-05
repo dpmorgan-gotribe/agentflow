@@ -728,6 +728,75 @@ async function detectDefaultBranch(
   return "main";
 }
 
+/**
+ * feat-047 Phase A (2026-05-05) — `git worktree remove --force` with
+ * exponential-backoff retry. Windows file-lock issue documented in
+ * investigate-014 F5: `git worktree remove --force` returns "Directory
+ * not empty" / "EBUSY" until ~15s after files release (AV scanners,
+ * lingering Node child processes, etc). Retry handles this; non-lock
+ * errors (e.g. unknown worktree, permission denied) surface immediately.
+ *
+ * Backoff schedule: 1s, 2s, 4s, 8s, 16s = ~31s total max wait.
+ */
+async function removeWorktreeWithBackoff(
+  projectRoot: string,
+  worktreePath: string,
+  execGit: ExecGitFn,
+  maxRetries = 5,
+  sleepMs: (ms: number) => Promise<void> = (ms) =>
+    new Promise((r) => setTimeout(r, ms)),
+): Promise<{ removed: boolean; reason?: string }> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const result = await safeExec(
+      execGit,
+      `git worktree remove --force ${shellQuote(worktreePath)}`,
+      projectRoot,
+    );
+    if (result.code === 0) return { removed: true };
+    const errOutput = `${result.stderr || ""}\n${result.stdout || ""}`;
+    const isLockIssue =
+      /not empty/i.test(errOutput) ||
+      /Device or resource busy/i.test(errOutput) ||
+      /EBUSY/i.test(errOutput) ||
+      /resource is locked/i.test(errOutput);
+    if (!isLockIssue) {
+      return { removed: false, reason: errOutput.trim().slice(0, 300) };
+    }
+    if (attempt < maxRetries) {
+      await sleepMs(1000 * Math.pow(2, attempt - 1));
+    }
+  }
+  return {
+    removed: false,
+    reason: `still locked after ${maxRetries} retries (Windows file-lock pattern; see feat-047 Phase A)`,
+  };
+}
+
+/**
+ * feat-047 Phase B (2026-05-05) — delete the merged feature branch via
+ * `git branch -d <branch>`. Use safe `-d` (NOT `-D`) — refuses to delete
+ * if the branch isn't merged. close-feature's caller path means the branch
+ * IS merged at this point (we only call after `git merge --no-ff` succeeds),
+ * but the safety net catches edge cases (e.g. the merge resolved to a no-op
+ * because branch was already in default).
+ *
+ * Failure to delete is non-fatal — close-feature already succeeded.
+ */
+async function deleteFeatureBranch(
+  projectRoot: string,
+  branch: string,
+  execGit: ExecGitFn,
+): Promise<{ deleted: boolean; reason?: string }> {
+  const result = await safeExec(
+    execGit,
+    `git branch -d ${shellQuote(branch)}`,
+    projectRoot,
+  );
+  if (result.code === 0) return { deleted: true };
+  const errOutput = `${result.stderr || ""}\n${result.stdout || ""}`.trim();
+  return { deleted: false, reason: errOutput.slice(0, 300) };
+}
+
 async function runCloseFeature(
   gitOp: Extract<GitOpInput, { op: "close-feature" }>,
   projectRoot: string,
@@ -1033,13 +1102,39 @@ async function runCloseFeature(
     mergeSha = "0000000";
   }
 
-  return {
+  // feat-047 Phase A+B (2026-05-05): post-merge cleanup. Failure is
+  // non-fatal — merge already succeeded; dormant worktree / branch is
+  // disk-drift annoyance not a correctness concern. Surface outcome via
+  // the (optional) `worktreeRemoved` / `branchDeleted` fields.
+  const removeResult = await removeWorktreeWithBackoff(
+    projectRoot,
+    worktreePath,
+    execGit,
+  );
+  // Branch delete only fires when the worktree was successfully removed.
+  // `git branch -d <branch>` while the branch is still checked out by a
+  // worktree errors with "Cannot delete branch checked out at <path>";
+  // we'd rather surface the worktree-remove failure than masquerade it
+  // as a branch-delete failure.
+  let branchResult: { deleted: boolean; reason?: string } | null = null;
+  if (removeResult.removed) {
+    branchResult = await deleteFeatureBranch(projectRoot, branch, execGit);
+  }
+
+  const out: GitAgentOutput = {
     op: "close-feature",
     success: true,
     conflict: false,
     mergeSha,
     featureId: gitOp.featureId,
+    worktreeRemoved: removeResult.removed,
   };
+  if (removeResult.reason) out.worktreeRemoveReason = removeResult.reason;
+  if (branchResult !== null) {
+    out.branchDeleted = branchResult.deleted;
+    if (branchResult.reason) out.branchDeleteReason = branchResult.reason;
+  }
+  return out;
 }
 
 function runResolveConflictHandoff(

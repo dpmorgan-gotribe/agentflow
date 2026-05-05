@@ -55,12 +55,22 @@ const CheckoutFeatureFailure = z.object({
 });
 
 // close-feature — success (no conflict)
+// feat-047 Phase A+B (2026-05-05): worktreeRemoved + branchDeleted are
+// optional outcomes from the post-merge cleanup. Failure to remove (e.g.
+// Windows file-lock that resists 5 retries) doesn't fail close-feature —
+// the merge already succeeded; the worktree is just dormant disk usage.
+// Fields are optional (default undefined) so legacy callers don't need
+// migration; new callers/operators see the cleanup outcome explicitly.
 const CloseFeatureSuccess = z.object({
   op: z.literal("close-feature"),
   success: z.literal(true),
   conflict: z.literal(false),
   mergeSha: z.string().regex(/^[0-9a-f]{7,40}$/),
   featureId: z.string(),
+  worktreeRemoved: z.boolean().optional(),
+  worktreeRemoveReason: z.string().optional(),
+  branchDeleted: z.boolean().optional(),
+  branchDeleteReason: z.string().optional(),
 });
 
 // close-feature — conflict
