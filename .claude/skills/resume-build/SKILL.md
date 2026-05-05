@@ -2,7 +2,7 @@
 name: resume-build
 description: Resume a previously-paused orchestrator Mode B run for projects/<name>/. Reads paused.json + feature-graph-progress.json, runs an in-flight worktree recovery decision tree, deletes paused.json, and dispatches a fresh orchestrator process with --resume-feature-graph + --pipeline-run-id pointed at the same run. Inverse of /pause-build.
 when_to_use: when the user wants to continue a Mode B run that was previously paused (via /pause-build, SIGINT, Claude Max rate limit, auth-failed, or stall-timeout); after manually resolving the issue that caused the pause (e.g. waited for the 5h reset, fixed credentials); when the operator asks to "pick up where we left off" on a project
-argument-hint: <name> [--yes] [--dry-run] [--ignore-master-drift]
+argument-hint: <name> [--yes] [--dry-run] [--ignore-master-drift] [--max-concurrent <n>]
 allowed-tools: Read Write Bash Glob Grep
 ---
 
@@ -28,6 +28,12 @@ preview-by-default discipline as `/delete-project`.
   HEAD differs from the SHA captured in `feature-graph-progress.json`
   at pause time. Default behavior is to warn + exit 2 unless the
   operator explicitly opts in.
+- `--max-concurrent <n>` — passes through to the resumed orchestrator's
+  `--max-concurrent` flag. Useful when the rate-limit posture has changed
+  since the original `/start-build` (e.g. operator wants to drop from
+  C=5 to C=3 to burn the five_hour bucket more slowly). When omitted,
+  the orchestrator uses its default (sequential = 1 unless overridden in
+  models.yaml).
 
 ## Steps
 
@@ -227,7 +233,7 @@ This unblocks the orchestrator's between-agent sentinel poll.
 
 ```
 pnpm --filter orchestrator start generate <name> --resume-feature-graph
---pipeline-run-id <runId>
+--pipeline-run-id <runId> [--max-concurrent <n>]
 ```
 
 The `--pipeline-run-id` flag (added in feat-024 Phase D) tells the

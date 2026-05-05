@@ -1653,7 +1653,7 @@ function buildAgentPrompt(
     `(the factory maps agent names to their SKILL.md). When you finish, ` +
     `return a final JSON message with shape:\n` +
     `{ "taskOutcomes": { "<task-id>": "completed" | "failed", ... }, ` +
-    `"errors": { "<task-id>": "<message>" } }\n` +
+    `"errors": { "<task-id>": "<one-line summary; if failed, include WHY in <=200 chars>" } }\n` +
     // bug-007: sentinel contract for unambiguous extraction. The orchestrator's
     // text parser is brittle against arbitrary markdown wrappers (backticks,
     // code fences, prose, emoji) — sentinels eliminate that ambiguity entirely.
@@ -1663,10 +1663,18 @@ function buildAgentPrompt(
     `<<<TASK_OUTCOME>>>\n` +
     `{ "taskOutcomes": { "scaffold-next-app": "completed" }, "errors": {} }\n` +
     `<<<END_TASK_OUTCOME>>>\n` +
-    `\nWrite whatever markdown summary you want OUTSIDE the sentinels — the ` +
-    `summary helps human reviewers; the sentineled JSON is the machine-` +
-    `parseable contract. Do NOT wrap the JSON inside the sentinels in ` +
-    `markdown code fences or backticks.\n`;
+    // feat-055 (2026-05-05): instruct sentineled-JSON-only output. Earlier
+    // prompt invited a freeform markdown summary outside the sentinels —
+    // empirical: ~6K of the ~7.4K output tokens per Sonnet dispatch were
+    // human-readable narrative no automated consumer reads. Trimming saves
+    // ~22% of Sonnet output cost per project. The outcome JSON's `errors`
+    // field already carries diagnostic detail per task-id; that's the
+    // narrative replacement. Parser still tolerates legacy markdown
+    // wrapping (graceful — the sentinels disambiguate regardless).
+    `\nReturn ONLY the sentineled JSON. Do NOT write a markdown summary. ` +
+    `Do NOT wrap the JSON inside the sentinels in markdown code fences or ` +
+    `backticks. Diagnostic narrative belongs in the JSON's "errors" field ` +
+    `keyed by task-id, not as free-form prose.\n`;
 
   return prompt;
 }

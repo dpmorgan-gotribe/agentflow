@@ -2388,6 +2388,14 @@ describe("invokeAgent — sentinel + balanced-brace extraction (bug-007)", () =>
     expect(call.prompt).toContain("<<<TASK_OUTCOME>>>");
     expect(call.prompt).toContain("<<<END_TASK_OUTCOME>>>");
     expect(call.prompt).toContain("Do NOT wrap the JSON inside the sentinels");
+    // feat-055 — instruction explicitly forbids freeform markdown summary;
+    // saves ~22% of Sonnet output cost per dispatch (empirical: 6K of 7.4K
+    // output tokens were narrative no automated consumer reads).
+    expect(call.prompt).toContain("Return ONLY the sentineled JSON");
+    expect(call.prompt).toContain("Do NOT write a markdown summary");
+    expect(call.prompt).toContain(
+      'Diagnostic narrative belongs in the JSON\'s "errors" field',
+    );
   });
 });
 
