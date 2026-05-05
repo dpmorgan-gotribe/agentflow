@@ -31,7 +31,7 @@ import type { RetryCounters } from "./retry-counters.js";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join as pathJoin } from "node:path";
-import { pausedStatePath, pauseRun } from "./pause.js";
+import { PauseSignal, pausedStatePath, pauseRun } from "./pause.js";
 import { saveState, writeFeatureGraphProgress } from "./state-persistence.js";
 
 /**
@@ -1625,7 +1625,18 @@ export async function runFeatureGraph(
         status = "completed-with-integration-failures";
       }
     } catch (err) {
-      // Loop failure must not crash the orchestrator. Surface as
+      // bug-052 follow-up (2026-05-05): PauseSignal MUST propagate up to
+      // cli.ts so the orchestrator exits 0 cleanly with a "resume with:"
+      // hint. Pre-fix: this catch swallowed PauseSignal + flagged the run
+      // "completed-with-integration-failures", which masquerades as a
+      // crash from the operator's POV (exit code 1, no resume hint).
+      // bugs.yaml + paused.json are already persisted by the time
+      // PauseSignal reaches here (per fix-bugs-loop's lossless pause-
+      // boundary), so re-throwing is safe.
+      if (err instanceof PauseSignal) {
+        throw err;
+      }
+      // Other failures must not crash the orchestrator. Surface as
       // completed-with-integration-failures + log via the verify warnings
       // channel.
       status = "completed-with-integration-failures";

@@ -981,6 +981,75 @@ export default defineConfig({
     });
   });
 
+  // bug-052 follow-up (2026-05-05) — pause-resume hardening for parallel path.
+  // When PauseSignal fires inside one bug's dispatch within a Promise.all
+  // batch, the OTHER bugs must still complete + persist their statuses
+  // before the orchestrator unwinds. Pre-fix: PauseSignal aborted Promise.all,
+  // post-batch yaml write was skipped, completed-but-not-yet-merged bugs
+  // stayed marked in-progress on disk → resume re-attempted wasted work.
+  it("parallel path: PauseSignal in one bug doesn't lose other bugs' progress", async () => {
+    const dispatchedBugs: string[] = [];
+    const invoke: InvokeAgentFn = async (args) => {
+      const bugId = args.featureContext?.id ?? "?";
+      dispatchedBugs.push(`${bugId}:${args.agent}`);
+      // Throw PauseSignal for bug-2's tester. Other bugs (1, 3) should still
+      // complete their full agent_sequence + flip to completed.
+      if (bugId === "bug-orphan-pause-target" && args.agent === "tester") {
+        const { PauseSignal } = await import("../src/pause.js");
+        throw new PauseSignal({
+          version: "1.0",
+          pausedAt: new Date().toISOString(),
+          reason: "claude-max-five-hour-limit",
+          reasonDetail: "test-injected pause",
+          authProvider: "claude-max-subscription",
+          drainedInFlight: true,
+          pipelineRunId: "run-test-001",
+        });
+      }
+      // Tiny stagger so other bugs progress through their agents.
+      await new Promise((r) => setTimeout(r, 5));
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.05,
+      };
+    };
+    writeBugsYamlDoc([
+      makeBug({ id: "bug-orphan-1" }),
+      makeBug({ id: "bug-orphan-pause-target" }),
+      makeBug({ id: "bug-orphan-3" }),
+    ]);
+
+    let caughtPauseSignal = false;
+    try {
+      await runFixBugsLoop(makeCtx(invoke, cleanVerify, { maxConcurrent: 3 }));
+    } catch (err) {
+      const { PauseSignal } = await import("../src/pause.js");
+      if (err instanceof PauseSignal) {
+        caughtPauseSignal = true;
+      } else {
+        throw err;
+      }
+    }
+    // Pause re-thrown to caller (clean orchestrator unwind path).
+    expect(caughtPauseSignal).toBe(true);
+
+    // Critical invariant: bugs OTHER than the paused one persisted their
+    // outcomes. Pre-fix: bug-orphan-1 + bug-orphan-3 would stay
+    // in-progress on disk because Promise.all aborted before yaml write.
+    const doc = readBugsYamlDoc();
+    const bug1 = doc.bugs.find((b) => b.id === "bug-orphan-1");
+    const bug3 = doc.bugs.find((b) => b.id === "bug-orphan-3");
+    const bugPause = doc.bugs.find((b) => b.id === "bug-orphan-pause-target");
+    expect(bug1?.status).toBe("completed");
+    expect(bug3?.status).toBe("completed");
+    // Paused bug stays in-progress — resume picks it up via pendingThisIter
+    // (which includes "in-progress" per the existing semantic).
+    expect(bugPause?.status).toBe("in-progress");
+  });
+
   it("parallel path: bugs.yaml gets ONE write per batch (not per-bug)", async () => {
     // Wrap writeFileSync to count bugs.yaml writes during the run.
     // Implementation detail: vitest doesn't easily intercept the inline

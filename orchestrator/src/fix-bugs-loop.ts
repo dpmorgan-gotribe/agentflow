@@ -12,6 +12,7 @@ import type { BudgetTracker } from "./budget-tracker.js";
 import type { BuildToSpecVerifyContext } from "./build-to-spec-verify.js";
 import type { InvokeAgentFn } from "./feature-graph.js";
 import { seedWorktree } from "./invoke-agent.js";
+import { PauseSignal } from "./pause.js";
 
 /**
  * feat-026 — automated bug-fix loop runner.
@@ -965,29 +966,70 @@ export async function runFixBugsLoop(
 
         // Dispatch every batch entry in parallel. Bugs that failed to open
         // their per-bug worktree skip dispatch + count as failure.
-        const dispatchResults = await Promise.all(
-          batchOpens.map(async (entry) => {
+        //
+        // bug-052 follow-up (2026-05-05): pause-resume hardening. Wrap
+        // each per-bug Promise in a try/catch that captures PauseSignal
+        // as a result-shape rather than letting it abort Promise.all.
+        // This is critical: without it, the FIRST PauseSignal from any
+        // bug would reject Promise.all → post-batch yaml write doesn't
+        // fire → completed-but-not-yet-merged bugs stay marked
+        // in-progress on disk → resume re-attempts wasted work.
+        // With this: every bug in the batch settles with a result, the
+        // post-batch persistence captures all outcomes, then the
+        // PauseSignal is re-thrown AFTER persistence so the orchestrator
+        // unwinds cleanly.
+        type DispatchResult =
+          | {
+              kind: "completed-or-failed";
+              bug: BugEntry;
+              success: boolean;
+              costUsd: number;
+              errorLog: string[];
+            }
+          | {
+              kind: "open-failed";
+              bug: BugEntry;
+              openError: string;
+            }
+          | {
+              kind: "paused";
+              bug: BugEntry;
+              pauseSignal: PauseSignal;
+              costUsd: number;
+            };
+        const dispatchResults: DispatchResult[] = await Promise.all(
+          batchOpens.map(async (entry): Promise<DispatchResult> => {
             if (entry.openError !== null || entry.worktreePath === null) {
               return {
+                kind: "open-failed",
                 bug: entry.bug,
-                success: false,
-                costUsd: 0,
-                errorLog: [
-                  `[per-bug-worktree-open-failed] ${entry.openError ?? "unknown"}`,
-                ],
+                openError: entry.openError ?? "unknown",
               };
             }
-            const dispatch = await dispatchAgentsForBug({
-              bug: entry.bug,
-              ctx,
-              worktreeCwd: entry.worktreePath,
-            });
-            return {
-              bug: entry.bug,
-              success: dispatch.success,
-              costUsd: dispatch.costUsd,
-              errorLog: dispatch.errorLog,
-            };
+            try {
+              const dispatch = await dispatchAgentsForBug({
+                bug: entry.bug,
+                ctx,
+                worktreeCwd: entry.worktreePath,
+              });
+              return {
+                kind: "completed-or-failed",
+                bug: entry.bug,
+                success: dispatch.success,
+                costUsd: dispatch.costUsd,
+                errorLog: dispatch.errorLog,
+              };
+            } catch (err) {
+              if (err instanceof PauseSignal) {
+                return {
+                  kind: "paused",
+                  bug: entry.bug,
+                  pauseSignal: err,
+                  costUsd: 0,
+                };
+              }
+              throw err;
+            }
           }),
         );
 
@@ -997,8 +1039,36 @@ export async function runFixBugsLoop(
         // master via bug-034 Phase A — runMergeAttempt wraps the resolver).
         // Failures here mark the bug as failed for THIS attempt; next
         // iteration may retry per the retry-counter.
+        let capturedPauseSignal: PauseSignal | null = null;
         for (const result of dispatchResults) {
-          totalCostUsd += result.costUsd;
+          totalCostUsd +=
+            result.kind === "paused"
+              ? 0
+              : "costUsd" in result
+                ? result.costUsd
+                : 0;
+          if (result.kind === "paused") {
+            // Bug stays in-progress on disk; resume picks it up via
+            // pendingThisIter's `in-progress`-as-pending semantics. Capture
+            // the signal so we re-throw AFTER post-batch persistence.
+            if (capturedPauseSignal === null) {
+              capturedPauseSignal = result.pauseSignal;
+            }
+            continue;
+          }
+          if (result.kind === "open-failed") {
+            result.bug.errorLog.push(
+              `[per-bug-worktree-open-failed] ${result.openError}`,
+            );
+            if (result.bug.attempts >= result.bug.maxAttempts) {
+              result.bug.status = "failed";
+              failedCount += 1;
+            } else {
+              result.bug.status = "pending";
+            }
+            continue;
+          }
+          // result.kind === "completed-or-failed"
           if (!result.success) {
             for (const entry of result.errorLog)
               result.bug.errorLog.push(entry);
@@ -1039,8 +1109,17 @@ export async function runFixBugsLoop(
             result.bug.status = "pending";
           }
         }
-        // Single bugs.yaml write at batch end.
+        // Single bugs.yaml write at batch end — captures ALL bug outcomes
+        // including paused ones (which stay marked `in-progress`). This is
+        // the LOSSLESS pause boundary: every completed bug's status is
+        // persisted before we propagate the pause.
         writeBugsYaml(bugsYamlPath, doc);
+        // Re-throw PauseSignal AFTER persistence so the orchestrator's
+        // outer cli.ts catch sees it + exits 0 cleanly. Resume picks up
+        // the in-progress bugs via pendingThisIter's filter.
+        if (capturedPauseSignal !== null) {
+          throw capturedPauseSignal;
+        }
       }
     }
 
