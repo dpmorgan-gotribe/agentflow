@@ -315,6 +315,44 @@ Authoring rules:
 
 After authoring, the orchestrator (post-step) runs `node scripts/audit-brief-coverage.mjs <projectRoot>` automatically and fails the `/pm` stage on `uncovered.length > 0` or `typoErrors.length > 0`. You don't need to invoke the audit yourself — but you can preview-run it locally to verify your mapping before returning.
 
+### 4d. LAYOUT MANDATE injection for page-rendering tasks (feat-051)
+
+After 4c brief-coverage settles and BEFORE step 5 writes tasks.yaml, inject the **LAYOUT MANDATE** boilerplate into `task.notes` for every web-frontend task that renders an app page. This is **NON-NEGOTIABLE** when the task is page-rendering — without it, builders systematically strip `<AppShell>` and the project ships 22+ shell-stripping bugs.
+
+**Empirical evidence (the bug this step prevents)**: finance-track-01 2026-05-05 verifier surfaced 22 `visual-parity / shell-stripping` P0 bugs — every page rendered as a stand-alone island instead of wrapping in `<AppShell sidebar=... header=...>`. 22 different web-frontend-builder dispatches across 22 feature worktrees independently chose NOT to wrap. The stack-skill (`react-next/SKILL.md` lines 195-200) HAS the mandate, but PM's task-proximal `notes` overrule stack-skill conventions when both are visible to the builder. The fix lives at PM, not the stack-skill.
+
+**Detection rule** — inject the mandate when ALL of these are true:
+
+1. `task.agent === "web-frontend-builder"` (or `mobile-frontend-builder` — mobile gets a stack-aware variant; see below)
+2. `task.affects_files[]` contains a glob that matches `apps/web/app/**/page.tsx` (Next.js App Router) OR `apps/web/src/pages/**/*.tsx` (Vite/Pages Router) OR mobile-equivalent screen files
+3. `task.screens[]` is non-empty (the task renders ≥1 designed screen)
+
+**Mandate content (react-next stack — v1)** — append to `task.notes` (preserve existing notes; separate with a blank line if notes already contain content):
+
+```
+LAYOUT MANDATE (per react-next SKILL.md §AppShell wrapping):
+the rendered tree MUST wrap in the layout primitive the matching mockup
+uses — typically `<AppShell sidebar={<Sidebar>…</Sidebar>} header={<TopBar>…</TopBar>}>`
+imported from @repo/ui-kit. Mockup at docs/screens/webapp/<screen-id>.html
+shows the exact composition. Do NOT replace this with a custom nav
+implementation — the AppShell primitive is the binding contract per
+stylesheet §9e + per-feature parity-verify enforcement.
+```
+
+Where `<screen-id>` is `task.screens[0]` (the primary screen this task renders). When the task renders multiple screens, list them all: `Mockup at docs/screens/webapp/<screen-1>.html (and <screen-2>.html, ...)`.
+
+**Stack-aware variants (read `architecture.yaml.tooling.stack.web_framework` and `mobile_framework`)**:
+
+- `react-next` → emit the mandate above (v1; shipped).
+- `react-vite` → identical mandate (`@repo/ui-kit` AppShell primitive is stack-agnostic; same import path).
+- `svelte-kit` → adapt: replace `<AppShell sidebar={...} header={...}>` with `<AppShell sidebar header>...</AppShell>` (Svelte slot syntax).
+- `expo` (mobile) → different primitive — replace the AppShell sentence with: `the rendered tree MUST be wrapped in NavigationContainer + the screen-stack primitive defined in @repo/ui-kit/mobile/Shell. Do NOT replace this with custom navigation.`
+- Any other stack → emit a `tasks.yaml.warnings[]` entry: `feat-051-layout-mandate-skipped: stack <X> has no documented layout primitive — investigate before resuming` AND skip the injection (don't emit a generic mandate that may not match the kit).
+
+**Backend / tester / reviewer / devops tasks** — DO NOT inject the mandate. The detection rule's `agent === web-frontend-builder` (or mobile equivalent) gate ensures this; non-page-rendering web-frontend tasks (e.g. a task that only edits `apps/web/src/lib/utils.ts`) ALSO don't get the mandate because rule 2 fails.
+
+**Idempotence**: when re-running PM (e.g. after a kit-change-request that triggers regeneration), check if `task.notes` already contains the literal string `LAYOUT MANDATE` — if so, skip the injection. The mandate text is byte-stable across stack-variants of the same stack.
+
 ### 5. Write + validate
 
 - Serialize with js-yaml (`noRefs: true, lineWidth: 120`) to `docs/tasks.yaml`.
