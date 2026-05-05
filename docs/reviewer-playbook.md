@@ -467,6 +467,72 @@ node scripts/audit-brief-delivery.mjs --feature=<feature-id>
 
 ---
 
+## 8. Design conformance (feat-054)
+
+Compare the built JSX tree against the matching mockup HTML. The mockup
+at `docs/screens/webapp/<screen-id>.html` is the binding layout contract;
+the built page MUST mirror its kit-component nesting at the layout
+primitive level.
+
+### Specific checks for any new file under `apps/web/app/**/page.tsx`
+
+1. **Layout primitive present.** If the mockup's root has
+   `data-kit-component="AppShell"` (or stack-equivalent), the JSX MUST
+   import + use the matching primitive from `@repo/ui-kit` (typically
+   `<AppShell sidebar={...} header={...}>`). **Empirical evidence**: 22
+   shell-stripping P0 bugs surfaced on finance-track-01 (2026-05-05) because
+   every page skipped this wrap. PM mandate (feat-051) is the primary
+   prevention; per-feature parity-smoke (feat-052) is the secondary
+   catch; THIS dimension is the tertiary defense-in-depth.
+
+2. **Primary nav consistency.** If the mockup's `<aside data-kit-component="Sidebar">`
+   contains nav links to other routes, the JSX MUST render the same
+   sidebar via either the AppShell's `sidebar` slot OR a direct
+   `<Sidebar>` import.
+
+3. **Topbar consistency.** Same shape: if mockup has
+   `<header data-kit-component="TopBar">` containing global actions
+   (display-currency switcher, refresh, etc.), JSX MUST surface them
+   via the AppShell `header` slot OR equivalent.
+
+### Output (when divergence found)
+
+```json
+{
+  "dimension": "design-conformance",
+  "severity": "P0",
+  "screen": "<screen-id>",
+  "missing": ["AppShell"],
+  "remediation": "wrap rendered content in <AppShell sidebar={...} header={...}> per docs/screens/webapp/<screen-id>.html"
+}
+```
+
+### Cross-reference
+
+The matching primitive's import surface lives in
+`packages/ui-kit/src/layouts/app-shell/`. The stack-skill at
+`.claude/skills/agents/front-end/react-next/SKILL.md` §AppShell wrapping
+documents the canonical composition. Reviewer flags = web-frontend-builder
+retry per the genuine-bugs ladder.
+
+### Defense-in-depth posture
+
+This dimension is **defense-in-depth**. The PRIMARY enforcement point is
+feat-051's PM-mandate task template (catches at PM-emit time); feat-052's
+per-feature parity-smoke catches at close-feature time; this reviewer
+dimension catches at reviewer dispatch time. All 3 layers together
+target ~99% pre-merge catch rate for the shell-stripping class.
+
+### Retry target
+
+- Missing AppShell wrap on `apps/web/app/**/page.tsx` → web-frontend-builder
+  (the page that owns the route)
+- Sidebar/TopBar surface mismatch → web-frontend-builder
+- Mockup's data-kit-component attribute doesn't appear in built tree →
+  web-frontend-builder
+
+---
+
 ## Cross-reference index
 
 | Dimension                    | Post-MVP deferral file                                    |

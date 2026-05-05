@@ -101,7 +101,13 @@ export type OverallVerdict = z.infer<typeof OverallVerdict>;
 export const ReviewerOutput = z.object({
   success: z.boolean(),
   featureId: z.string().regex(/^feat-[a-z][a-z0-9-]{1,48}$/),
-  /** One entry per ReviewDimension; all 7 keys present. */
+  /**
+   * One entry per ReviewDimension. v1 had 7 keys; feat-054 (2026-05-05)
+   * adds design-conformance as the 8th — defense-in-depth for shell-
+   * stripping bugs that slip past PM mandate (feat-051) + per-feature
+   * parity-smoke (feat-052). Optional in the schema so legacy reviewer
+   * outputs (pre-feat-054) still validate; missing => agent didn't walk it.
+   */
   dimensions: z.object({
     architecture: DimensionResult,
     security: DimensionResult,
@@ -110,6 +116,7 @@ export const ReviewerOutput = z.object({
     a11y: DimensionResult,
     performance: DimensionResult,
     "brief-delivery": DimensionResult,
+    "design-conformance": DimensionResult.optional(),
   }),
   overallVerdict: OverallVerdict,
   /** Flat list of all issues across all dimensions — for easy consumer iteration. */
