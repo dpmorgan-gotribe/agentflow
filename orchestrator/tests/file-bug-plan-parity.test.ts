@@ -249,3 +249,111 @@ describe("fileBugPlan — bug-050 Phase B agent routing by primaryCause", () => 
     ]);
   });
 });
+
+// ─── bug-053 (2026-05-05): plan-file dedup when stable bug-id exists ────────
+//
+// Earlier each /build-to-spec-verify run minted a NEW `bug-NNN-*.md` plan-file
+// even when the SAME violation (screen + pattern) already had a plan. Empirical
+// at investigation time: finance-track-01's plans/active/ had 463 plan files
+// for 54 unique bugs.yaml entries (~9× duplication across 9 verifier reruns).
+// bugs.yaml IS deduped (idempotent on stable id), so the fix-bugs loop wasn't
+// affected — but plans/active/ became operationally noisy. This block
+// validates the short-circuit.
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+describe("fileBugPlan — bug-053 plan-file dedup", () => {
+  it("filing the same violation twice produces ONE plan file + ONE bugs.yaml entry", async () => {
+    const { fileBugPlan } = await importHelper();
+    const violation = stubShellStripping();
+    const first = await fileBugPlan({ projectDir, violation, iteration: 1 });
+    const second = await fileBugPlan({ projectDir, violation, iteration: 1 });
+
+    // Same planId/Path; second call returns deduplicated:true.
+    expect(second.planId).toBe(first.planId);
+    expect(second.planPath).toBe(first.planPath);
+    expect(second.deduplicated).toBe(true);
+    expect(second.previouslyArchived).toBe(false);
+    // First call DOESN'T carry deduplicated flag (fresh write).
+    expect(first.deduplicated).toBeUndefined();
+
+    // plans/active/ has exactly ONE bug plan file matching the stable slug.
+    const activeDir = join(projectDir, "plans", "active");
+    const matches = readdirSync(activeDir).filter((f) =>
+      /^bug-\d+-parity-home-shell-stripping\.md$/.test(f),
+    );
+    expect(matches).toHaveLength(1);
+
+    // bugs.yaml has ONE entry (idempotent at yaml level too — pre-existing).
+    const yamlPath = join(projectDir, "docs/bugs.yaml");
+    const doc = yaml.load(readFileSync(yamlPath, "utf8")) as {
+      bugs: Array<{ id: string }>;
+    };
+    expect(doc.bugs).toHaveLength(1);
+  });
+
+  it("filing a violation whose plan was previously archived returns deduplicated:true + previouslyArchived:true", async () => {
+    const { fileBugPlan } = await importHelper();
+
+    // Pre-seed plans/archive/ with a plan matching the stable slug.
+    const archiveDir = join(projectDir, "plans", "archive");
+    mkdirSync(archiveDir, { recursive: true });
+    const archivedPath = join(
+      archiveDir,
+      "bug-007-parity-home-shell-stripping.md",
+    );
+    writeFileSync(
+      archivedPath,
+      "---\nid: bug-007-parity-home-shell-stripping\n---\nold\n",
+    );
+
+    const result = await fileBugPlan({
+      projectDir,
+      violation: stubShellStripping(),
+      iteration: 1,
+    });
+
+    expect(result.deduplicated).toBe(true);
+    expect(result.previouslyArchived).toBe(true);
+    expect(result.planPath).toBe(archivedPath);
+    expect(result.planId).toBe("bug-007-parity-home-shell-stripping");
+
+    // No new plan-file in plans/active/ since the archived one short-circuits.
+    const activeDir = join(projectDir, "plans", "active");
+    if (existsSync(activeDir)) {
+      const matches = readdirSync(activeDir).filter((f) =>
+        /^bug-\d+-parity-home-shell-stripping\.md$/.test(f),
+      );
+      expect(matches).toHaveLength(0);
+    }
+  });
+
+  it("filing a NEW (never-seen) violation works exactly as before — no regression", async () => {
+    const { fileBugPlan } = await importHelper();
+    const result = await fileBugPlan({
+      projectDir,
+      violation: stubTokenDrift(),
+      iteration: 1,
+    });
+    expect(result.deduplicated).toBeUndefined();
+    expect(existsSync(result.planPath)).toBe(true);
+    expect(result.planId).toMatch(/^bug-\d+-parity-settings-token-drift$/);
+  });
+
+  it("two DIFFERENT violations both file fresh plans (dedup is per stable-slug, not blanket)", async () => {
+    const { fileBugPlan } = await importHelper();
+    const a = await fileBugPlan({
+      projectDir,
+      violation: stubShellStripping(),
+      iteration: 1,
+    });
+    const b = await fileBugPlan({
+      projectDir,
+      violation: stubTokenDrift(),
+      iteration: 1,
+    });
+    expect(a.planId).not.toBe(b.planId);
+    expect(a.deduplicated).toBeUndefined();
+    expect(b.deduplicated).toBeUndefined();
+    const activeDir = join(projectDir, "plans", "active");
+    expect(readdirSync(activeDir)).toHaveLength(2);
+  });
+});

@@ -78,33 +78,64 @@ function slugify(s) {
     .slice(0, 48);
 }
 
-function bugIdFor(violation, seq) {
+// bug-053 (2026-05-05): the seq-INDEPENDENT slug suffix that uniquely
+// identifies a violation. Two violations with the same stable slug are
+// the same logical bug (same screen+pattern, same flow+expected-screen,
+// etc.) and should NOT each get a fresh plan-file. Empirical: finance-
+// track-01 had 463 plan files for 54 unique bugs.yaml entries
+// (~9× duplication across 9 verifier reruns) before this dedup landed.
+function stableSlugFor(violation) {
   if (violation.kind === "flow-failure") {
-    return `bug-${seq}-flow-${slugify(violation.flowId)}-${slugify(violation.expectedScreenId)}`;
+    return `flow-${slugify(violation.flowId)}-${slugify(violation.expectedScreenId)}`;
   }
-  // ── feat-027: runtime-error / dev-server-compile bug ids ─────────────────
+  // ── feat-027: runtime-error / dev-server-compile slug suffixes ───────────
   // The bugs.yaml id grammar allows `runtime` / `compile` prefixes per
   // packages/orchestrator-contracts/src/bugs-yaml.ts. We use the flow-id as
   // the slug since these failures are anchored to the spec that surfaced
   // them — even though the underlying defect is project-wide (cascade root).
   if (violation.kind === "runtime-error") {
-    return `bug-${seq}-runtime-${slugify(violation.flowId)}`;
+    return `runtime-${slugify(violation.flowId)}`;
   }
   if (violation.kind === "dev-server-compile") {
-    return `bug-${seq}-compile-${slugify(violation.flowId)}`;
+    return `compile-${slugify(violation.flowId)}`;
   }
-  // ── feat-028: visual-parity bug id — one per (screen, pattern) tuple ─────
+  // ── feat-028: visual-parity slug — one per (screen, pattern) tuple ───────
   if (violation.kind === "parity-divergence") {
-    return `bug-${seq}-parity-${slugify(violation.screen)}-${slugify(violation.pattern)}`;
+    return `parity-${slugify(violation.screen)}-${slugify(violation.pattern)}`;
   }
   if (violation.kind === "orphan-component") {
     const name =
       violation.exportNames?.[0] ??
       path.basename(violation.path, path.extname(violation.path));
-    return `bug-${seq}-orphan-${slugify(name)}`;
+    return `orphan-${slugify(name)}`;
   }
   // orphan-route
-  return `bug-${seq}-orphan-route-${slugify(violation.routePattern ?? violation.path)}`;
+  return `orphan-route-${slugify(violation.routePattern ?? violation.path)}`;
+}
+
+function bugIdFor(violation, seq) {
+  return `bug-${seq}-${stableSlugFor(violation)}`;
+}
+
+// bug-053: walk plans/{active,archive}/ for any plan whose filename ends
+// with `-<stableSlug>.md` (regardless of seq prefix). Returns the existing
+// plan info — caller uses it to skip the duplicate write.
+function findExistingPlanByStableSlug(plansDir, stableSlug) {
+  for (const sub of ["active", "archive"]) {
+    const dir = path.join(plansDir, sub);
+    if (!fs.existsSync(dir)) continue;
+    for (const entry of fs.readdirSync(dir)) {
+      const m = entry.match(/^bug-\d{1,4}-(.+)\.md$/);
+      if (m && m[1] === stableSlug) {
+        return {
+          planId: entry.replace(/\.md$/, ""),
+          planPath: path.join(dir, entry),
+          location: sub,
+        };
+      }
+    }
+  }
+  return null;
 }
 
 function flowFailureBody(v, opts) {
@@ -1009,6 +1040,51 @@ export async function fileBugPlan({
 }) {
   const plansDir = path.join(projectDir, "plans");
   fs.mkdirSync(path.join(plansDir, "active"), { recursive: true });
+
+  // bug-053 (2026-05-05): dedup short-circuit. If a plan-file already
+  // exists for this violation's stable slug (active OR archive), reuse
+  // the existing planId/path instead of writing a fresh `bug-NNN+1-*.md`.
+  // The bugs.yaml entry write below is INDEPENDENTLY idempotent (keyed
+  // on stable id, not seq) and still happens — `runFixBugsLoop` reads
+  // bugs.yaml, not plan-files. When the existing plan was archived, the
+  // verifier signals a regression by including `previouslyArchived` in
+  // the return so /build-to-spec-verify's warnings[] surfaces it.
+  const stableSlug = stableSlugFor(violation);
+  const existing = findExistingPlanByStableSlug(plansDir, stableSlug);
+  if (existing) {
+    let bugYamlId;
+    if (appendToYaml !== false) {
+      const entry = buildBugEntry({
+        planId: existing.planId,
+        planPath: existing.planPath,
+        violation,
+        relatedOrphan,
+        iteration: iteration ?? 1,
+        dependsOnBugId,
+      });
+      try {
+        bugYamlId = appendBugToYaml({
+          projectDir,
+          entry,
+          pipelineRunId,
+          iteration: iteration ?? 1,
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[fileBugPlan] failed to append ${existing.planId} to docs/bugs.yaml: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    return {
+      planId: existing.planId,
+      planPath: existing.planPath,
+      ...(bugYamlId !== undefined ? { bugYamlId } : {}),
+      deduplicated: true,
+      previouslyArchived: existing.location === "archive",
+    };
+  }
+
   const seq = nextBugSeq(plansDir);
   const planId = bugIdFor(violation, seq);
   const planPath = path.join(plansDir, "active", `${planId}.md`);
