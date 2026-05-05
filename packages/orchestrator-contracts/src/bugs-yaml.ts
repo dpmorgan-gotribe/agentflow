@@ -87,6 +87,41 @@ export const BugOrphanContextSchema = z.object({
 export type BugOrphanContext = z.infer<typeof BugOrphanContextSchema>;
 
 /**
+ * Source-specific context for a visual-parity bug (feat-028).
+ * file-bug-plan.mjs has been writing this shape into bugs.yaml since
+ * feat-028 shipped, but BugEntrySchema's previous shape stripped it on
+ * parse. feat-053 (2026-05-05) needs the structured `pattern` field so
+ * the fix-bugs loop can group same-pattern bugs into a single batched
+ * dispatch — promoting the field from "free-form pass-through" to
+ * "schema-modeled" to make it Zod-survivable.
+ */
+export const BugParityContextSchema = z.object({
+  /** Mockup screen-id, e.g. "home" or "accounts-list". */
+  screen: z.string().min(1),
+  /** Divergence pattern keyword — the canonical fix-shape grouping key. */
+  pattern: z.enum([
+    "shell-stripping",
+    "layout-regrouping",
+    "variant-drift",
+    "token-drift",
+    "copy-sizing-drift",
+    "spacing-token-drift",
+    "identity-contract-broken",
+    "uncategorized",
+  ]),
+  /** Free-form detail counts/lists — pass-through for the bug-plan body. */
+  detail: z
+    .object({
+      missing: z.array(z.string()).default([]),
+      extra: z.array(z.string()).default([]),
+      variantDrift: z.array(z.unknown()).default([]),
+      styleDrift: z.array(z.unknown()).default([]),
+    })
+    .partial(),
+});
+export type BugParityContext = z.infer<typeof BugParityContextSchema>;
+
+/**
  * One bug entry. `iteration` records when the verifier first detected it;
  * `attempts` is the per-bug attempt counter the loop respects. Either
  * `flow` or `orphan` is populated (matching `source`); the other is
@@ -112,6 +147,10 @@ export const BugEntrySchema = z.object({
   // Source-specific context (one of these will be populated)
   flow: BugFlowContextSchema.optional(),
   orphan: BugOrphanContextSchema.optional(),
+  // feat-053 (2026-05-05) — promoted from free-form pass-through to
+  // schema-modeled so the fix-bugs loop can group same-pattern bugs
+  // for batched dispatch.
+  parity: BugParityContextSchema.optional(),
 
   // Correlation (set when verifier matches a flow failure to an orphan)
   correlatedOrphanPath: z.string().nullable().default(null),

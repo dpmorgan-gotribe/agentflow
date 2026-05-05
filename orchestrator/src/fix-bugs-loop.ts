@@ -106,6 +106,25 @@ export interface FixBugsLoopContext {
    * concurrency at 1.
    */
   maxConcurrent?: number;
+  /**
+   * feat-053 (2026-05-05) — class-batched fix-dispatch. When true, the
+   * loop groups parity-divergence bugs by `bug.parity.pattern` and
+   * dispatches groups of ≥ 2 same-pattern bugs as a SINGLE batched task
+   * (one builder + one tester + one reviewer + one merge cascade) in a
+   * shared per-pattern worktree.
+   *
+   * Empirical motivator (finance-track-01 2026-05-05): 22 shell-stripping
+   * bugs all wanted the same `<AppShell>` wrap fix. Pre-feat-053: 22
+   * dispatches × ~28min = ~10h at C=1 / ~5h at C=5. Post-feat-053: 1
+   * dispatch × ~30-45min = ~13× faster + ~95% fewer agent dispatches.
+   *
+   * Default false — opt-in for empirical validation. Singleton groups
+   * (size 1, or non-parity bugs) flow through the existing per-bug path
+   * regardless. Tester is NOT skipped — class-uniform fix shape doesn't
+   * guarantee class-uniform application; tester catches "builder missed
+   * 1 of 22".
+   */
+  enableClassBatchedDispatch?: boolean;
 }
 
 /** Internal: filesystem helpers, injectable for tests via FixBugsLoopContext extras. */
@@ -607,6 +626,159 @@ function buildRetryContextMessage(bug: BugEntry): string {
 }
 
 /**
+ * feat-053 (2026-05-05) — group dispatchable bugs by parity pattern so
+ * class-uniform fixes (e.g. 22 shell-stripping bugs all needing the same
+ * `<AppShell>` wrap) collapse into ONE builder dispatch instead of N.
+ *
+ * Group keys:
+ *   - `pattern:shell-stripping`, `pattern:layout-regrouping`,
+ *     `pattern:variant-drift`, `pattern:token-drift` (when ≥ 2 bugs share
+ *     the pattern)
+ *   - `__singleton__<bug-id>` for everything else (single-bug parity
+ *     groups, flow-execution-failure, runtime-error, orphan-component, etc.)
+ *
+ * Single-bug groups flow through the existing per-bug-worktree path
+ * (feat-046 Phase A); only multi-bug groups use the batched path.
+ *
+ * Pure function (no side effects); easy to test in isolation.
+ */
+export function groupDispatchableBugsByPattern(
+  bugs: readonly BugEntry[],
+): Map<string, BugEntry[]> {
+  // Pass 1: tentative grouping by pattern (or singleton).
+  const tentative = new Map<string, BugEntry[]>();
+  for (const bug of bugs) {
+    const pattern = bug.parity?.pattern;
+    if (!pattern) {
+      tentative.set(`__singleton__${bug.id}`, [bug]);
+      continue;
+    }
+    const key = `pattern:${pattern}`;
+    const existing = tentative.get(key) ?? [];
+    existing.push(bug);
+    tentative.set(key, existing);
+  }
+  // Pass 2: demote single-bug parity groups to singletons (no batching
+  // benefit for size-1; the dispatch shape diverges for no reason).
+  const out = new Map<string, BugEntry[]>();
+  for (const [key, group] of tentative) {
+    if (key.startsWith("pattern:") && group.length === 1) {
+      out.set(`__singleton__${group[0]!.id}`, [group[0]!]);
+    } else {
+      out.set(key, group);
+    }
+  }
+  return out;
+}
+
+/**
+ * feat-053 — dispatch one agent_sequence against a GROUP of N same-pattern
+ * bugs in a single per-pattern worktree. Mirrors dispatchAgentsForBug's
+ * shape but synthesizes a multi-bug retryContext that lists all N bug-ids
+ * + summaries for the builder to mechanically apply the same fix shape.
+ *
+ * v1 design choices:
+ *  - One worktree per pattern-group (not per-bug) — names it
+ *    `bug-pattern-<X>-batch` so the existing openPerBugWorktree helper
+ *    can host it without further changes (it only cares about the dir
+ *    name, not whether it's a single bug or a batch).
+ *  - One web-frontend-builder + one tester + one reviewer pass.
+ *  - On success: every bug in the group is marked completed in a single
+ *    bugs.yaml write at batch end.
+ *  - On failure: every bug in the group has the failure logged + moves
+ *    to pending (or failed if attempts >= maxAttempts).
+ *  - Tester is NOT skipped — class-uniform fix shape DOESN'T guarantee
+ *    class-uniform application; tester catches "builder missed 1 of 22".
+ */
+async function dispatchAgentsForPatternGroup(args: {
+  bugs: BugEntry[];
+  pattern: string;
+  ctx: FixBugsLoopContext;
+  worktreeCwd: string;
+}): Promise<{ success: boolean; costUsd: number; errorLog: string[] }> {
+  const { bugs, pattern, ctx, worktreeCwd } = args;
+  let costUsd = 0;
+  const errorLog: string[] = [];
+  // featureContext.id is synthetic — used by invokeAgent for telemetry +
+  // featureContext.branch is consumed by the agent prompt builder. Use a
+  // stable shape that downstream tooling can pattern-match if needed.
+  const featureContext = {
+    id: `pattern-${pattern}-batch-of-${bugs.length}`,
+    branch: ctx.fixupBranchName ?? "fix/bugs-yaml-iter",
+    priority: bugs[0]!.severity, // groups share severity (same pattern → same severity)
+  };
+
+  const baseTask = {
+    depends_on: [] as string[],
+    skills: [] as string[],
+    status: "pending" as const,
+    screens: [] as string[],
+    summary: `Apply ${pattern} fix to ${bugs.length} screens: ${bugs
+      .map((b) => b.parity?.screen ?? b.id)
+      .slice(0, 5)
+      .join(", ")}${bugs.length > 5 ? `, ... (${bugs.length - 5} more)` : ""}`,
+  };
+
+  const agentSequence = bugs[0]!.agentSequence;
+  for (const agent of agentSequence) {
+    if (agent === "git-agent") continue;
+    const syntheticTask = {
+      id: `pattern-${pattern}-batch-${agent}`,
+      agent,
+      ...baseTask,
+    };
+    const result = await ctx.invokeAgent({
+      agent,
+      cwd: worktreeCwd,
+      featureContext,
+      tasks: [syntheticTask],
+      retryContext: {
+        taskId: syntheticTask.id,
+        errorMessage: buildBatchedRetryContextMessage(bugs, pattern),
+      },
+    });
+    costUsd += result.costUsd;
+    const taskOutcome = result.taskStatus[syntheticTask.id];
+    if (taskOutcome !== "completed") {
+      errorLog.push(
+        `[${agent}] ${result.errors[syntheticTask.id] ?? "agent did not return success"} (pattern-batch ${pattern}; ${bugs.length} bugs)`,
+      );
+      return { success: false, costUsd, errorLog };
+    }
+  }
+  return { success: true, costUsd, errorLog };
+}
+
+/**
+ * Build the retryContext.errorMessage for a class-batched dispatch.
+ * Lists every bug in the group with its screen + per-bug summary so the
+ * builder can mechanically apply the same fix shape across all N.
+ */
+function buildBatchedRetryContextMessage(
+  bugs: readonly BugEntry[],
+  pattern: string,
+): string {
+  const lines: string[] = [];
+  lines.push(
+    `BATCHED FIX — ${bugs.length} bugs share pattern '${pattern}'. Apply the same fix shape to ALL ${bugs.length} affected files in a single pass.`,
+  );
+  lines.push("");
+  lines.push("Affected screens + per-bug detail:");
+  for (const bug of bugs) {
+    const screen = bug.parity?.screen ?? "(unknown)";
+    lines.push(`  - ${bug.id}: screen=${screen}, summary=${bug.summary}`);
+    if (bug.bugPlanPath) {
+      lines.push(`      Plan: ${bug.bugPlanPath}`);
+    }
+  }
+  lines.push("");
+  lines.push(
+    `Read each plan body for per-screen detail. Apply the fix mechanically across all ${bugs.length} files; tester will verify per-screen on the next agent in the sequence.`,
+  );
+  return lines.join("\n");
+}
+
+/**
  * Run agent_sequence sequentially against a single bug in the fixup
  * worktree. Returns success once every agent completes; on first agent
  * failure aborts + logs to bug.errorLog, leaving the bug pending for
@@ -899,29 +1071,79 @@ export async function runFixBugsLoop(
       // C projects (real-DB backend) WILL collide on port 3001 between
       // slots. Strategy A/D projects are safe at any concurrency.
       // Phase A.2 ships per-worktree env isolation.
-      for (let i = 0; i < dispatchableBugs.length; i += maxConcurrent) {
-        const batch = dispatchableBugs.slice(i, i + maxConcurrent);
+      //
+      // feat-053 (2026-05-05) — when enableClassBatchedDispatch is true,
+      // we pre-group dispatchableBugs by parity-pattern. Groups of size ≥ 2
+      // dispatch as a SINGLE batched unit (1 builder + 1 tester + 1
+      // reviewer + 1 merge cascade) in a shared per-pattern worktree.
+      // Singletons (size 1, or non-parity bugs) flow through the existing
+      // per-bug path. Default false — the existing per-bug behavior is
+      // preserved verbatim when the flag is omitted.
+      type DispatchUnit =
+        | { kind: "single"; bugs: [BugEntry]; unitId: string }
+        | {
+            kind: "batch";
+            bugs: BugEntry[];
+            pattern: string;
+            unitId: string;
+          };
+      const dispatchUnits: DispatchUnit[] = [];
+      if (ctx.enableClassBatchedDispatch) {
+        const groups = groupDispatchableBugsByPattern(dispatchableBugs);
+        for (const [key, groupBugs] of groups) {
+          if (key.startsWith("pattern:") && groupBugs.length >= 2) {
+            const pattern = key.slice("pattern:".length);
+            dispatchUnits.push({
+              kind: "batch",
+              bugs: groupBugs,
+              pattern,
+              unitId: `pattern-${pattern}-batch`,
+            });
+          } else {
+            const bug = groupBugs[0]!;
+            dispatchUnits.push({
+              kind: "single",
+              bugs: [bug],
+              unitId: bug.id,
+            });
+          }
+        }
+      } else {
+        for (const bug of dispatchableBugs) {
+          dispatchUnits.push({
+            kind: "single",
+            bugs: [bug],
+            unitId: bug.id,
+          });
+        }
+      }
 
-        // Open per-bug worktrees + mark in-progress before parallel dispatch.
+      for (let i = 0; i < dispatchUnits.length; i += maxConcurrent) {
+        const batch = dispatchUnits.slice(i, i + maxConcurrent);
+
+        // Open one worktree PER UNIT (single bug OR batched group). Mark
+        // every bug in the unit as in-progress before parallel dispatch.
         const batchOpens: Array<{
-          bug: BugEntry;
+          unit: DispatchUnit;
           worktreePath: string | null;
           openError: string | null;
         }> = [];
         for (let bIdx = 0; bIdx < batch.length; bIdx++) {
-          const bug = batch[bIdx]!;
+          const unit = batch[bIdx]!;
           // feat-046 Phase A.2: slot index = position within the batch.
           // Pool (3000+2*slot, 3001+2*slot) is consistent within the
           // batch's lifetime; per-batch teardown returns slots so the
           // next batch reuses the same pool.
           const slot = bIdx;
-          bug.attempts = (bug.attempts ?? 0) + 1;
-          bug.status = "in-progress";
-          attemptedCount += 1;
+          for (const bug of unit.bugs) {
+            bug.attempts = (bug.attempts ?? 0) + 1;
+            bug.status = "in-progress";
+            attemptedCount += 1;
+          }
           if (skipWorktreeManagement) {
             // Test path — skip git ops; reuse projectRoot as the cwd.
             batchOpens.push({
-              bug,
+              unit,
               worktreePath: ctx.projectRoot,
               openError: null,
             });
@@ -929,19 +1151,19 @@ export async function runFixBugsLoop(
           }
           const open = openPerBugWorktree({
             projectRoot: ctx.projectRoot,
-            bugId: bug.id,
+            bugId: unit.unitId,
             baseBranch: fixupBranch,
             slot,
           });
           if (open.ok) {
             batchOpens.push({
-              bug,
+              unit,
               worktreePath: open.worktreePath,
               openError: null,
             });
           } else {
             batchOpens.push({
-              bug,
+              unit,
               worktreePath: null,
               openError: open.reason,
             });
@@ -967,19 +1189,19 @@ export async function runFixBugsLoop(
         type DispatchResult =
           | {
               kind: "completed-or-failed";
-              bug: BugEntry;
+              unit: DispatchUnit;
               success: boolean;
               costUsd: number;
               errorLog: string[];
             }
           | {
               kind: "open-failed";
-              bug: BugEntry;
+              unit: DispatchUnit;
               openError: string;
             }
           | {
               kind: "paused";
-              bug: BugEntry;
+              unit: DispatchUnit;
               pauseSignal: PauseSignal;
               costUsd: number;
             };
@@ -988,19 +1210,27 @@ export async function runFixBugsLoop(
             if (entry.openError !== null || entry.worktreePath === null) {
               return {
                 kind: "open-failed",
-                bug: entry.bug,
+                unit: entry.unit,
                 openError: entry.openError ?? "unknown",
               };
             }
             try {
-              const dispatch = await dispatchAgentsForBug({
-                bug: entry.bug,
-                ctx,
-                worktreeCwd: entry.worktreePath,
-              });
+              const dispatch =
+                entry.unit.kind === "batch"
+                  ? await dispatchAgentsForPatternGroup({
+                      bugs: entry.unit.bugs,
+                      pattern: entry.unit.pattern,
+                      ctx,
+                      worktreeCwd: entry.worktreePath,
+                    })
+                  : await dispatchAgentsForBug({
+                      bug: entry.unit.bugs[0]!,
+                      ctx,
+                      worktreeCwd: entry.worktreePath,
+                    });
               return {
                 kind: "completed-or-failed",
-                bug: entry.bug,
+                unit: entry.unit,
                 success: dispatch.success,
                 costUsd: dispatch.costUsd,
                 errorLog: dispatch.errorLog,
@@ -1009,7 +1239,7 @@ export async function runFixBugsLoop(
               if (err instanceof PauseSignal) {
                 return {
                   kind: "paused",
-                  bug: entry.bug,
+                  unit: entry.unit,
                   pauseSignal: err,
                   costUsd: 0,
                 };
@@ -1019,12 +1249,11 @@ export async function runFixBugsLoop(
           }),
         );
 
-        // Sequential merge cascade: each successful per-bug branch merges
+        // Sequential merge cascade: each successful per-unit branch merges
         // into the fixup branch via `git merge --no-ff`. Conflicts flow
-        // through bug-034 Phase A's additive-concat resolver (already in
-        // master via bug-034 Phase A — runMergeAttempt wraps the resolver).
-        // Failures here mark the bug as failed for THIS attempt; next
-        // iteration may retry per the retry-counter.
+        // through bug-034 Phase A's additive-concat resolver. Failures
+        // here mark the bug(s) as failed for THIS attempt; next iteration
+        // may retry per the retry-counter.
         let capturedPauseSignal: PauseSignal | null = null;
         for (const result of dispatchResults) {
           totalCostUsd +=
@@ -1034,7 +1263,7 @@ export async function runFixBugsLoop(
                 ? result.costUsd
                 : 0;
           if (result.kind === "paused") {
-            // Bug stays in-progress on disk; resume picks it up via
+            // Bug(s) stay in-progress on disk; resume picks them up via
             // pendingThisIter's `in-progress`-as-pending semantics. Capture
             // the signal so we re-throw AFTER post-batch persistence.
             if (capturedPauseSignal === null) {
@@ -1043,34 +1272,37 @@ export async function runFixBugsLoop(
             continue;
           }
           if (result.kind === "open-failed") {
-            result.bug.errorLog.push(
-              `[per-bug-worktree-open-failed] ${result.openError}`,
-            );
-            if (result.bug.attempts >= result.bug.maxAttempts) {
-              result.bug.status = "failed";
-              failedCount += 1;
-            } else {
-              result.bug.status = "pending";
+            for (const bug of result.unit.bugs) {
+              bug.errorLog.push(
+                `[per-bug-worktree-open-failed] ${result.openError}`,
+              );
+              if (bug.attempts >= bug.maxAttempts) {
+                bug.status = "failed";
+                failedCount += 1;
+              } else {
+                bug.status = "pending";
+              }
             }
             continue;
           }
           // result.kind === "completed-or-failed"
           if (!result.success) {
-            for (const entry of result.errorLog)
-              result.bug.errorLog.push(entry);
-            if (result.bug.attempts >= result.bug.maxAttempts) {
-              result.bug.status = "failed";
-              failedCount += 1;
-            } else {
-              result.bug.status = "pending";
+            for (const bug of result.unit.bugs) {
+              for (const entry of result.errorLog) bug.errorLog.push(entry);
+              if (bug.attempts >= bug.maxAttempts) {
+                bug.status = "failed";
+                failedCount += 1;
+              } else {
+                bug.status = "pending";
+              }
             }
             continue;
           }
-          // Try to merge the per-bug branch into the fixup branch.
+          // Try to merge the per-unit branch into the fixup branch.
           let mergedOk = true;
           if (!skipWorktreeManagement) {
-            const wtPath = bugWorktreePath(ctx.projectRoot, result.bug.id);
-            const branch = bugBranchName(result.bug.id);
+            const wtPath = bugWorktreePath(ctx.projectRoot, result.unit.unitId);
+            const branch = bugBranchName(result.unit.unitId);
             const close = closePerBugWorktree({
               projectRoot: ctx.projectRoot,
               fixupWorktreePath: worktreePath,
@@ -1080,20 +1312,28 @@ export async function runFixBugsLoop(
             });
             if (!close.ok) {
               mergedOk = false;
-              result.bug.errorLog.push(
-                `[per-bug-merge-cascade-failed] ${close.reason}`,
-              );
+              for (const bug of result.unit.bugs) {
+                bug.errorLog.push(
+                  `[per-bug-merge-cascade-failed] ${close.reason}`,
+                );
+              }
             }
           }
           if (mergedOk) {
-            result.bug.status = "completed";
-            result.bug.resolvedInIteration = iteration;
-            completedCount += 1;
-          } else if (result.bug.attempts >= result.bug.maxAttempts) {
-            result.bug.status = "failed";
-            failedCount += 1;
+            for (const bug of result.unit.bugs) {
+              bug.status = "completed";
+              bug.resolvedInIteration = iteration;
+              completedCount += 1;
+            }
           } else {
-            result.bug.status = "pending";
+            for (const bug of result.unit.bugs) {
+              if (bug.attempts >= bug.maxAttempts) {
+                bug.status = "failed";
+                failedCount += 1;
+              } else {
+                bug.status = "pending";
+              }
+            }
           }
         }
         // Single bugs.yaml write at batch end — captures ALL bug outcomes

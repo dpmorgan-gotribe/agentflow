@@ -19,6 +19,7 @@ import { BudgetTracker } from "../src/budget-tracker.js";
 import { execSync } from "node:child_process";
 import {
   closePerBugWorktree,
+  groupDispatchableBugsByPattern,
   injectSlotEnvIntoWorktree,
   runFixBugsLoop,
   type FixBugsLoopContext,
@@ -1215,5 +1216,228 @@ describe("closePerBugWorktree — bug-054 dirty-projectRoot regression", () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+// feat-053 (2026-05-05) — class-batched fix-dispatch. Groups parity-
+// divergence bugs by pattern; multi-bug groups dispatch as ONE batched
+// task instead of N separate dispatches. Empirical motivator: 22 shell-
+// stripping bugs all wanting the same `<AppShell>` wrap fix collapses
+// from 22 dispatches × 28min = ~10h to 1 × 30-45min = ~13× faster.
+describe("groupDispatchableBugsByPattern — feat-053 helper", () => {
+  function parityBug(id: string, pattern: string): BugEntry {
+    return {
+      ...makeBug({ id }),
+      source: "visual-parity",
+      severity: "P0",
+      parity: {
+        screen: id.replace(/^bug-parity-/, ""),
+        pattern: pattern as
+          | "shell-stripping"
+          | "layout-regrouping"
+          | "variant-drift"
+          | "token-drift",
+        detail: { missing: [], extra: [], variantDrift: [], styleDrift: [] },
+      },
+    };
+  }
+
+  it("groups 7 shell-stripping bugs into ONE pattern-group", () => {
+    const bugs: BugEntry[] = Array.from({ length: 7 }).map((_, i) =>
+      parityBug(`bug-parity-screen-${i}`, "shell-stripping"),
+    );
+    const groups = groupDispatchableBugsByPattern(bugs);
+    expect(groups.size).toBe(1);
+    expect(groups.get("pattern:shell-stripping")?.length).toBe(7);
+  });
+
+  it("mixes patterns: 7 shell-stripping + 5 layout-regrouping → 2 pattern groups", () => {
+    const bugs: BugEntry[] = [
+      ...Array.from({ length: 7 }).map((_, i) =>
+        parityBug(`bug-parity-screen-${i}`, "shell-stripping"),
+      ),
+      ...Array.from({ length: 5 }).map((_, i) =>
+        parityBug(`bug-parity-other-${i}`, "layout-regrouping"),
+      ),
+    ];
+    const groups = groupDispatchableBugsByPattern(bugs);
+    expect(groups.get("pattern:shell-stripping")?.length).toBe(7);
+    expect(groups.get("pattern:layout-regrouping")?.length).toBe(5);
+  });
+
+  it("singleton parity bugs (size 1 group) are demoted to singletons", () => {
+    const bugs: BugEntry[] = [
+      parityBug("bug-parity-only-one", "variant-drift"),
+    ];
+    const groups = groupDispatchableBugsByPattern(bugs);
+    expect(groups.has("pattern:variant-drift")).toBe(false);
+    expect(groups.has("__singleton__bug-parity-only-one")).toBe(true);
+  });
+
+  it("non-parity bugs (orphan, flow-failure) flow as singletons", () => {
+    const bugs: BugEntry[] = [
+      makeBug({ id: "bug-orphan-foo" }), // reachability-orphan default
+      {
+        ...makeBug({ id: "bug-flow-flow-1-home" }),
+        source: "flow-execution-failure",
+      } as BugEntry,
+    ];
+    const groups = groupDispatchableBugsByPattern(bugs);
+    expect(groups.size).toBe(2);
+    expect(groups.has("__singleton__bug-orphan-foo")).toBe(true);
+    expect(groups.has("__singleton__bug-flow-flow-1-home")).toBe(true);
+  });
+
+  it("mixed: 5 shell-stripping + 2 unrelated singletons → 1 pattern-group + 2 singletons", () => {
+    const bugs: BugEntry[] = [
+      ...Array.from({ length: 5 }).map((_, i) =>
+        parityBug(`bug-parity-screen-${i}`, "shell-stripping"),
+      ),
+      makeBug({ id: "bug-orphan-component-x" }),
+      {
+        ...makeBug({ id: "bug-flow-flow-2-home" }),
+        source: "flow-execution-failure",
+      } as BugEntry,
+    ];
+    const groups = groupDispatchableBugsByPattern(bugs);
+    expect(groups.get("pattern:shell-stripping")?.length).toBe(5);
+    expect(groups.has("__singleton__bug-orphan-component-x")).toBe(true);
+    expect(groups.has("__singleton__bug-flow-flow-2-home")).toBe(true);
+  });
+});
+
+describe("runFixBugsLoop — feat-053 class-batched dispatch", () => {
+  function parityBug(id: string, pattern: string): BugEntry {
+    return {
+      ...makeBug({ id }),
+      source: "visual-parity",
+      severity: "P0",
+      parity: {
+        screen: id.replace(/^bug-parity-/, ""),
+        pattern: pattern as
+          | "shell-stripping"
+          | "layout-regrouping"
+          | "variant-drift"
+          | "token-drift",
+        detail: { missing: [], extra: [], variantDrift: [], styleDrift: [] },
+      },
+    };
+  }
+
+  it("with enableClassBatchedDispatch:true, 5 shell-stripping bugs dispatch as ONE batched task (1 builder + 1 tester + 1 reviewer = 3 dispatches, NOT 15)", async () => {
+    const dispatchedAgents: string[] = [];
+    const featureContextIds: string[] = [];
+    const invoke: InvokeAgentFn = async (args) => {
+      dispatchedAgents.push(args.agent);
+      featureContextIds.push(args.featureContext?.id ?? "?");
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.05,
+      };
+    };
+    writeBugsYamlDoc([
+      parityBug("bug-parity-home", "shell-stripping"),
+      parityBug("bug-parity-accounts", "shell-stripping"),
+      parityBug("bug-parity-settings", "shell-stripping"),
+      parityBug("bug-parity-reports", "shell-stripping"),
+      parityBug("bug-parity-transactions", "shell-stripping"),
+    ]);
+
+    const result = await runFixBugsLoop(
+      makeCtx(invoke, cleanVerify, {
+        maxConcurrent: 3,
+        enableClassBatchedDispatch: true,
+      } as Partial<FixBugsLoopContext>),
+    );
+
+    expect(result.status).toBe("clean");
+    // Only 3 agent dispatches (NOT 5 × 3 = 15) because all 5 bugs share
+    // a pattern → ONE batched dispatch.
+    expect(dispatchedAgents).toHaveLength(3);
+    // The batched dispatch's featureContext.id reflects the pattern, not
+    // any individual bug id.
+    expect(featureContextIds[0]).toMatch(/pattern-shell-stripping-batch/);
+    // All 5 bugs end up completed via the SHARED batch dispatch.
+    expect(result.bugsResolved.sort()).toEqual([
+      "bug-parity-accounts",
+      "bug-parity-home",
+      "bug-parity-reports",
+      "bug-parity-settings",
+      "bug-parity-transactions",
+    ]);
+  });
+
+  it("WITHOUT enableClassBatchedDispatch, the 5 same-pattern bugs dispatch individually (zero behavior change from feat-046)", async () => {
+    let dispatchCount = 0;
+    const invoke: InvokeAgentFn = async (args) => {
+      dispatchCount += 1;
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.05,
+      };
+    };
+    writeBugsYamlDoc([
+      parityBug("bug-parity-home", "shell-stripping"),
+      parityBug("bug-parity-accounts", "shell-stripping"),
+      parityBug("bug-parity-settings", "shell-stripping"),
+    ]);
+
+    const result = await runFixBugsLoop(
+      makeCtx(invoke, cleanVerify, { maxConcurrent: 3 }),
+    );
+
+    expect(result.status).toBe("clean");
+    // 3 bugs × 3 agents = 9 dispatches (existing per-bug behavior preserved).
+    expect(dispatchCount).toBe(9);
+    expect(result.bugsResolved).toHaveLength(3);
+  });
+
+  it("mixed batch + singletons: 4 shell-stripping (batched) + 2 orphan-singletons (per-bug) = 3 batch dispatches + 6 singleton dispatches = 9 total", async () => {
+    let batchDispatches = 0;
+    let singletonDispatches = 0;
+    const invoke: InvokeAgentFn = async (args) => {
+      const featureId = args.featureContext?.id ?? "?";
+      if (featureId.includes("pattern-")) {
+        batchDispatches += 1;
+      } else {
+        singletonDispatches += 1;
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.05,
+      };
+    };
+    writeBugsYamlDoc([
+      parityBug("bug-parity-a", "shell-stripping"),
+      parityBug("bug-parity-b", "shell-stripping"),
+      parityBug("bug-parity-c", "shell-stripping"),
+      parityBug("bug-parity-d", "shell-stripping"),
+      makeBug({ id: "bug-orphan-foo" }),
+      makeBug({ id: "bug-orphan-bar" }),
+    ]);
+
+    const result = await runFixBugsLoop(
+      makeCtx(invoke, cleanVerify, {
+        maxConcurrent: 3,
+        enableClassBatchedDispatch: true,
+      } as Partial<FixBugsLoopContext>),
+    );
+
+    expect(result.status).toBe("clean");
+    // 4 same-pattern bugs → 1 batched unit (3 agent dispatches)
+    // 2 orphan singletons → 2 units × 3 agents = 6 dispatches
+    // Total: 9 dispatches for 6 bugs (vs 18 if per-bug).
+    expect(batchDispatches).toBe(3); // builder + tester + reviewer for the pattern
+    expect(singletonDispatches).toBe(6); // 2 orphans × 3 agents each
+    expect(result.bugsResolved).toHaveLength(6);
   });
 });
