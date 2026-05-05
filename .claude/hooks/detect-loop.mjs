@@ -101,6 +101,15 @@ const hash = hashAction({
   // and `filename` (browser_take_screenshot). Without these, the three
   // sequential viewport captures per screen collide on a single hash and
   // the 3rd viewport is wrongly denied — same failure class as the query case.
+  // Skill tool (2026-05-05): discriminates on `skill` (skill name) +
+  // `args` (per-invocation arguments). Without these, EVERY Skill call
+  // — `pause-build`, `resume-build`, `analyze`, `mockups`, `pick-style`,
+  // `stylesheet`, etc. — hashes identically because none of the other
+  // toolInput fields are populated. Three Skill calls in a session would
+  // wrongly trigger the loop-detector on the 3rd, blocking legitimate
+  // pipeline progression. Empirical: blocked /stylesheet on a fresh
+  // reading-log-01 validation run after analyze → mockups → pick-style
+  // had populated 3 Skill entries in recent-attempts.json.
   extra: [
     toolInput.offset,
     toolInput.limit,
@@ -119,6 +128,8 @@ const hash = hashAction({
     toolInput.time,
     toolInput.text,
     toolInput.textGone,
+    toolInput.skill,
+    toolInput.args,
   ]
     .filter((v) => v !== undefined && v !== null)
     .join("|"),
