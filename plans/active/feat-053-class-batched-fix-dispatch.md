@@ -112,10 +112,12 @@ Apply to a fresh project (post-feat-052 ship). Compare:
 - [ ] Merge cascade: per-pattern branch merges cleanly into fixup branch (additive same-region edits leverage bug-034 Phase A resolver per pattern, not per bug).
 - [ ] No regression: existing per-bug parallel + sequential paths preserved for non-parity bugs.
 - [ ] No regression: fix-loop's lossless-pause-resume (bug-052 follow-up) still works for pattern groups (PauseSignal mid-pattern → group's bugs stay in-progress).
+- [ ] **Telemetry (per investigate-017 R2)**: per-pattern-group `cacheCreationInputTokens` is ~1× per-dispatch cache write, not N×. Asserts feat-053's secondary cost win — collapsing N dispatches into 1 means ONE cache-creation event covers all N bugs, not N separate creations.
 
 ## Cross-references
 
 - Parent: `investigate-016-shift-left-bug-prevention-and-fix-loop-throughput` F5 + recommendation
 - Sister: `feat-046-fix-bugs-loop-per-bug-parallelism` (pre-feat-053 baseline; per-bug structure that this plan extends with pattern-grouping)
 - Sister: `feat-051` (upstream PM mandate — best case is feat-051 ships first AND prevents most class-uniform bugs; feat-053 still helps the residual)
+- Sister: `investigate-017` R2 — feat-053 inherits cache-creation savings; the new telemetry assertion validates the secondary cost win.
 - Bug-class lineage: visual-parity classes from feat-022 + feat-028; `bug.parity.pattern` field already exists in BugsYamlSchema (per feat-028)

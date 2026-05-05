@@ -429,54 +429,38 @@ export function injectSlotEnvIntoWorktree(args: {
  * batch dispatches complete. Returns the merge outcome so the caller can
  * decide whether to mark the bug `completed`/`failed`.
  *
+ * bug-054 (2026-05-05): the merge runs in the dedicated fixup-worktree, NOT
+ * in projectRoot. Earlier impl ran `git checkout <fixup-branch> + git merge`
+ * directly in projectRoot — that broke when sibling stages (verifier
+ * failure-artifact writes, synthesizer rewrites of e2e specs) accumulated
+ * uncommitted state in projectRoot's working tree between merge attempts.
+ * The fixup-worktree is exclusive to the fix-bugs-loop, so its working
+ * tree stays clean. Worktree-ref operations (remove + branch -D) still
+ * run from projectRoot since refs live in projectRoot's `.git/`.
+ *
  * On merge conflict: leaves the worktree + branch intact for operator
  * inspection; surfaces conflict reason via `reason` field. Subsequent
  * batches' merge cascade re-attempts via the next iteration.
  */
-function closePerBugWorktree(args: {
+export function closePerBugWorktree(args: {
   projectRoot: string;
+  fixupWorktreePath: string;
   worktreePath: string;
   branch: string;
   fixupBranch: string;
 }): { ok: true } | { ok: false; reason: string } {
-  // Step 1: switch fixup branch to be the merge target. The fixup
-  // worktree is at fixupWorktreePath; checkout the fixup branch there.
-  // Actually simpler: merge into fixup branch FROM projectRoot (which is
-  // on master post-bootstrap or whatever the current HEAD is). Use
-  // `git fetch . <bug-branch>:<fixup-branch>` style? No — use plain merge.
-  //
-  // Simplest path: merge bug-branch into fixup-branch via `git merge` from
-  // the projectRoot, after first checking out fixup-branch. Skip that
-  // dance for v1: use `git fetch . <bug-branch>` from the FIXUP worktree
-  // then `git merge`. But that requires the fixup worktree to be open.
-  //
-  // Pragmatic v1: merge from projectRoot directly:
-  //   git checkout <fixup-branch>
-  //   git merge --no-ff <bug-branch>
-  //   <handle conflicts>
-  // This temporarily moves projectRoot HEAD off master onto fixup, which
-  // is OK since the loop runs on a dedicated session.
-  try {
-    execSync(`git checkout ${shellQuote(args.fixupBranch)}`, {
-      cwd: args.projectRoot,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  } catch (err) {
-    return {
-      ok: false,
-      reason: `checkout ${args.fixupBranch} failed: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
+  // The fixup-worktree was opened at loop bootstrap on `fixupBranch` and
+  // stays checked out there; no `git checkout` needed. Just merge.
   try {
     execSync(
       `git merge --no-ff ${shellQuote(args.branch)} -m "merge ${args.branch} into ${args.fixupBranch} (fix-bugs-loop parallel)"`,
-      { cwd: args.projectRoot, stdio: ["ignore", "pipe", "pipe"] },
+      { cwd: args.fixupWorktreePath, stdio: ["ignore", "pipe", "pipe"] },
     );
   } catch (err) {
     // Abort the merge to leave fixup-branch in a clean state.
     try {
       execSync(`git merge --abort`, {
-        cwd: args.projectRoot,
+        cwd: args.fixupWorktreePath,
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch {
@@ -484,10 +468,12 @@ function closePerBugWorktree(args: {
     }
     return {
       ok: false,
-      reason: `merge ${args.branch} into ${args.fixupBranch} failed: ${err instanceof Error ? err.message : String(err)}`,
+      reason: `merge ${args.branch} into ${args.fixupBranch} (in fixup worktree) failed: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
-  // Tear down the per-bug worktree + branch.
+  // Tear down the per-bug worktree + branch — worktree refs live in
+  // projectRoot's `.git/worktrees/` so these ops run from projectRoot
+  // regardless of where the merge happened.
   try {
     execSync(`git worktree remove --force ${shellQuote(args.worktreePath)}`, {
       cwd: args.projectRoot,
@@ -1087,6 +1073,7 @@ export async function runFixBugsLoop(
             const branch = bugBranchName(result.bug.id);
             const close = closePerBugWorktree({
               projectRoot: ctx.projectRoot,
+              fixupWorktreePath: worktreePath,
               worktreePath: wtPath,
               branch,
               fixupBranch,

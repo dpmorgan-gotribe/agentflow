@@ -16,7 +16,9 @@ import {
   type BuildToSpecVerifyOutput,
 } from "@repo/orchestrator-contracts";
 import { BudgetTracker } from "../src/budget-tracker.js";
+import { execSync } from "node:child_process";
 import {
+  closePerBugWorktree,
   injectSlotEnvIntoWorktree,
   runFixBugsLoop,
   type FixBugsLoopContext,
@@ -1081,6 +1083,137 @@ export default defineConfig({
     for (const b of doc.bugs) {
       expect(b.status).toBe("completed");
       expect(b.resolvedInIteration).toBe(1);
+    }
+  });
+});
+
+// bug-054 (2026-05-05) — closePerBugWorktree must run merges in the dedicated
+// fixup-worktree, NOT projectRoot. Earlier impl ran `git checkout fixup +
+// git merge` in projectRoot's working tree; sibling stages (verifier, synth,
+// tester) accumulated uncommitted state in projectRoot between merges; the
+// next merge collided with that dirt and failed with "Your local changes to
+// the following files would be overwritten by merge."
+//
+// These tests exercise REAL git in a temp dir (no skipWorktreeManagement)
+// and verify the merge succeeds even when projectRoot's working tree is dirty.
+describe("closePerBugWorktree — bug-054 dirty-projectRoot regression", () => {
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString();
+  }
+
+  function setupRepo(): {
+    repoRoot: string;
+    fixupWorktreePath: string;
+    bugWorktreePath: string;
+    cleanup: () => void;
+  } {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bug-054-repo-"));
+    git(repoRoot, "init -q -b master");
+    git(repoRoot, "config user.email test@example.com");
+    git(repoRoot, "config user.name Test");
+    git(repoRoot, "config commit.gpgsign false");
+    // Initial commit on master.
+    writeFileSync(join(repoRoot, "shared.txt"), "v1\n");
+    git(repoRoot, "add shared.txt");
+    git(repoRoot, 'commit -q -m "initial"');
+
+    // Open fixup worktree on fix/bugs-yaml-iter.
+    const fixupWorktreePath = join(repoRoot, ".claude", "worktrees", "fixup");
+    mkdirSync(join(repoRoot, ".claude", "worktrees"), { recursive: true });
+    git(repoRoot, `worktree add "${fixupWorktreePath}" -b fix/bugs-yaml-iter`);
+
+    // Open per-bug worktree on fix/bug-x with a commit modifying shared.txt.
+    const bugWorktreePath = join(repoRoot, ".claude", "worktrees", "bug-x");
+    git(repoRoot, `worktree add "${bugWorktreePath}" -b fix/bug-x`);
+    writeFileSync(join(bugWorktreePath, "shared.txt"), "v1-fixed-by-bug-x\n");
+    git(bugWorktreePath, "add shared.txt");
+    git(bugWorktreePath, 'commit -q -m "fix bug-x"');
+
+    return {
+      repoRoot,
+      fixupWorktreePath,
+      bugWorktreePath,
+      cleanup: () => rmSync(repoRoot, { recursive: true, force: true }),
+    };
+  }
+
+  it("merges per-bug branch into fixup branch even when projectRoot has uncommitted changes to a shared file", () => {
+    const { repoRoot, fixupWorktreePath, bugWorktreePath, cleanup } =
+      setupRepo();
+    try {
+      // Pollute projectRoot's working tree — simulates the verifier/synth
+      // stages writing to projectRoot between merge attempts.
+      writeFileSync(
+        join(repoRoot, "shared.txt"),
+        "v1-locally-modified-in-projectRoot\n",
+      );
+      const projectRootStatusBefore = git(repoRoot, "status --short");
+      expect(projectRootStatusBefore).toContain("shared.txt");
+
+      const result = closePerBugWorktree({
+        projectRoot: repoRoot,
+        fixupWorktreePath,
+        worktreePath: bugWorktreePath,
+        branch: "fix/bug-x",
+        fixupBranch: "fix/bugs-yaml-iter",
+      });
+
+      expect(result.ok).toBe(true);
+      // Fixup-worktree HEAD should now have the merge commit + bug-x's edit.
+      // (Use `replace(/\r/g, "")` so the assertion stays platform-tolerant —
+      // Windows git autocrlf may normalize line endings on checkout.)
+      const fixupContent = readFileSync(
+        join(fixupWorktreePath, "shared.txt"),
+        "utf8",
+      ).replace(/\r/g, "");
+      expect(fixupContent).toBe("v1-fixed-by-bug-x\n");
+      // Per-bug worktree torn down.
+      expect(existsSync(bugWorktreePath)).toBe(false);
+      // projectRoot's dirty state untouched (the merge happened in the
+      // fixup-worktree, not projectRoot).
+      const projectRootContent = readFileSync(
+        join(repoRoot, "shared.txt"),
+        "utf8",
+      ).replace(/\r/g, "");
+      expect(projectRootContent).toBe("v1-locally-modified-in-projectRoot\n");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("returns ok:false on real merge conflict (no regression)", () => {
+    const { repoRoot, fixupWorktreePath, bugWorktreePath, cleanup } =
+      setupRepo();
+    try {
+      // Make the fixup branch have a conflicting edit so the bug-x merge
+      // genuinely conflicts.
+      writeFileSync(
+        join(fixupWorktreePath, "shared.txt"),
+        "v1-divergent-on-fixup\n",
+      );
+      git(fixupWorktreePath, "add shared.txt");
+      git(fixupWorktreePath, 'commit -q -m "divergent fixup commit"');
+
+      const result = closePerBugWorktree({
+        projectRoot: repoRoot,
+        fixupWorktreePath,
+        worktreePath: bugWorktreePath,
+        branch: "fix/bug-x",
+        fixupBranch: "fix/bugs-yaml-iter",
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toMatch(/merge.*failed/);
+      }
+      // After a real conflict, merge --abort runs; fixup tree is clean.
+      const status = git(fixupWorktreePath, "status --short");
+      expect(status.trim()).toBe("");
+    } finally {
+      cleanup();
     }
   });
 });
