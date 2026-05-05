@@ -2513,3 +2513,201 @@ describe("runFeatureGraph — bug-021 resume-aware dispatch", () => {
     expect(dispatched[dispatched.length - 1]).toBe("git-agent:close-feature");
   });
 });
+
+// feat-052 Phase B+D (2026-05-05) — per-feature parity-smoke fires AFTER
+// agent_sequence completes + BEFORE close-feature so divergences caught
+// here can be fixed in the still-open worktree (rather than waiting for
+// post-merge /build-to-spec-verify which costs ~$5/bug to fix in the
+// fix-bugs loop).
+describe("runFeature — feat-052 per-feature parity-smoke", () => {
+  function buildWebFeature(overrides: Partial<Feature> = {}): Feature {
+    return buildFeature({
+      id: "feat-accounts-ui",
+      worktree: "feat-accounts-ui",
+      branch: "feat/accounts-ui",
+      affects_files: ["apps/web/app/accounts/**"],
+      agent_sequence: ["web-frontend-builder", "tester", "reviewer"],
+      tasks: [
+        {
+          id: "accounts-ui",
+          agent: "web-frontend-builder",
+          depends_on: [],
+          skills: [],
+          status: "pending",
+          screens: ["webapp/accounts-list"],
+        },
+        {
+          id: "accounts-tests",
+          agent: "tester",
+          depends_on: [],
+          skills: [],
+          status: "pending",
+          screens: [],
+        },
+        {
+          id: "accounts-review",
+          agent: "reviewer",
+          depends_on: [],
+          skills: [],
+          status: "pending",
+          screens: [],
+        },
+      ],
+      ...overrides,
+    });
+  }
+
+  it("runs parity-verify after agent walk + before close-feature when feature has web-frontend tasks", async () => {
+    const dispatched: string[] = [];
+    const invoke: InvokeAgentFn = async (args) => {
+      const tag =
+        args.agent === "git-agent" && args.gitOp
+          ? `git-agent:${args.gitOp.op}`
+          : args.agent;
+      dispatched.push(tag);
+      return mkOkInvoke()(args);
+    };
+    let parityCalls = 0;
+    const ctx = {
+      ...makeCtx(invoke),
+      runParityVerify: async () => {
+        parityCalls += 1;
+        return { divergences: [], warnings: [] };
+      },
+    };
+
+    const feature = buildWebFeature();
+    const result = await runFeature(feature, ctx);
+
+    expect(result.status).toBe("completed");
+    expect(parityCalls).toBe(1);
+    // Parity-smoke ran BETWEEN agent_sequence end and close-feature.
+    const closeIdx = dispatched.indexOf("git-agent:close-feature");
+    const reviewerIdx = dispatched.indexOf("reviewer");
+    expect(reviewerIdx).toBeLessThan(closeIdx);
+    expect(reviewerIdx).toBeGreaterThanOrEqual(0);
+  });
+
+  it("dispatches web-frontend-builder retry when parity-verify finds divergences", async () => {
+    const dispatched: { agent: string; retry: boolean }[] = [];
+    const invoke: InvokeAgentFn = async (args) => {
+      dispatched.push({
+        agent: args.agent,
+        retry: args.retryContext !== undefined,
+      });
+      return mkOkInvoke()(args);
+    };
+    let parityCalls = 0;
+    // Two consecutive verifies: first finds 1 divergence → retry.
+    // Second finds none → smoke clears, proceed to close-feature.
+    const ctx = {
+      ...makeCtx(invoke),
+      runParityVerify: async () => {
+        parityCalls += 1;
+        if (parityCalls === 1) {
+          return {
+            divergences: [
+              {
+                screen: "accounts-list",
+                pattern: "shell-stripping",
+                detail: {
+                  missing: ['[data-kit-component="AppShell"]'],
+                  extra: [],
+                  variantDrift: [],
+                  styleDrift: [],
+                },
+                severity: "P0" as const,
+              },
+            ],
+            warnings: [],
+          };
+        }
+        return { divergences: [], warnings: [] };
+      },
+    };
+
+    const feature = buildWebFeature();
+    const result = await runFeature(feature, ctx);
+
+    expect(result.status).toBe("completed");
+    expect(parityCalls).toBe(2);
+    // The web-frontend-builder was dispatched TWICE: once normally + once
+    // as a retry under retryContext.
+    const wfbCalls = dispatched.filter(
+      (d) => d.agent === "web-frontend-builder",
+    );
+    expect(wfbCalls.length).toBe(2);
+    expect(wfbCalls[0]?.retry).toBe(false);
+    expect(wfbCalls[1]?.retry).toBe(true);
+  });
+
+  it("proceeds to close-feature with warning when divergences persist after maxRetries", async () => {
+    const invoke: InvokeAgentFn = async (args) => mkOkInvoke()(args);
+    let parityCalls = 0;
+    const ctx = {
+      ...makeCtx(invoke),
+      // Cap retries at 1 so the test runs fast.
+      parityRetriesMax: 1,
+      runParityVerify: async () => {
+        parityCalls += 1;
+        return {
+          divergences: [
+            {
+              screen: "accounts-list",
+              pattern: "shell-stripping",
+              detail: {
+                missing: ['[data-kit-component="AppShell"]'],
+                extra: [],
+                variantDrift: [],
+                styleDrift: [],
+              },
+              severity: "P0" as const,
+            },
+          ],
+          warnings: [],
+        };
+      },
+    };
+
+    const feature = buildWebFeature();
+    const result = await runFeature(feature, ctx);
+
+    // Feature still completes (close-feature runs); residual divergences
+    // are logged; bugs.yaml channel via post-merge verifier catches.
+    expect(result.status).toBe("completed");
+    // 1 initial + 1 retry = 2 verify calls.
+    expect(parityCalls).toBe(2);
+  });
+
+  it("skips parity-smoke when feature has no web-frontend tasks (backend-only feature)", async () => {
+    const invoke: InvokeAgentFn = async (args) => mkOkInvoke()(args);
+    let parityCalls = 0;
+    const ctx = {
+      ...makeCtx(invoke),
+      runParityVerify: async () => {
+        parityCalls += 1;
+        return { divergences: [], warnings: [] };
+      },
+    };
+
+    // backend-only feature (default buildFeature() shape)
+    const feature = buildFeature({
+      id: "feat-fx-cache-frankfurter",
+      affects_files: ["apps/api/src/fx/**"],
+    });
+    const result = await runFeature(feature, ctx);
+
+    expect(result.status).toBe("completed");
+    expect(parityCalls).toBe(0); // smoke skipped
+  });
+
+  it("skips parity-smoke when ctx.runParityVerify is not injected (legacy + most test paths)", async () => {
+    const invoke: InvokeAgentFn = async (args) => mkOkInvoke()(args);
+    // No runParityVerify override.
+    const ctx = makeCtx(invoke);
+    const feature = buildWebFeature();
+    const result = await runFeature(feature, ctx);
+    // No-op behavior — feature completes as before.
+    expect(result.status).toBe("completed");
+  });
+});

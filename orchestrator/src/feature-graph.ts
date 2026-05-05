@@ -6,6 +6,7 @@ import type {
   GateResolution,
   GitAgentOutput,
   InFlightFeature,
+  ParityDivergence,
   Task,
   TasksV2,
 } from "@repo/orchestrator-contracts";
@@ -204,6 +205,21 @@ export interface FeatureGraphContext {
    * where `scripts/audit-app-reachability.mjs` + friends live.
    */
   factoryRoot?: string;
+  /**
+   * feat-052 Phase B (2026-05-05) — per-feature parity-smoke runner.
+   * When set, fires AFTER the agent_sequence completes + BEFORE
+   * close-feature. When omitted, the smoke is skipped (legacy callers
+   * + tests that don't exercise parity behavior). Production CLI wires
+   * this to a wrapper that delegates to `parity-verify.ts:runParityVerify`
+   * with `filterScreensToFeature` + autoBootDevServer enabled.
+   */
+  runParityVerify?: RunParityVerifyFn;
+  /**
+   * feat-052 Phase B — max retries when parity-verify finds divergences.
+   * Default 2 (matches TASK_RETRY_CAP). Tests inject 0 to assert the
+   * single-pass + capture path without dispatching builder retries.
+   */
+  parityRetriesMax?: number;
   /**
    * feat-026 — skip the post-verify automated bug-fix loop. Default
    * false in production (loop runs when verify produces bugs); existing
@@ -508,6 +524,165 @@ export interface FeatureGraphResult {
 export type RunBuildToSpecVerifyFn = (
   ctx: BuildToSpecVerifyContext,
 ) => Promise<BuildToSpecVerifyOutputType>;
+
+/**
+ * feat-052 Phase B (2026-05-05) — feature-graph seam for the per-feature
+ * parity-smoke that fires AFTER agent_sequence completes + BEFORE
+ * close-feature. Delegates to `parity-verify.ts:runParityVerify` in
+ * production; tests inject a stub returning canned divergences without
+ * booting Playwright.
+ *
+ * The narrow ParityVerifyArgs shape avoids a circular import between
+ * feature-graph.ts and parity-verify.ts — the helper assembles a full
+ * ParityVerifyContext from these args internally.
+ */
+export type RunParityVerifyFn = (args: {
+  projectDir: string;
+  factoryRoot?: string;
+  affectsFiles: readonly string[];
+  /**
+   * Worktree path. parity-verify boots a dev-server in the worktree's
+   * apps/web context — bug-052 Phase E ensures slot env files are
+   * present so the boot picks the right port.
+   */
+  worktreeCwd: string;
+}) => Promise<{ divergences: ParityDivergence[]; warnings: string[] }>;
+
+/**
+ * Heuristic — does this feature render app pages?
+ *
+ * True iff:
+ *  - feature has at least one task with agent === web-frontend-builder
+ *  - feature.affects_files contains at least one glob covering page files
+ *
+ * False otherwise — backend-only features, infra features, etc., skip
+ * the parity-smoke. Mobile (expo) features get a future stack-aware
+ * variant; v1 ships web only.
+ */
+function featureNeedsParitySmoke(feature: Feature): boolean {
+  const hasWebFrontendTask = feature.tasks.some(
+    (t) => t.agent === "web-frontend-builder",
+  );
+  if (!hasWebFrontendTask) return false;
+  const affects = feature.affects_files ?? [];
+  return affects.some((g) => {
+    const norm = g.replace(/\\/g, "/");
+    // Catches: apps/web/**, apps/web/app/**, apps/web/app/<screen>/**,
+    // apps/web/app/page.tsx, etc.
+    return (
+      /apps\/web\/(app|src\/pages)\/.*/.test(norm) || norm === "apps/web/**"
+    );
+  });
+}
+
+/**
+ * feat-052 Phase B+D — per-feature parity-smoke with retries.
+ *
+ * Runs parity-verify against the worktree's dev-server (booted by
+ * parity-verify itself when ctx.devServerUrl is omitted). On divergences,
+ * dispatches web-frontend-builder retry inside the worktree (max 2)
+ * with the divergences as retryContext. Returns the FINAL residual
+ * divergences after retries exhausted.
+ *
+ * v1 design choices:
+ *  - Local retry counter (not RetryCounters tier) — keeps the change
+ *    scoped to runFeature; pause-resume restarts the count which is
+ *    acceptable since parity-verify is idempotent.
+ *  - Cap = 2 retries (matches TASK_RETRY_CAP). Empirical tuning may
+ *    revise this to 1 (cheaper) or 3 (more chances) post-validation.
+ *  - On exhausted retries: log warning + return divergences. Caller
+ *    proceeds to close-feature; bugs.yaml channel via /build-to-spec-verify
+ *    catches the residual.
+ */
+async function runParitySmokeWithRetries(args: {
+  feature: Feature;
+  featureContext: { id: string; branch: string; priority: string };
+  worktreeCwd: string;
+  ctx: FeatureGraphContext;
+  runParityVerify: RunParityVerifyFn;
+  maxRetries: number;
+}): Promise<{
+  divergences: ParityDivergence[];
+  warnings: string[];
+  costUsd: number;
+}> {
+  const { feature, featureContext, worktreeCwd, ctx, runParityVerify } = args;
+  let costUsd = 0;
+  const warnings: string[] = [];
+  let attempt = 0;
+  let divergences: ParityDivergence[] = [];
+
+  while (attempt <= args.maxRetries) {
+    const verify = await runParityVerify({
+      projectDir: ctx.projectRoot,
+      factoryRoot: ctx.factoryRoot,
+      affectsFiles: feature.affects_files ?? [],
+      worktreeCwd,
+    });
+    warnings.push(...verify.warnings);
+    divergences = verify.divergences;
+
+    if (divergences.length === 0) return { divergences, warnings, costUsd };
+
+    // We have divergences. If we've used all retries, stop + return them.
+    if (attempt >= args.maxRetries) break;
+
+    attempt += 1;
+    // Dispatch web-frontend-builder retry inside the worktree with
+    // divergences as retryContext. Mirrors the tester `genuineProductBugs[]`
+    // ladder: same retry-context shape, same builder dispatch surface.
+    const retryMessage = formatParityDivergencesAsRetry(divergences);
+    const taskForRetry = feature.tasks.find(
+      (t) => t.agent === "web-frontend-builder",
+    );
+    const synthTaskId = taskForRetry
+      ? taskForRetry.id
+      : `${feature.id}-parity-smoke-retry`;
+    const result = await ctx.invokeAgent({
+      agent: "web-frontend-builder",
+      cwd: worktreeCwd,
+      featureContext,
+      tasks: taskForRetry ? [taskForRetry] : [],
+      retryContext: {
+        taskId: synthTaskId,
+        errorMessage: retryMessage,
+      },
+    });
+    costUsd += result.costUsd;
+    // Don't fail the feature here — even if the builder retry returned
+    // failed status, we re-run parity-verify next loop iteration to
+    // see if anything changed. Cap exhaustion is the only exit.
+  }
+
+  if (divergences.length > 0) {
+    warnings.push(
+      `[parity-smoke] feature ${feature.id}: ${divergences.length} divergence(s) remain after ${args.maxRetries} retries; close-feature will proceed and bugs.yaml channel will catch residual.`,
+    );
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[runFeature] ${feature.id}: parity-smoke residual divergences after retries — proceeding to merge; bugs.yaml will pick up the rest`,
+    );
+  }
+
+  return { divergences, warnings, costUsd };
+}
+
+function formatParityDivergencesAsRetry(
+  divergences: readonly ParityDivergence[],
+): string {
+  const lines = [
+    `parity-verify caught ${divergences.length} divergence(s) on this feature's screens — reapply the mockup's kit-component tree:`,
+  ];
+  for (const d of divergences.slice(0, 10)) {
+    lines.push(
+      `  - ${d.screen} (${d.pattern}, ${d.severity}): missing=${d.detail.missing.length} extra=${d.detail.extra.length} variantDrift=${d.detail.variantDrift.length} styleDrift=${d.detail.styleDrift.length}`,
+    );
+  }
+  if (divergences.length > 10) {
+    lines.push(`  ... and ${divergences.length - 10} more`);
+  }
+  return lines.join("\n");
+}
 
 // Per-task retry cap. bug-002 dropped this 3 → 1 for fast-fail debugging
 // during the structural-bug discovery phase. bug-008 (2026-04-26) restores
@@ -1090,6 +1265,32 @@ export async function runFeature(
         }
       }
     }
+  }
+
+  // 2.5 — feat-052 Phase B+D: per-feature parity-smoke + retry.
+  // Runs AFTER agent_sequence completes + BEFORE gate-6/close-feature so
+  // divergences caught here can be fixed in the still-open worktree
+  // (rather than waiting for post-merge /build-to-spec-verify which
+  // costs ~$5/bug to fix in the fix-bugs loop). Skipped when:
+  //  - ctx.runParityVerify isn't injected (legacy + most test paths)
+  //  - feature doesn't render web pages (backend-only, infra)
+  if (ctx.runParityVerify && featureNeedsParitySmoke(feature)) {
+    const smokeResult = await runParitySmokeWithRetries({
+      feature,
+      featureContext,
+      worktreeCwd,
+      ctx,
+      runParityVerify: ctx.runParityVerify,
+      maxRetries: ctx.parityRetriesMax ?? TASK_RETRY_CAP,
+    });
+    totalCostUsd += smokeResult.costUsd;
+    for (const w of smokeResult.warnings) {
+      commitWarnings.push(`[parity-smoke] ${w}`);
+    }
+    // Residual divergences (after retries exhausted) are logged via
+    // commitWarnings + the runParitySmokeWithRetries helper; close-feature
+    // proceeds. The bugs.yaml channel via post-merge /build-to-spec-verify
+    // catches anything that slipped through.
   }
 
   // 3. Gate 6 (pr-review) — fires between reviewer-approve and merge.
