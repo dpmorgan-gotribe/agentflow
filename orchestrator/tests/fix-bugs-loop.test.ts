@@ -17,6 +17,7 @@ import {
 } from "@repo/orchestrator-contracts";
 import { BudgetTracker } from "../src/budget-tracker.js";
 import {
+  injectSlotEnvIntoWorktree,
   runFixBugsLoop,
   type FixBugsLoopContext,
 } from "../src/fix-bugs-loop.js";
@@ -861,6 +862,123 @@ describe("runFixBugsLoop — parallel dispatch (feat-046 Phase A.1)", () => {
       "bug-orphan-b",
     ]);
     expect(calls.filter((c) => c === "web-frontend-builder")).toHaveLength(2);
+  });
+
+  // feat-046 Phase A.2 — per-slot env injection for Strategy C parallelism.
+  describe("injectSlotEnvIntoWorktree (Phase A.2)", () => {
+    it("writes apps/api/.env.local with slot-specific PORT + DATABASE_PATH", () => {
+      const wt = mkdtempSync(join(tmpdir(), "slot-env-api-"));
+      try {
+        mkdirSync(join(wt, "apps", "api"), { recursive: true });
+        injectSlotEnvIntoWorktree({ worktreePath: wt, slot: 2 });
+        const apiEnv = readFileSync(
+          join(wt, "apps", "api", ".env.local"),
+          "utf8",
+        );
+        // slot 2 → backendPort = 3001 + 2*2 = 3005
+        expect(apiEnv).toContain("PORT=3005");
+        expect(apiEnv).toContain("ENABLE_TEST_SEED=1");
+        expect(apiEnv).toContain(
+          "DATABASE_PATH=./data/finance-track-test-slot2.db",
+        );
+      } finally {
+        rmSync(wt, { recursive: true, force: true });
+      }
+    });
+
+    it("writes apps/web/.env.local with frontend NEXT_PUBLIC_API_BASE_URL", () => {
+      const wt = mkdtempSync(join(tmpdir(), "slot-env-web-"));
+      try {
+        mkdirSync(join(wt, "apps", "web"), { recursive: true });
+        injectSlotEnvIntoWorktree({ worktreePath: wt, slot: 0 });
+        const webEnv = readFileSync(
+          join(wt, "apps", "web", ".env.local"),
+          "utf8",
+        );
+        // slot 0 → backendPort 3001, frontendPort 3000
+        expect(webEnv).toContain(
+          "NEXT_PUBLIC_API_BASE_URL=http://localhost:3001",
+        );
+        expect(webEnv).toContain("PORT=3000");
+      } finally {
+        rmSync(wt, { recursive: true, force: true });
+      }
+    });
+
+    it("rewrites apps/web/playwright.config.ts PORT/baseURL fallbacks to slot ports", () => {
+      const wt = mkdtempSync(join(tmpdir(), "slot-env-pwconfig-"));
+      try {
+        mkdirSync(join(wt, "apps", "web"), { recursive: true });
+        const original = `import { defineConfig, devices } from "@playwright/test";
+export default defineConfig({
+  use: {
+    baseURL: process.env["PLAYWRIGHT_BASE_URL"] ?? "http://localhost:3000",
+  },
+  webServer: {
+    command: "node ../../scripts/dev.mjs",
+    url: "http://localhost:3000",
+    env: {
+      PORT: process.env["PORT"] ?? "3001",
+      NEXT_PUBLIC_API_BASE_URL: process.env["NEXT_PUBLIC_API_BASE_URL"] ?? "http://localhost:3001",
+    },
+  },
+});
+`;
+        writeFileSync(
+          join(wt, "apps", "web", "playwright.config.ts"),
+          original,
+          "utf8",
+        );
+        injectSlotEnvIntoWorktree({ worktreePath: wt, slot: 1 });
+        const rewritten = readFileSync(
+          join(wt, "apps", "web", "playwright.config.ts"),
+          "utf8",
+        );
+        // slot 1 → frontendPort=3002, backendPort=3003
+        expect(rewritten).toContain('?? "3003"'); // PORT fallback
+        expect(rewritten).toContain('?? "http://localhost:3003"'); // NEXT_PUBLIC_API_BASE_URL
+        expect(rewritten).toContain('?? "http://localhost:3002"'); // baseURL
+        expect(rewritten).toContain('"http://localhost:3002"'); // url field
+        // Original literals replaced.
+        expect(rewritten).not.toContain('?? "3001"');
+        expect(rewritten).not.toContain('?? "http://localhost:3001"');
+        expect(rewritten).not.toContain('?? "http://localhost:3000"');
+      } finally {
+        rmSync(wt, { recursive: true, force: true });
+      }
+    });
+
+    it("is idempotent — running twice produces the same output", () => {
+      const wt = mkdtempSync(join(tmpdir(), "slot-env-idem-"));
+      try {
+        mkdirSync(join(wt, "apps", "api"), { recursive: true });
+        injectSlotEnvIntoWorktree({ worktreePath: wt, slot: 0 });
+        const first = readFileSync(
+          join(wt, "apps", "api", ".env.local"),
+          "utf8",
+        );
+        injectSlotEnvIntoWorktree({ worktreePath: wt, slot: 0 });
+        const second = readFileSync(
+          join(wt, "apps", "api", ".env.local"),
+          "utf8",
+        );
+        expect(first).toEqual(second);
+      } finally {
+        rmSync(wt, { recursive: true, force: true });
+      }
+    });
+
+    it("graceful no-op when playwright.config.ts absent", () => {
+      const wt = mkdtempSync(join(tmpdir(), "slot-env-noconfig-"));
+      try {
+        // Don't create apps/ tree at all — helper must not throw.
+        expect(() =>
+          injectSlotEnvIntoWorktree({ worktreePath: wt, slot: 5 }),
+        ).not.toThrow();
+      } finally {
+        rmSync(wt, { recursive: true, force: true });
+      }
+    });
   });
 
   it("parallel path: bugs.yaml gets ONE write per batch (not per-bug)", async () => {
