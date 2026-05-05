@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  filterScreensToFeature,
   mergeByScreenPattern,
   runParityVerify,
   type ScreenComparisonResult,
@@ -321,5 +322,78 @@ describe("mergeByScreenPattern", () => {
     mergeByScreenPattern([a, b]);
     expect(a.detail.missing).toEqual(["A"]);
     expect(b.detail.missing).toEqual(["B"]);
+  });
+});
+
+// feat-052 (2026-05-05) — per-feature parity-smoke needs to scope the
+// screen list to JUST the screens this feature owns. filterScreensToFeature
+// resolves the screen-id → expected page-path convention against the
+// feature's affects_files[] glob list (from docs/tasks.yaml).
+describe("filterScreensToFeature — bug-052 per-feature subset", () => {
+  const screens: ScreenEntry[] = [
+    { id: "home", platform: "webapp", mockupPath: "/m/home.html" },
+    {
+      id: "accounts-list",
+      platform: "webapp",
+      mockupPath: "/m/accounts-list.html",
+    },
+    {
+      id: "transactions-empty",
+      platform: "webapp",
+      mockupPath: "/m/transactions-empty.html",
+    },
+    { id: "settings", platform: "webapp", mockupPath: "/m/settings.html" },
+  ];
+
+  it("returns all screens when affects_files is empty (unscoped feature)", () => {
+    expect(filterScreensToFeature(screens, [])).toHaveLength(4);
+  });
+
+  it("blanket apps/web/** matches every screen", () => {
+    const result = filterScreensToFeature(screens, ["apps/web/**"]);
+    expect(result.map((s) => s.id).sort()).toEqual([
+      "accounts-list",
+      "home",
+      "settings",
+      "transactions-empty",
+    ]);
+  });
+
+  it("apps/web/app/accounts-list/** scopes to just accounts-list", () => {
+    const result = filterScreensToFeature(screens, [
+      "apps/web/app/accounts-list/**",
+    ]);
+    expect(result.map((s) => s.id)).toEqual(["accounts-list"]);
+  });
+
+  it("exact apps/web/app/page.tsx matches the home screen", () => {
+    const result = filterScreensToFeature(screens, ["apps/web/app/page.tsx"]);
+    expect(result.map((s) => s.id)).toEqual(["home"]);
+  });
+
+  it("multi-screen feature matches when ANY glob matches", () => {
+    const result = filterScreensToFeature(screens, [
+      "apps/web/app/accounts-list/**",
+      "apps/web/app/settings/**",
+    ]);
+    expect(result.map((s) => s.id).sort()).toEqual([
+      "accounts-list",
+      "settings",
+    ]);
+  });
+
+  it("non-matching glob excludes ALL screens (e.g. backend-only feature)", () => {
+    const result = filterScreensToFeature(screens, ["apps/api/**"]);
+    expect(result).toHaveLength(0);
+  });
+
+  it("Windows backslash path normalization — globs with / still match candidates", () => {
+    // Defensive check: the candidate path is ALWAYS forward-slash since we
+    // construct it inline, but operators may author affects_files with
+    // backslashes on Windows. Verify the matcher normalizes both sides.
+    const result = filterScreensToFeature(screens, [
+      "apps\\web\\app\\settings\\**",
+    ]);
+    expect(result.map((s) => s.id)).toEqual(["settings"]);
   });
 });

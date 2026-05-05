@@ -139,10 +139,17 @@ describe("BugEntrySchema", () => {
     ).toThrow();
   });
 
-  it("rejects empty agentSequence", () => {
-    expect(() =>
-      BugEntrySchema.parse({ ...validOrphanEntry, agentSequence: [] }),
-    ).toThrow();
+  it("accepts empty agentSequence (bug-052 Phase F — manifest-author bugs skip dispatch)", () => {
+    // Pre-bug-050: empty agentSequence was rejected. bug-050 Phase B + bug-052
+    // Phase F relaxed the schema (.min(1) → .min(0)) so file-bug-plan.mjs can
+    // route manifest-author class bugs to needs-operator-review without
+    // dispatching any agent (the flow author must fix the manifest; no
+    // builder can). The schema test wasn't updated when the schema relaxed.
+    const parsed = BugEntrySchema.parse({
+      ...validOrphanEntry,
+      agentSequence: [],
+    });
+    expect(parsed.agentSequence).toEqual([]);
   });
 
   it("rejects unknown agent in agentSequence", () => {

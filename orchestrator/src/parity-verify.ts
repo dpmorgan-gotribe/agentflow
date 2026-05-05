@@ -137,6 +137,82 @@ function defaultLoadScreenList(projectDir: string): Promise<ScreenEntry[]> {
 }
 
 /**
+ * feat-052 (2026-05-05) — filter a ScreenEntry[] to only the screens a
+ * specific feature is responsible for, based on the feature's
+ * `affects_files[]` glob list (from `docs/tasks.yaml` features[].affects_files).
+ *
+ * Rationale: parity-verify normally runs ONCE post-merge across the WHOLE
+ * project. With per-feature parity-smoke (feat-052 Phase B), close-feature
+ * needs to run parity-verify against JUST the screens this feature owns
+ * — catching divergences AT FIRST FEATURE before subsequent features
+ * inherit the bad master. This helper does the screen-subsetting.
+ *
+ * Matching algorithm (Next.js App Router conventions; stack-aware variants
+ * future work):
+ *   - "home" screen → `apps/web/app/page.tsx` (Next.js root route)
+ *   - "<screen-id>" screen → `apps/web/app/<screen-id>/page.tsx`
+ *
+ * For each candidate page-path, walk affectsFiles[]:
+ *   - Exact match → owned
+ *   - Glob ending in `/**` → owned if candidate starts with the glob's
+ *     prefix (with `/**` stripped)
+ *   - Glob ending in `/*` → owned if candidate is a direct child of the
+ *     stripped prefix (no further slashes after)
+ *   - Other patterns → exact-match fallback
+ *
+ * Conservative — when the heuristic can't resolve, INCLUDE the screen
+ * (verifier overhead per extra screen is ~30-60s; missing a divergence
+ * costs $5+ per fix-loop dispatch).
+ */
+export function filterScreensToFeature(
+  screens: ScreenEntry[],
+  affectsFiles: readonly string[],
+): ScreenEntry[] {
+  if (affectsFiles.length === 0) return screens; // unscoped feature → all
+  const out: ScreenEntry[] = [];
+  for (const screen of screens) {
+    if (screenOwnedByFeature(screen, affectsFiles)) out.push(screen);
+  }
+  return out;
+}
+
+function screenOwnedByFeature(
+  screen: ScreenEntry,
+  affectsFiles: readonly string[],
+): boolean {
+  const candidates =
+    screen.id === "home"
+      ? ["apps/web/app/page.tsx", "apps/web/app/page.test.tsx"]
+      : [
+          `apps/web/app/${screen.id}/page.tsx`,
+          `apps/web/app/${screen.id}/page.test.tsx`,
+        ];
+  for (const candidate of candidates) {
+    for (const glob of affectsFiles) {
+      if (matchGlob(candidate, glob)) return true;
+    }
+  }
+  return false;
+}
+
+function matchGlob(candidate: string, glob: string): boolean {
+  // Normalize separators to forward-slash for Windows resilience.
+  const c = candidate.replace(/\\/g, "/");
+  const g = glob.replace(/\\/g, "/");
+  if (c === g) return true;
+  if (g.endsWith("/**")) {
+    const prefix = g.slice(0, -3);
+    return c === prefix || c.startsWith(`${prefix}/`);
+  }
+  if (g.endsWith("/*")) {
+    const prefix = g.slice(0, -2);
+    if (!c.startsWith(`${prefix}/`)) return false;
+    return !c.slice(prefix.length + 1).includes("/");
+  }
+  return false;
+}
+
+/**
  * Default `compareScreen`: shells out to Playwright via dynamic import.
  * Falls back to a soft-warning when Playwright isn't installed (matches
  * the feat-025 runner's degradation pattern). v1 implementation reads the

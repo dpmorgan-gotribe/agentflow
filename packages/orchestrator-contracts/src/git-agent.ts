@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ParityDivergenceSchema } from "./parity-verify.js";
 
 /**
  * Git-agent output schema — discriminated union on `op` covering all 5
@@ -71,6 +72,13 @@ const CloseFeatureSuccess = z.object({
   worktreeRemoveReason: z.string().optional(),
   branchDeleted: z.boolean().optional(),
   branchDeleteReason: z.string().optional(),
+  // feat-052 (2026-05-05) — per-feature parity-smoke: when close-feature
+  // ran a narrow parity-verify against this feature's owned screens AND
+  // found divergences, they're listed here. Orchestrator's feature-graph
+  // routes a non-empty list back to web-frontend-builder retry (within
+  // retry budget) before letting the merge stand. When undefined, the
+  // smoke didn't run (non-web feature, or feature didn't render pages).
+  parityDivergences: z.array(ParityDivergenceSchema).optional(),
 });
 
 // close-feature — conflict
