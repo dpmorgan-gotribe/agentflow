@@ -1398,6 +1398,16 @@ async function runLlmAgent(
         } else if (
           isHardLimit &&
           status === "rejected" &&
+          // bug-052 follow-up (2026-05-05): when overage tier is `allowed`
+          // AND currently `using=true`, the SDK has auto-routed THIS call
+          // through overage — the rate-limit-event still fires (because
+          // the underlying Max bucket IS rejected), but the call succeeded
+          // via overage billing. Pausing here would halt a run that's
+          // actually progressing. Only pause when overage is unavailable
+          // (status !== "allowed") OR not active (using === false). When
+          // overage exhausts ($ runs out → status flips to "rejected"),
+          // pause fires correctly on the next event.
+          !(info.overageStatus === "allowed" && info.isUsingOverage === true) &&
           cfg.onRateLimitPause
         ) {
           try {

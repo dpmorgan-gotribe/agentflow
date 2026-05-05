@@ -4081,6 +4081,152 @@ describe("invokeAgent — bug-022 PauseSignal propagation", () => {
     }
   });
 
+  // bug-052 follow-up (2026-05-05) — overage-aware pause gate.
+  // When the SDK reports `status: "rejected"` BUT overage is `allowed`
+  // AND `using=true`, the call is auto-routed via overage. The hook
+  // must NOT fire — the run is progressing on overage billing.
+  it("onRateLimitPause does NOT fire when overage is allowed + using", async () => {
+    const budget = mkBudget();
+    const queryFn = makeMessageScriptedQuery([
+      // Rate-limit event with REJECTED status BUT overage allowed + using.
+      // SDK shape: flat overageStatus + isUsingOverage fields on rate_limit_info.
+      {
+        type: "rate_limit_event",
+        rate_limit_info: {
+          rateLimitType: "five_hour",
+          status: "rejected",
+          overageStatus: "allowed",
+          isUsingOverage: true,
+        },
+      },
+      {
+        type: "result",
+        subtype: "success",
+        duration_ms: 1,
+        duration_api_ms: 1,
+        is_error: false,
+        num_turns: 1,
+        result: "",
+        stop_reason: "end_turn",
+        total_cost_usd: 0.01,
+        usage: {},
+        modelUsage: {},
+        permission_denials: [],
+        structured_output: { taskOutcomes: { t1: "completed" } },
+        uuid: "00000000-0000-0000-0000-000000000000",
+        session_id: "test-session",
+      },
+    ]);
+
+    let pauseHookFired = false;
+    const onRateLimitPause = async () => {
+      pauseHookFired = true;
+      throw new PauseSignal({
+        version: "1.0",
+        pausedAt: "2026-05-05T14:00:00.000Z",
+        reason: "claude-max-five-hour-limit",
+        reasonDetail: "should-not-fire-when-overage-active",
+        authProvider: "claude-max-subscription",
+        drainedInFlight: false,
+        pipelineRunId: "test-run",
+      });
+    };
+
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+      onRateLimitPause,
+    });
+
+    const result = await invoke({
+      agent: "backend-builder",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [task1],
+    });
+    // Run completed via overage; no pause fired.
+    expect(pauseHookFired).toBe(false);
+    expect(result.taskStatus.t1).toBe("completed");
+  });
+
+  it("onRateLimitPause DOES fire when overage is rejected (overage exhausted)", async () => {
+    const budget = mkBudget();
+    const queryFn = makeMessageScriptedQuery([
+      {
+        type: "rate_limit_event",
+        rate_limit_info: {
+          rateLimitType: "five_hour",
+          status: "rejected",
+          overageStatus: "rejected",
+          isUsingOverage: false,
+        },
+      },
+      {
+        type: "result",
+        subtype: "success",
+        duration_ms: 1,
+        duration_api_ms: 1,
+        is_error: false,
+        num_turns: 1,
+        result: "",
+        stop_reason: "end_turn",
+        total_cost_usd: 0.01,
+        usage: {},
+        modelUsage: {},
+        permission_denials: [],
+        structured_output: { taskOutcomes: { t1: "completed" } },
+        uuid: "00000000-0000-0000-0000-000000000000",
+        session_id: "test-session",
+      },
+    ]);
+
+    let pauseHookFired = false;
+    const onRateLimitPause = async () => {
+      pauseHookFired = true;
+      throw new PauseSignal({
+        version: "1.0",
+        pausedAt: "2026-05-05T14:00:00.000Z",
+        reason: "claude-max-five-hour-limit",
+        reasonDetail: "overage exhausted — hard pause",
+        authProvider: "claude-max-subscription",
+        drainedInFlight: false,
+        pipelineRunId: "test-run",
+      });
+    };
+
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget,
+      flags: [],
+      queryFn,
+      modelConfigOverride: {
+        globalPath: globalYaml,
+        projectPath: join(projectRoot, "no-project.yaml"),
+      },
+      onRateLimitPause,
+    });
+
+    let caught: unknown;
+    try {
+      await invoke({
+        agent: "backend-builder",
+        cwd: projectRoot,
+        featureContext,
+        tasks: [task1],
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(pauseHookFired).toBe(true);
+    expect(caught).toBeInstanceOf(PauseSignal);
+  });
+
   it("onAuthFailedPause throwing PauseSignal propagates out of invoke()", async () => {
     const budget = mkBudget();
     const queryFn = makeMessageScriptedQuery([
