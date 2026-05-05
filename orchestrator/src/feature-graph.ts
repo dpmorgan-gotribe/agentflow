@@ -1604,6 +1604,15 @@ export async function runFeatureGraph(
         invokeAgent: ctx.invokeAgent,
         runBuildToSpecVerify:
           ctx.runBuildToSpecVerify ?? defaultRunBuildToSpecVerify,
+        // feat-046 Phase A.1 (2026-05-05): forward the operator's
+        // `--max-concurrent` flag to the fix-bugs loop. Defaults to
+        // sequential (1) when unset; >= 2 enables per-bug worktree
+        // parallelism (Strategy A/D safe; Strategy C requires Phase A.2
+        // env-isolation — operator must hold concurrency at 1 until A.2
+        // ships for real-DB projects).
+        ...(ctx.maxConcurrentFeatures && ctx.maxConcurrentFeatures >= 2
+          ? { maxConcurrent: ctx.maxConcurrentFeatures }
+          : {}),
       };
       bugLoopResult = await fixRunner(loopCtx);
       totalCostUsd += bugLoopResult.totalCostUsd;

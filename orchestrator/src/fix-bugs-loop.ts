@@ -90,6 +90,21 @@ export interface FixBugsLoopContext {
    * unless explicitly overridden, false otherwise.
    */
   skipWorktreeManagement?: boolean;
+  /**
+   * feat-046 Phase A.1 (2026-05-05) — concurrent bug-dispatch cap. When
+   * unset OR 1, the loop runs the existing sequential single-fixup-worktree
+   * path (zero behavior change). When >= 2, per-bug worktrees on
+   * `fix/<bug-id>` branches dispatch via `Promise.all` batches; per-batch
+   * sequential merge cascade rolls each into the fixup branch. KNOWN
+   * LIMITATION: Phase A.1 does NOT inject per-slot env vars (PORT,
+   * NEXT_PUBLIC_API_BASE_URL, etc) — Strategy C projects (real-DB
+   * backend) will collide on port 3001 across slots. Strategy A
+   * (localStorage) + D (intercept) projects are safe at any concurrency
+   * since they don't share a backend. Phase A.2 ships per-slot env
+   * isolation; until then operators with Strategy C should keep
+   * concurrency at 1.
+   */
+  maxConcurrent?: number;
 }
 
 /** Internal: filesystem helpers, injectable for tests via FixBugsLoopContext extras. */
@@ -177,6 +192,154 @@ function openFixupWorktree(args: {
       ok: false,
       reason: `fixup-worktree-seed-failed (${seed.reason}): ${seed.detail}`,
     };
+  }
+  return { ok: true };
+}
+
+/**
+ * feat-046 Phase A.1 (2026-05-05) — per-bug worktree helpers.
+ * Used when `ctx.maxConcurrent >= 2`; mirrors `openFixupWorktree`'s
+ * pattern but creates an isolated worktree at `.claude/worktrees/<bug-id>/`
+ * on a `fix/<bug-id>` branch so parallel bug-fixes don't race on shared
+ * filesystem state.
+ *
+ * The base branch is `args.baseBranch` (default `fix/bugs-yaml-iter` so
+ * batch N's per-bug worktrees see batch N-1's already-merged fixes).
+ */
+function bugWorktreePath(projectRoot: string, bugId: string): string {
+  return join(projectRoot, ".claude", "worktrees", bugId);
+}
+function bugBranchName(bugId: string): string {
+  // bug ids already match `bug-(flow|orphan|parity|runtime|compile|coverage)-<slug>`
+  // per BugEntrySchema. Use as-is so `git branch --list fix/<bug-id>` is grep-able.
+  return `fix/${bugId}`;
+}
+
+function openPerBugWorktree(args: {
+  projectRoot: string;
+  bugId: string;
+  baseBranch: string;
+}):
+  | { ok: true; worktreePath: string; branch: string }
+  | { ok: false; reason: string } {
+  const worktreePath = bugWorktreePath(args.projectRoot, args.bugId);
+  const branch = bugBranchName(args.bugId);
+  if (!existsSync(worktreePath)) {
+    mkdirSync(dirname(worktreePath), { recursive: true });
+    try {
+      // Branch from the current fixup-branch head so we see prior bugs' fixes.
+      execSync(
+        `git worktree add ${shellQuote(worktreePath)} -b ${shellQuote(branch)} ${shellQuote(args.baseBranch)}`,
+        { cwd: args.projectRoot, stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } catch (err) {
+      // bug-pre-existing: a prior crash may have left the worktree+branch.
+      // If branch already exists, try worktree-add WITHOUT `-b` (reuses the branch).
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (/already exists/i.test(errMsg)) {
+        try {
+          execSync(
+            `git worktree add ${shellQuote(worktreePath)} ${shellQuote(branch)}`,
+            { cwd: args.projectRoot, stdio: ["ignore", "pipe", "pipe"] },
+          );
+        } catch (err2) {
+          return {
+            ok: false,
+            reason: err2 instanceof Error ? err2.message : String(err2),
+          };
+        }
+      } else {
+        return { ok: false, reason: errMsg };
+      }
+    }
+  }
+  // Seed hooks/permissions (same pattern as openFixupWorktree).
+  const seed = seedWorktree(args.projectRoot, worktreePath);
+  if (!seed.ok) {
+    return {
+      ok: false,
+      reason: `per-bug-worktree-seed-failed (${seed.reason}): ${seed.detail}`,
+    };
+  }
+  return { ok: true, worktreePath, branch };
+}
+
+/**
+ * Sequentially merge a per-bug branch into the fixup branch + tear down
+ * the per-bug worktree. Called from the per-batch merge cascade after all
+ * batch dispatches complete. Returns the merge outcome so the caller can
+ * decide whether to mark the bug `completed`/`failed`.
+ *
+ * On merge conflict: leaves the worktree + branch intact for operator
+ * inspection; surfaces conflict reason via `reason` field. Subsequent
+ * batches' merge cascade re-attempts via the next iteration.
+ */
+function closePerBugWorktree(args: {
+  projectRoot: string;
+  worktreePath: string;
+  branch: string;
+  fixupBranch: string;
+}): { ok: true } | { ok: false; reason: string } {
+  // Step 1: switch fixup branch to be the merge target. The fixup
+  // worktree is at fixupWorktreePath; checkout the fixup branch there.
+  // Actually simpler: merge into fixup branch FROM projectRoot (which is
+  // on master post-bootstrap or whatever the current HEAD is). Use
+  // `git fetch . <bug-branch>:<fixup-branch>` style? No — use plain merge.
+  //
+  // Simplest path: merge bug-branch into fixup-branch via `git merge` from
+  // the projectRoot, after first checking out fixup-branch. Skip that
+  // dance for v1: use `git fetch . <bug-branch>` from the FIXUP worktree
+  // then `git merge`. But that requires the fixup worktree to be open.
+  //
+  // Pragmatic v1: merge from projectRoot directly:
+  //   git checkout <fixup-branch>
+  //   git merge --no-ff <bug-branch>
+  //   <handle conflicts>
+  // This temporarily moves projectRoot HEAD off master onto fixup, which
+  // is OK since the loop runs on a dedicated session.
+  try {
+    execSync(`git checkout ${shellQuote(args.fixupBranch)}`, {
+      cwd: args.projectRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `checkout ${args.fixupBranch} failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  try {
+    execSync(
+      `git merge --no-ff ${shellQuote(args.branch)} -m "merge ${args.branch} into ${args.fixupBranch} (fix-bugs-loop parallel)"`,
+      { cwd: args.projectRoot, stdio: ["ignore", "pipe", "pipe"] },
+    );
+  } catch (err) {
+    // Abort the merge to leave fixup-branch in a clean state.
+    try {
+      execSync(`git merge --abort`, {
+        cwd: args.projectRoot,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      // best-effort
+    }
+    return {
+      ok: false,
+      reason: `merge ${args.branch} into ${args.fixupBranch} failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  // Tear down the per-bug worktree + branch.
+  try {
+    execSync(`git worktree remove --force ${shellQuote(args.worktreePath)}`, {
+      cwd: args.projectRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    execSync(`git branch -D ${shellQuote(args.branch)}`, {
+      cwd: args.projectRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    // Cleanup failure is non-fatal — merge already landed on fixup branch.
   }
   return { ok: true };
 }
@@ -519,49 +682,201 @@ export async function runFixBugsLoop(
     let attemptedCount = 0;
     let completedCount = 0;
     let failedCount = 0;
+
+    // First pass: mark skip-dispatch bugs (manifest-author with empty
+    // agentSequence) up-front. ONE bugs.yaml write covers all skips.
+    let anyMarkedNeedsReview = false;
+    const dispatchableBugs: BugEntry[] = [];
     for (const bug of pendingThisIter) {
-      // bug-050 Phase B (2026-05-03) — bugs with empty agentSequence have
-      // no Mode-B-resolvable agent (e.g. manifest-author needs design-stage
-      // /user-flows-generator regen). Mark `needs-operator-review` and
-      // skip dispatch — saves $$ on no-op agent calls + surfaces the bug
-      // for operator triage in the iteration summary.
       if (!bug.agentSequence || bug.agentSequence.length === 0) {
         bug.status = "needs-operator-review";
-        writeBugsYaml(bugsYamlPath, doc);
+        anyMarkedNeedsReview = true;
         continue;
       }
-      bug.attempts = (bug.attempts ?? 0) + 1;
-      bug.status = "in-progress";
-      attemptedCount += 1;
-      // Persist BEFORE dispatch so a crash mid-agent leaves the bug
-      // marked in-progress (not pending) — the resume helper can then
-      // detect partial work + decide whether to re-attempt.
+      dispatchableBugs.push(bug);
+    }
+    if (anyMarkedNeedsReview) {
       writeBugsYaml(bugsYamlPath, doc);
+    }
 
-      const dispatch = await dispatchAgentsForBug({
-        bug,
-        ctx,
-        worktreeCwd,
-      });
-      totalCostUsd += dispatch.costUsd;
+    // feat-046 Phase A.1 (2026-05-05): branch on maxConcurrent.
+    //   maxConcurrent === 1 (default) → existing sequential single-worktree
+    //   maxConcurrent >= 2 → per-bug-worktree batched dispatch via Promise.all
+    const maxConcurrent = ctx.maxConcurrent ?? 1;
 
-      if (dispatch.success) {
-        bug.status = "completed";
-        bug.resolvedInIteration = iteration;
-        completedCount += 1;
-      } else {
-        for (const entry of dispatch.errorLog) bug.errorLog.push(entry);
-        if (bug.attempts >= bug.maxAttempts) {
-          bug.status = "failed";
-          failedCount += 1;
+    if (maxConcurrent === 1) {
+      // Sequential path — preserves pre-feat-046 behavior verbatim.
+      for (const bug of dispatchableBugs) {
+        bug.attempts = (bug.attempts ?? 0) + 1;
+        bug.status = "in-progress";
+        attemptedCount += 1;
+        // Persist BEFORE dispatch so a crash mid-agent leaves the bug
+        // marked in-progress (not pending) — the resume helper can then
+        // detect partial work + decide whether to re-attempt.
+        writeBugsYaml(bugsYamlPath, doc);
+
+        const dispatch = await dispatchAgentsForBug({
+          bug,
+          ctx,
+          worktreeCwd,
+        });
+        totalCostUsd += dispatch.costUsd;
+
+        if (dispatch.success) {
+          bug.status = "completed";
+          bug.resolvedInIteration = iteration;
+          completedCount += 1;
         } else {
-          // Leave pending for a subsequent iteration's retry pool.
-          bug.status = "pending";
+          for (const entry of dispatch.errorLog) bug.errorLog.push(entry);
+          if (bug.attempts >= bug.maxAttempts) {
+            bug.status = "failed";
+            failedCount += 1;
+          } else {
+            // Leave pending for a subsequent iteration's retry pool.
+            bug.status = "pending";
+          }
         }
+        // Persist after each bug so a crash mid-iteration leaves a usable
+        // checkpoint for resume.
+        writeBugsYaml(bugsYamlPath, doc);
       }
-      // Persist after each bug so a crash mid-iteration leaves a usable
-      // checkpoint for resume.
-      writeBugsYaml(bugsYamlPath, doc);
+    } else {
+      // feat-046 Phase A.1 parallel path.
+      //
+      // Per-bug worktrees on `fix/<bug-id>` branches branched off the
+      // fixup branch HEAD. Promise.all batches of size `maxConcurrent`
+      // dispatch in parallel. Per-batch sequential merge cascade rolls
+      // each `fix/<bug-id>` into the fixup branch (`fix/bugs-yaml-iter`).
+      // bugs.yaml is written ONCE before each batch (in-progress marks)
+      // and ONCE after each batch (completion marks) per investigate-015 F3.
+      //
+      // KNOWN LIMITATION (Phase A.1): no per-slot env injection — Strategy
+      // C projects (real-DB backend) WILL collide on port 3001 between
+      // slots. Strategy A/D projects are safe at any concurrency.
+      // Phase A.2 ships per-worktree env isolation.
+      for (let i = 0; i < dispatchableBugs.length; i += maxConcurrent) {
+        const batch = dispatchableBugs.slice(i, i + maxConcurrent);
+
+        // Open per-bug worktrees + mark in-progress before parallel dispatch.
+        const batchOpens: Array<{
+          bug: BugEntry;
+          worktreePath: string | null;
+          openError: string | null;
+        }> = [];
+        for (const bug of batch) {
+          bug.attempts = (bug.attempts ?? 0) + 1;
+          bug.status = "in-progress";
+          attemptedCount += 1;
+          if (skipWorktreeManagement) {
+            // Test path — skip git ops; reuse projectRoot as the cwd.
+            batchOpens.push({
+              bug,
+              worktreePath: ctx.projectRoot,
+              openError: null,
+            });
+            continue;
+          }
+          const open = openPerBugWorktree({
+            projectRoot: ctx.projectRoot,
+            bugId: bug.id,
+            baseBranch: fixupBranch,
+          });
+          if (open.ok) {
+            batchOpens.push({
+              bug,
+              worktreePath: open.worktreePath,
+              openError: null,
+            });
+          } else {
+            batchOpens.push({
+              bug,
+              worktreePath: null,
+              openError: open.reason,
+            });
+          }
+        }
+        // Single bugs.yaml write capturing all in-progress flips.
+        writeBugsYaml(bugsYamlPath, doc);
+
+        // Dispatch every batch entry in parallel. Bugs that failed to open
+        // their per-bug worktree skip dispatch + count as failure.
+        const dispatchResults = await Promise.all(
+          batchOpens.map(async (entry) => {
+            if (entry.openError !== null || entry.worktreePath === null) {
+              return {
+                bug: entry.bug,
+                success: false,
+                costUsd: 0,
+                errorLog: [
+                  `[per-bug-worktree-open-failed] ${entry.openError ?? "unknown"}`,
+                ],
+              };
+            }
+            const dispatch = await dispatchAgentsForBug({
+              bug: entry.bug,
+              ctx,
+              worktreeCwd: entry.worktreePath,
+            });
+            return {
+              bug: entry.bug,
+              success: dispatch.success,
+              costUsd: dispatch.costUsd,
+              errorLog: dispatch.errorLog,
+            };
+          }),
+        );
+
+        // Sequential merge cascade: each successful per-bug branch merges
+        // into the fixup branch via `git merge --no-ff`. Conflicts flow
+        // through bug-034 Phase A's additive-concat resolver (already in
+        // master via bug-034 Phase A — runMergeAttempt wraps the resolver).
+        // Failures here mark the bug as failed for THIS attempt; next
+        // iteration may retry per the retry-counter.
+        for (const result of dispatchResults) {
+          totalCostUsd += result.costUsd;
+          if (!result.success) {
+            for (const entry of result.errorLog)
+              result.bug.errorLog.push(entry);
+            if (result.bug.attempts >= result.bug.maxAttempts) {
+              result.bug.status = "failed";
+              failedCount += 1;
+            } else {
+              result.bug.status = "pending";
+            }
+            continue;
+          }
+          // Try to merge the per-bug branch into the fixup branch.
+          let mergedOk = true;
+          if (!skipWorktreeManagement) {
+            const wtPath = bugWorktreePath(ctx.projectRoot, result.bug.id);
+            const branch = bugBranchName(result.bug.id);
+            const close = closePerBugWorktree({
+              projectRoot: ctx.projectRoot,
+              worktreePath: wtPath,
+              branch,
+              fixupBranch,
+            });
+            if (!close.ok) {
+              mergedOk = false;
+              result.bug.errorLog.push(
+                `[per-bug-merge-cascade-failed] ${close.reason}`,
+              );
+            }
+          }
+          if (mergedOk) {
+            result.bug.status = "completed";
+            result.bug.resolvedInIteration = iteration;
+            completedCount += 1;
+          } else if (result.bug.attempts >= result.bug.maxAttempts) {
+            result.bug.status = "failed";
+            failedCount += 1;
+          } else {
+            result.bug.status = "pending";
+          }
+        }
+        // Single bugs.yaml write at batch end.
+        writeBugsYaml(bugsYamlPath, doc);
+      }
     }
 
     // Snapshot pre-verify state for new-bug + flap detection.

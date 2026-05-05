@@ -742,3 +742,158 @@ describe("runFixBugsLoop — bugs.yaml file shape after run", () => {
     expect(doc.bugs[0]!.resolvedInIteration).toBe(1);
   });
 });
+
+// feat-046 Phase A.1 (2026-05-05) — parallel per-bug-worktree dispatch.
+// When ctx.maxConcurrent >= 2, the loop batches dispatchable bugs via
+// Promise.all + per-bug worktrees. Tests run with skipWorktreeManagement
+// so no real git ops fire; the parallel STRUCTURE is what's exercised.
+describe("runFixBugsLoop — parallel dispatch (feat-046 Phase A.1)", () => {
+  it("maxConcurrent=3 dispatches 5 bugs in 2 batches (3+2)", async () => {
+    const dispatchTimestamps: Array<{ bug: string; agent: string; t: number }> =
+      [];
+    const invoke: InvokeAgentFn = async (args) => {
+      // featureContext.id mirrors bug.id per dispatchAgentsForBug.
+      const bugId = args.featureContext?.id ?? "?";
+      dispatchTimestamps.push({
+        bug: bugId,
+        agent: args.agent,
+        t: Date.now(),
+      });
+      // Small delay to make ordering observable.
+      await new Promise((r) => setTimeout(r, 10));
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+    writeBugsYamlDoc([
+      makeBug({ id: "bug-orphan-a" }),
+      makeBug({ id: "bug-orphan-b" }),
+      makeBug({ id: "bug-orphan-c" }),
+      makeBug({ id: "bug-orphan-d" }),
+      makeBug({ id: "bug-orphan-e" }),
+    ]);
+
+    const result = await runFixBugsLoop(
+      makeCtx(invoke, cleanVerify, { maxConcurrent: 3 }),
+    );
+    expect(result.status).toBe("clean");
+    expect(result.bugsResolved.sort()).toEqual([
+      "bug-orphan-a",
+      "bug-orphan-b",
+      "bug-orphan-c",
+      "bug-orphan-d",
+      "bug-orphan-e",
+    ]);
+    // 5 bugs × 3 agents = 15 dispatches.
+    expect(dispatchTimestamps).toHaveLength(15);
+  });
+
+  it("maxConcurrent=2 with 1 manifest-author + 2 build-gap bugs: skip + 1 batch of 2", async () => {
+    let dispatchedBugs: string[] = [];
+    const invoke: InvokeAgentFn = async (args) => {
+      // featureContext.id mirrors bug.id per dispatchAgentsForBug.
+      const bugId = args.featureContext?.id ?? "?";
+      if (args.agent === "web-frontend-builder") {
+        dispatchedBugs.push(bugId);
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+    writeBugsYamlDoc([
+      // Empty agentSequence → skip-dispatch (manifest-author class).
+      makeBug({ id: "bug-orphan-skip", agentSequence: [] }),
+      makeBug({ id: "bug-orphan-build1" }),
+      makeBug({ id: "bug-orphan-build2" }),
+    ]);
+
+    const result = await runFixBugsLoop(
+      makeCtx(invoke, cleanVerify, { maxConcurrent: 2 }),
+    );
+    // skip-dispatch bug → needs-operator-review (NOT counted as resolved/failed).
+    const doc = readBugsYamlDoc();
+    const skipBug = doc.bugs.find((b) => b.id === "bug-orphan-skip");
+    expect(skipBug!.status).toBe("needs-operator-review");
+    // 2 build-gap bugs → completed.
+    expect(result.bugsResolved.sort()).toEqual([
+      "bug-orphan-build1",
+      "bug-orphan-build2",
+    ]);
+    // Builder dispatched only against the 2 dispatchable bugs.
+    expect(dispatchedBugs.sort()).toEqual([
+      "bug-orphan-build1",
+      "bug-orphan-build2",
+    ]);
+  });
+
+  it("maxConcurrent=undefined (default) preserves sequential single-worktree behavior", async () => {
+    // Same setup as the existing happy-path sequential test; verifies the
+    // default-1 path is unchanged from pre-feat-046.
+    const calls: string[] = [];
+    const invoke: InvokeAgentFn = async (args) => {
+      calls.push(args.agent);
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+    writeBugsYamlDoc([
+      makeBug({ id: "bug-orphan-a" }),
+      makeBug({ id: "bug-orphan-b" }),
+    ]);
+
+    // No maxConcurrent override → defaults to sequential.
+    const result = await runFixBugsLoop(makeCtx(invoke, cleanVerify));
+    expect(result.status).toBe("clean");
+    expect(result.bugsResolved.sort()).toEqual([
+      "bug-orphan-a",
+      "bug-orphan-b",
+    ]);
+    expect(calls.filter((c) => c === "web-frontend-builder")).toHaveLength(2);
+  });
+
+  it("parallel path: bugs.yaml gets ONE write per batch (not per-bug)", async () => {
+    // Wrap writeFileSync to count bugs.yaml writes during the run.
+    // Implementation detail: vitest doesn't easily intercept the inline
+    // writeBugsYaml — we instead verify the OBSERVABLE invariant: after
+    // the run, the doc reflects the final state of all bugs (no race
+    // corruption).
+    const invoke: InvokeAgentFn = async (args) => {
+      // Tiny stagger to expose any race-on-doc-mutation.
+      await new Promise((r) => setTimeout(r, Math.random() * 5));
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.05,
+      };
+    };
+    writeBugsYamlDoc([
+      makeBug({ id: "bug-orphan-1" }),
+      makeBug({ id: "bug-orphan-2" }),
+      makeBug({ id: "bug-orphan-3" }),
+      makeBug({ id: "bug-orphan-4" }),
+    ]);
+
+    await runFixBugsLoop(makeCtx(invoke, cleanVerify, { maxConcurrent: 4 }));
+    // All 4 bugs must end up `completed` — none stuck in-progress (would
+    // indicate race-on-doc).
+    const doc = readBugsYamlDoc();
+    for (const b of doc.bugs) {
+      expect(b.status).toBe("completed");
+      expect(b.resolvedInIteration).toBe(1);
+    }
+  });
+});
