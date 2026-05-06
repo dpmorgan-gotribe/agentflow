@@ -272,6 +272,13 @@ Thumbs.db
 # feat-026: orchestrator-managed bug tracking (runtime artefacts)
 docs/bugs.yaml
 docs/bugs-archive/
+# bug-052: test-runner output is build-artefact, not source
+coverage/
+**/coverage/
+*.lcov
+.nyc_output/
+.coverage
+*.tsbuildinfo
 ```
 
 **Additional exclusions by mode:**

@@ -383,9 +383,98 @@ Before any agent commits a Playwright spec, the runtime MUST be installed + conf
 
 **Required artifacts:**
 
-1. `apps/web/package.json` devDependencies includes `@playwright/test` (^1.48.0 or newer)
+1. `apps/web/package.json` devDependencies includes `@playwright/test` (^1.49.0 or newer)
 2. `apps/web/playwright.config.ts` exists with the **MANDATORY `webServer:` block** documented in §3a.1 below (bug-041 Phase B 2026-05-03 — making this section's mandate explicit + machine-checkable per the synthesizer's bug-041 Phase A enforcement).
 3. `apps/web/package.json` scripts includes `"test:e2e": "playwright test"`
+4. `apps/web/vitest.config.ts` excludes `**/e2e/**` from its test discovery (bug-037 Phase A — without this, vitest tries to parse-load Playwright specs and crashes with "Cannot find module '@playwright/test'" the moment the scaffold step omits the devDep, which silently sinks the entire web-frontend tester run).
+
+#### 3a.0. Required scaffold deps + configs — COPY VERBATIM (bug-037 Phase A)
+
+**Empirical motivation (3 recurrences):**
+
+- 2026-04 kanban-webapp-10: shipped with 5+ `e2e/*.spec.ts` files but no `@playwright/test` in devDependencies — could not run any of them.
+- 2026-05-02 finance-track-01: full Mode B run, 17/17 features merged, but `flows: 0 passed, 0 failed` because the verifier hit `Cannot find module '@playwright/test'` and degraded gracefully → ALL E2E coverage was silently zero.
+- 2026-05-06 reading-log-01: web-frontend-builder authored `apps/web/e2e/books.spec.ts` for feat-books-core; tester reported `policyCheck: unmeasurable` because vitest crashed parse-loading the Playwright spec; orchestrator retry-exhausted; cascade-aborted feat-search-filter; cost a manual recovery merge.
+
+**Both these snippets MUST land in the scaffold step's initial commit.** No defer-to-tester. No "the builder should add it later." Scaffold-time install is the only surface that catches the bug at the EARLIEST point in the pipeline.
+
+**`apps/web/package.json` devDependencies** — verbatim minimum block:
+
+```json
+{
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@vitejs/plugin-react": "^4.3.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "autoprefixer": "^10.4.0",
+    "jsdom": "^25.0.1",
+    "postcss": "^8.4.0",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
+```
+
+Plus a `"test:e2e": "playwright test"` entry in `scripts`. After the scaffold writes package.json, run `pnpm install` (CI=true if no TTY) so `node_modules/@playwright/test` is materialized — without `node_modules`, vitest still parse-errors. The orchestrator's `installIfPackageJsonChanged` hook (feat-019 Phase B) handles this automatically when the scaffold step commits.
+
+**`apps/web/vitest.config.ts`** — verbatim minimum (the `exclude` is the load-bearing line):
+
+```ts
+// SCAFFOLD-OWNED — DO NOT MODIFY per feature.
+// Test discovery is glob-based; new test files match the existing
+// `**/*.test.{ts,tsx}` + `**/*.spec.{ts,tsx}` patterns automatically.
+// `**/e2e/**` is excluded so vitest doesn't try to parse-load Playwright
+// specs (`*.spec.ts` under `apps/web/e2e/`) — those run via `playwright test`.
+// Changes to this file go through a kit-change-request, NOT inline edits.
+// Per bug-023 + bug-037.
+import path from "path";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./vitest.setup.ts"],
+    globals: true,
+    exclude: ["**/node_modules/**", "**/dist/**", "**/e2e/**"],
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "lcov"],
+      thresholds: { lines: 60 },
+    },
+  },
+  resolve: {
+    alias: {
+      "@repo/ui-kit": path.resolve(
+        __dirname,
+        "../../packages/ui-kit/src/index.ts",
+      ),
+      "@repo/types": path.resolve(__dirname, "../../packages/types/src/index.ts"),
+      "@repo/api-client": path.resolve(
+        __dirname,
+        "../../packages/api-client/src/index.ts",
+      ),
+      "@": path.resolve(__dirname, "."),
+    },
+  },
+});
+```
+
+**Self-verify (after scaffold writes both files):**
+
+1. `grep -q '"@playwright/test"' apps/web/package.json` returns 0 (matched).
+2. `grep -q '"\*\*/e2e/\*\*"' apps/web/vitest.config.ts` returns 0 (matched).
+3. `pnpm --filter @repo/web test` runs without parse-error on any `apps/web/e2e/*.spec.ts` file.
+
+If any of these fail, the scaffold step is broken — fix immediately; downstream tester/verifier WILL hit the same module-not-found error.
 
 #### 3a.1. Required `playwright.config.ts` template — COPY VERBATIM
 

@@ -1,10 +1,10 @@
 ---
 id: bug-037-playwright-runtime-not-auto-installed-for-synthesized-e2e
 type: bug
-status: draft
+status: in-progress
 author-agent: human
 created: 2026-05-02
-updated: 2026-05-02
+updated: 2026-05-06
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -185,4 +185,25 @@ Surfaces B + C are defense-in-depth — if Surface A fails or someone manually d
 
 ## Attempt Log
 
-<!-- populated as fix attempts are made -->
+### Attempt 1 — 2026-05-06 — Phase A landed (react-next SKILL.md)
+
+After 3rd recurrence on reading-log-01 feat-books-core (web-frontend-builder authored apps/web/e2e/books.spec.ts but didn't add @playwright/test devDep + didn't add vitest exclude → vitest parse-error → tester reported policyCheck unmeasurable → orchestrator retry-exhausted → cascade-aborted feat-search-filter), shipped Phase A's react-next surface:
+
+**Patch**: `.claude/skills/agents/front-end/react-next/SKILL.md` §3a — added new §3a.0 "Required scaffold deps + configs — COPY VERBATIM" block above §3a.1, with:
+
+1. **`apps/web/package.json` devDependencies verbatim block** — explicit JSON snippet listing all required devDeps including `@playwright/test: ^1.49.0`. Previously the SKILL listed @playwright/test as "required" in narrative form (line 386); now it's a copy-verbatim template.
+2. **`apps/web/vitest.config.ts` verbatim template** — explicit `exclude: ["**/node_modules/**", "**/dist/**", "**/e2e/**"]` line. Previously the SCAFFOLD-OWNED comment header at line 364 mentioned the exclude in passing but didn't show the full config. Now it's verbatim copy-paste.
+3. **3-step self-verify** after scaffold: grep package.json for @playwright/test; grep vitest.config.ts for `**/e2e/**`; run `pnpm --filter @repo/web test` to confirm no parse-error.
+4. **Empirical motivation block** documenting all 3 recurrences (kanban-webapp-10, finance-track-01, reading-log-01) for the next agent's context.
+5. **Required artifacts list extended** (line 384-388) — added 4th entry: vitest.config.ts must exclude e2e/.
+
+Phase A is the structural fix at the earliest pipeline surface. Phase B (synthesizer auto-fix-up) + Phase C (verifier hard-fail) remain as defense-in-depth — drafted in original plan, deferred until Phase A's empirical effectiveness is observed on the next project build.
+
+**Next validation**: re-run `/start-build` on a fresh project (or `/new-project foo --proposal "..."` then full pipeline) and confirm:
+- `apps/web/package.json` ships with `@playwright/test` in devDeps
+- `apps/web/vitest.config.ts` ships with `**/e2e/**` excluded
+- post-build flow-execution stage runs synthesized specs (not "Cannot find module")
+
+**Empirical effectiveness observation deferred** — no fresh-project run scheduled in this session; will validate on next project bootstrap.
+
+**Skipped from plan**: svelte-kit SKILL.md equivalent edit. Justification: 0/3 empirical recurrences are on svelte-kit projects (all 3 are react-next). Patch when first svelte-kit project is built; don't do speculative factory work.
