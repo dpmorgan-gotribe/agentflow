@@ -261,10 +261,31 @@ export async function runSynthesizedFlows({
   const totalRunMs = now() - startedAt;
   const noResults = flows.passed.length + flows.failed.length === 0;
   const suspiciouslyShort = totalRunMs < 15000;
-  if (specFiles.length > 0 && noResults && suspiciouslyShort) {
+  const runnerFailedToStart =
+    specFiles.length > 0 && noResults && suspiciouslyShort;
+  if (runnerFailedToStart) {
     warnings.push(
       `runner returned 0 tests in ${totalRunMs}ms despite ${specFiles.length} synthesized spec(s) — Playwright likely failed to start. Common causes: webServer port collision (CI=1 disables reuseExistingServer), pnpm exec resolution failure, missing browser install. stderr (last 300 chars): ${reporterStderr.slice(-300)}`,
     );
+  }
+
+  // feat-056 Gap A follow-up (2026-05-06): when the runner failed to start
+  // (specs exist but 0 tests ran in <15s), return ok:false with a reason
+  // string so the orchestrator's build-to-spec-verify.ts classifies this
+  // as a runtime-error tool-failure bug. Pre-fix this slipped through as
+  // ok:true + warning only — silent-success antipattern. The reason maps
+  // to "runtime-error" via TOOL_REASON_TO_CAUSE in build-to-spec-verify.ts.
+  if (runnerFailedToStart) {
+    return {
+      ok: false,
+      reason: "playwright-runner-failed-to-start",
+      remediation: `runner produced 0 tests in ${totalRunMs}ms despite ${specFiles.length} synthesized spec(s). Check: pnpm exec playwright --version (CLI works?); browser binary at ~/.cache/ms-playwright/ (run \`pnpm -C apps/web exec playwright install chromium\`); apps/web/playwright.config.ts (projects[] non-empty?). Last stderr: ${reporterStderr.slice(-200)}`,
+      browser,
+      flows,
+      devServerStartedMs,
+      totalRunMs,
+      warnings,
+    };
   }
 
   return {

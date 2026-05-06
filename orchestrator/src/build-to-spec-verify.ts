@@ -175,6 +175,7 @@ const TOOL_REASON_TO_CAUSE: Record<string, FlowPrimaryCause> = {
   "dev-server-not-ready": "dev-server-compile",
   "playwright-not-installed": "runtime-error",
   "playwright-runner-threw": "runtime-error",
+  "playwright-runner-failed-to-start": "runtime-error",
 };
 
 function synthesizeToolFailure(
