@@ -48,8 +48,8 @@ export interface CliOptions {
    * pass "append" to resume from the existing file.
    */
   bugsYamlMode?: BugsYamlMode;
-  /** Skip gate 6 (pr-review) — wired into Mode B when live runs land. */
-  autoMergeAfterReviewer?: boolean;
+  /** bug-054: opt INTO gate 6 (pr-review). Default behavior is auto-merge on reviewer approval — the reviewer agent IS the merge gate. */
+  requirePrReview?: boolean;
   /** Override Mode B's `maxConcurrentFeatures` (default 4). */
   maxConcurrent?: number;
   /**
@@ -392,7 +392,7 @@ export async function runCli(
       // "completed-with-integration-failures", warnings go unsurfaced.
       factoryRoot,
       ...(seedProgress ? { seedProgress } : {}),
-      ...(opts.autoMergeAfterReviewer ? { autoMergeAfterReviewer: true } : {}),
+      ...(opts.requirePrReview ? { requirePrReview: true } : {}),
       ...(opts.maxConcurrent
         ? { maxConcurrentFeatures: opts.maxConcurrent }
         : {}),

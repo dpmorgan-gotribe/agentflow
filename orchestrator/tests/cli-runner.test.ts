@@ -850,10 +850,9 @@ describe("runCli — bug-021 resume-aware hydration", () => {
         resumeFeatureGraph: true,
         pipelineRunId, // matches the on-disk state dir
         invokeAgentOverride: invokeAgent,
-        // Skip gate 6 (pr-review) — otherwise the test hangs waiting for a
-        // docs/gate-6-approved-*.txt file drop. Resume-path correctness is
-        // independent of gate-6 routing.
-        autoMergeAfterReviewer: true,
+        // bug-054: gate-6 default flipped — auto-merge is now default behavior;
+        // requirePrReview=false (omitted) means no gate-6 wait. Resume-path
+        // correctness is independent of gate-6 routing.
       },
       factoryRoot,
     );

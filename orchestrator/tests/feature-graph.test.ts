@@ -31,7 +31,7 @@ afterEach(() => {
 function makeCtx(
   invokeAgent: InvokeAgentFn,
   overrides: Partial<{
-    autoMergeAfterReviewer: boolean;
+    requirePrReview: boolean;
     waitForPrReviewGate: (args: {
       featureId: string;
       projectRoot: string;
@@ -96,8 +96,8 @@ function makeCtx(
     ...(overrides.runBuildToSpecVerify !== undefined
       ? { runBuildToSpecVerify: overrides.runBuildToSpecVerify }
       : {}),
-    ...(overrides.autoMergeAfterReviewer !== undefined
-      ? { autoMergeAfterReviewer: overrides.autoMergeAfterReviewer }
+    ...(overrides.requirePrReview !== undefined
+      ? { requirePrReview: overrides.requirePrReview }
       : {}),
   };
 }
@@ -1167,11 +1167,17 @@ describe("runFeature — gate 6 (pr-review) integration", () => {
     return { invokeAgent, gitOps };
   }
 
-  it("fires gate 6 when reviewer is in the sequence; approved → close-feature", async () => {
+  // bug-054 default flip: gate 6 only fires when ctx.requirePrReview === true.
+  // Default behavior (requirePrReview omitted) auto-merges — reviewer agent IS
+  // the merge gate. Tests below opt INTO requirePrReview when asserting gate 6
+  // fires; the default-behavior test asserts auto-merge with no gate-6 wait.
+
+  it("fires gate 6 when reviewer in sequence + requirePrReview=true; approved → close-feature", async () => {
     const feature = buildFeature();
     const gateCalls: string[] = [];
     const { invokeAgent, gitOps } = okInvokeAgent();
     const ctx = makeCtx(invokeAgent, {
+      requirePrReview: true,
       waitForPrReviewGate: async ({ featureId }) => {
         gateCalls.push(featureId);
         return { approved: true, note: "LGTM" };
@@ -1183,10 +1189,11 @@ describe("runFeature — gate 6 (pr-review) integration", () => {
     expect(gitOps).toEqual(["checkout-feature", "close-feature"]);
   });
 
-  it("gate 6 rejected → feature failed, close-feature NOT called", async () => {
+  it("gate 6 rejected (requirePrReview=true) → feature failed, close-feature NOT called", async () => {
     const feature = buildFeature();
     const { invokeAgent, gitOps } = okInvokeAgent();
     const ctx = makeCtx(invokeAgent, {
+      requirePrReview: true,
       waitForPrReviewGate: async () => ({
         approved: false,
         note: "missing CSRF",
@@ -1199,12 +1206,12 @@ describe("runFeature — gate 6 (pr-review) integration", () => {
     expect(gitOps).toEqual(["checkout-feature"]);
   });
 
-  it("autoMergeAfterReviewer=true short-circuits gate 6", async () => {
+  it("default behavior auto-merges (no gate-6 wait when requirePrReview is omitted)", async () => {
     const feature = buildFeature();
     let gateCalled = false;
-    const { invokeAgent } = okInvokeAgent();
+    const { invokeAgent, gitOps } = okInvokeAgent();
     const ctx = makeCtx(invokeAgent, {
-      autoMergeAfterReviewer: true,
+      // requirePrReview omitted — bug-054 default-flip: gate 6 should NOT fire
       waitForPrReviewGate: async () => {
         gateCalled = true;
         return { approved: true };
@@ -1213,9 +1220,10 @@ describe("runFeature — gate 6 (pr-review) integration", () => {
     const result = await runFeature(feature, ctx);
     expect(result.status).toBe("completed");
     expect(gateCalled).toBe(false);
+    expect(gitOps).toEqual(["checkout-feature", "close-feature"]);
   });
 
-  it("gate 6 does NOT fire when reviewer is absent from sequence", async () => {
+  it("gate 6 does NOT fire when reviewer is absent from sequence (even with requirePrReview=true)", async () => {
     const feature = buildFeature({
       agent_sequence: ["backend-builder"],
       tasks: [
@@ -1232,6 +1240,7 @@ describe("runFeature — gate 6 (pr-review) integration", () => {
     let gateCalled = false;
     const { invokeAgent } = okInvokeAgent();
     const ctx = makeCtx(invokeAgent, {
+      requirePrReview: true,
       waitForPrReviewGate: async () => {
         gateCalled = true;
         return { approved: true };

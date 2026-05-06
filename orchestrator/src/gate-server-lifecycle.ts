@@ -469,7 +469,7 @@ function instructionsFor(
       );
     case "pr-review":
       return (
-        `Gate 6 (pr-review) open for feat-${featureId ?? "UNKNOWN"}.\n` +
+        `Gate 6 (pr-review) open for ${featureId ?? "UNKNOWN"}.\n` +
         `  Reviewer approved this feature. Before merge to main:\n` +
         `    - Inspect the PR (if git-agent created one) or the branch\n` +
         `    - Write docs/${rel} with one of:\n` +

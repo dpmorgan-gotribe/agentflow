@@ -2,7 +2,7 @@
 name: start-build
 description: Kick off the autonomous build phase (Mode B) for a project — reads docs/tasks.yaml, opens parallel git worktrees per feature, runs each feature's agent_sequence (builder → security → tester → reviewer), merges to main. Invoked AFTER gates 1-5 have resolved manually via /analyze, /mockups, /stylesheet, /screens, /user-flows-generator, /architect, /pm. Refuses to run until all Mode A artifacts + gate signoffs are in place.
 when_to_use: after /pm has produced docs/tasks.yaml AND gate 5 has resolved (docs/credentials-confirmed.txt contains `proceed` or `defer:`); when the user says "start building", "kick off the build", "run Mode B", "ship it"
-argument-hint: "<project> [--flags=<csv>] [--dry-run] [--auto-merge-after-reviewer] [--max-concurrent=<N>]"
+argument-hint: "<project> [--flags=<csv>] [--dry-run] [--require-pr-review] [--max-concurrent=<N>]"
 allowed-tools: Read Bash Grep Glob
 model: inherit
 ---
@@ -47,7 +47,7 @@ MODE B — build, autonomous, this skill owns it:
 - `<project>` (required) — project directory under `projects/`. Must exist and must have passed Mode A (see §Prerequisites).
 - `--flags=<csv>` — forwarded to the orchestrator's stage dispatch (e.g. `nanobanana` for image generation; ignored in Mode B most of the time)
 - `--dry-run` — simulate the feature DAG walk, report which features would run in which wave + estimated cost; invoke no agents
-- `--auto-merge-after-reviewer` — skip gate 6 (pr-review); merge each feature as soon as its reviewer agent approves
+- `--require-pr-review` — opt INTO gate 6 (pr-review); pause each feature after reviewer-approval to wait for `docs/gate-6-approved-feat-X.txt` file-drop before merge. Default behavior (bug-054, 2026-05-06): trust the reviewer agent — auto-merge on `verdict: approved`. The reviewer IS the merge gate; opt in only for paranoid flows wanting human inspection between reviewer-approve and merge.
 - `--max-concurrent=<N>` — override `maxConcurrentFeatures` (default from `~/.claude/models.yaml`, typically 3)
 
 Rejected inputs:
@@ -111,7 +111,7 @@ About to run Mode B for revolution-pictures:
   - 12 features, 46 tasks
   - concurrent features: 3 (from ~/.claude/models.yaml)
   - budget cap: $150
-  - auto-merge-after-reviewer: false
+  - require-pr-review: false (default — auto-merge on reviewer approval per bug-054)
 
 Features will be built in git worktrees under .claude/worktrees/.
 Each feature runs: backend → web → mobile → security → tester → reviewer → git-agent merge.
@@ -130,7 +130,7 @@ cd <factory-root>
 pnpm --filter orchestrator start generate <project> --resume-feature-graph [flags]
 ```
 
-The `--resume-feature-graph` flag skips Mode A entirely — the orchestrator goes straight to `git-agent-bootstrap` + the feature loop. Forwards `--flags`, `--dry-run`, `--auto-merge-after-reviewer`, `--max-concurrent`.
+The `--resume-feature-graph` flag skips Mode A entirely — the orchestrator goes straight to `git-agent-bootstrap` + the feature loop. Forwards `--flags`, `--dry-run`, `--require-pr-review`, `--max-concurrent`.
 
 Stream stdout verbatim. The orchestrator emits structured log lines:
 

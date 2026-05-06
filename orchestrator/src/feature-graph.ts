@@ -164,7 +164,8 @@ export interface FeatureGraphContext {
    * false. Investigate-002 answer #1: gate 6 is opt-in for the first ~5
    * autonomous runs; this flag lets trust build by flipping to opt-out.
    */
-  autoMergeAfterReviewer?: boolean;
+  /** bug-054: opt INTO gate 6 (pr-review). Default behavior is auto-merge on reviewer approval. */
+  requirePrReview?: boolean;
   /**
    * Override the gate-6 watcher. Default delegates to
    * `waitForGateDecision` (file-drop at `docs/gate-6-approved-{id}.txt`).
@@ -1294,11 +1295,14 @@ export async function runFeature(
   }
 
   // 3. Gate 6 (pr-review) — fires between reviewer-approve and merge.
-  // Only when the feature actually had a reviewer step AND the autonomy
-  // opt-out flag isn't set. Reviewer's successful completion is implicit
-  // by reaching this point without an earlier early-return.
+  // Only when the feature had a reviewer step AND the operator opted IN
+  // via --require-pr-review. Default behavior (bug-054, 2026-05-06): trust
+  // the reviewer agent's verdict — reviewer IS the merge gate. Per-feature
+  // human file-drop is opt-in for paranoid flows that want a manual
+  // inspection between reviewer-approve and merge. Reviewer's successful
+  // completion is implicit by reaching this point without earlier early-return.
   const reviewerInSequence = feature.agent_sequence.includes("reviewer");
-  if (reviewerInSequence && !ctx.autoMergeAfterReviewer) {
+  if (reviewerInSequence && ctx.requirePrReview) {
     const gate6 =
       ctx.waitForPrReviewGate ??
       (async ({ featureId, projectRoot }) =>

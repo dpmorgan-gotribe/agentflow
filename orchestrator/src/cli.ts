@@ -38,8 +38,8 @@ program
   .option("--resume-feature-graph", "resume Mode B after bootstrap")
   .option("--dry-run", "report the pipeline walk without invoking agents")
   .option(
-    "--auto-merge-after-reviewer",
-    "skip gate 6 (pr-review) — auto-merge once reviewer approves",
+    "--require-pr-review",
+    "bug-054: opt INTO gate 6 (pr-review) — require manual file-drop approval after reviewer agent. Default behavior is auto-merge on reviewer approval (the reviewer agent IS the merge gate). Use this flag for paranoid flows that want a human inspection between reviewer-approve and merge.",
   )
   .option(
     "--max-concurrent <n>",
@@ -62,7 +62,7 @@ program
         resumeFromStage?: string;
         resumeFeatureGraph?: boolean;
         dryRun?: boolean;
-        autoMergeAfterReviewer?: boolean;
+        requirePrReview?: boolean;
         maxConcurrent?: number;
         pipelineRunId?: string;
         bugsYamlMode?: string;
@@ -75,8 +75,8 @@ program
       if (opts.resumeFeatureGraph)
         optsForRunner.resumeFeatureGraph = opts.resumeFeatureGraph;
       if (opts.dryRun) optsForRunner.dryRun = opts.dryRun;
-      if (opts.autoMergeAfterReviewer)
-        optsForRunner.autoMergeAfterReviewer = opts.autoMergeAfterReviewer;
+      if (opts.requirePrReview)
+        optsForRunner.requirePrReview = opts.requirePrReview;
       if (opts.maxConcurrent && opts.maxConcurrent > 0)
         optsForRunner.maxConcurrent = opts.maxConcurrent;
       if (opts.pipelineRunId) optsForRunner.pipelineRunId = opts.pipelineRunId;
