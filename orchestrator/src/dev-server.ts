@@ -247,8 +247,28 @@ export function spawnBackendDevServer(
     env: backendEnv,
   });
   if (!isWin && typeof child.unref === "function") child.unref();
+  // feat-056 Gap B (bug-038 Phase A): capture stderr tail so the
+  // catch-block at the waitForDevServer caller can include the actual
+  // backend failure message in the bug it files. Without this, when the
+  // backend exits prematurely (e.g. import error like the reading-log-01
+  // Prisma v6 case), the verifier's error message says only "did not
+  // respond within Nms" — masking the real cause.
+  const stderrTail: string[] = [];
+  const STDERR_TAIL_MAX_LINES = 50;
   if (child.stdout) child.stdout.on("data", () => {});
-  if (child.stderr) child.stderr.on("data", () => {});
+  if (child.stderr) {
+    child.stderr.on("data", (chunk: Buffer) => {
+      const lines = chunk.toString().split(/\r?\n/);
+      for (const line of lines) {
+        if (!line) continue;
+        stderrTail.push(line);
+        if (stderrTail.length > STDERR_TAIL_MAX_LINES) stderrTail.shift();
+      }
+    });
+  }
+  // Attach the buffer to the child for downstream callers. Cast required
+  // because ChildProcess doesn't have a typed extension surface.
+  (child as ChildProcess & { _stderrTail: string[] })._stderrTail = stderrTail;
   return child;
 }
 
@@ -400,10 +420,26 @@ export async function waitForDevServer(
   baseUrl: string,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+  child?: ChildProcess,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastErr: Error | null = null;
   while (Date.now() < deadline) {
+    // feat-056 Gap B (bug-038 Phase A): check the spawned child for
+    // premature exit. If the backend exited (e.g. import error, port
+    // collision crash, missing dep), polling its URL is futile — fail
+    // fast with a rich error that includes exit code + stderr tail.
+    // Without this, callers wait the full 60s timeout + see only
+    // ECONNREFUSED.
+    if (child && child.exitCode !== null) {
+      const stderrTail = (child as ChildProcess & { _stderrTail?: string[] })
+        ._stderrTail;
+      const tail = stderrTail?.slice(-15).join("\n");
+      throw new Error(
+        `child process exited prematurely with code ${child.exitCode}` +
+          (tail ? `; stderr tail:\n${tail}` : ""),
+      );
+    }
     try {
       const code = await probeOnce(baseUrl);
       if (code !== null && code < 500) return;
@@ -504,7 +540,15 @@ export async function bootDevServer(
         // Backend is considered ready when /health responds with anything
         // < 500. FastAPI conventionally exposes GET /health; if the route
         // doesn't exist a 404 also indicates the server is listening.
-        await waitForDevServer(`${backendUrl}/health`, timeoutMs);
+        // feat-056 Gap B (bug-038 Phase A): pass the child so waitForDevServer
+        // can detect premature exit + surface stderr tail, instead of waiting
+        // the full timeoutMs only to report ECONNREFUSED.
+        await waitForDevServer(
+          `${backendUrl}/health`,
+          timeoutMs,
+          undefined,
+          backendProcess,
+        );
       } catch (err) {
         killChildTree(backendProcess);
         // bug-043 Phase B (2026-05-03): name the actual spawn command attempted

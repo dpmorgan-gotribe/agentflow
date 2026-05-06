@@ -2,9 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ChildProcess } from "node:child_process";
 import {
   resolveBackendPort,
   resolveBackendSpawnSpec,
+  waitForDevServer,
 } from "../src/dev-server.js";
 
 /**
@@ -309,5 +311,67 @@ describe("resolveBackendSpawnSpec (bug-043 Phase A)", () => {
     // `uv run uvicorn ...` here; post-fix, this returns the fastify spec.
     expect(spec!.cmd).toBe(pnpmCmd);
     expect(spec!.args[0]).toBe("--filter");
+  });
+});
+
+// ─── feat-056 Gap B / bug-038 Phase A — child-process exit-watchdog ────────
+//
+// `waitForDevServer` polls a URL until 2xx-4xx response or timeout. Without
+// the optional `child` parameter, when the spawned dev-server crashes during
+// boot (e.g. import error, port collision crash, missing env var) the loop
+// continues to poll an unreachable URL until the full timeoutMs elapses,
+// then throws "last error: connect ECONNREFUSED" — masking the actual cause.
+//
+// Gap B adds: when `child.exitCode !== null` mid-loop, throw immediately
+// with the captured stderr tail (`child._stderrTail`) so the caller's bug-
+// filing can include the real failure message.
+describe("waitForDevServer — child-exit watchdog (feat-056 Gap B)", () => {
+  it("throws fast with exit code + stderr tail when child has already exited", async () => {
+    // Construct a fake ChildProcess just rich enough for the watchdog —
+    // exitCode set + _stderrTail attached.
+    const fakeChild = {
+      exitCode: 1,
+      _stderrTail: [
+        'import { PrismaClient } from "@prisma/client";',
+        "         ^",
+        "SyntaxError: The requested module '@prisma/client' does not provide an export named 'PrismaClient'",
+      ],
+    } as unknown as ChildProcess;
+    let thrown: Error | null = null;
+    try {
+      await waitForDevServer(
+        "http://localhost:9999/health",
+        5000,
+        50,
+        fakeChild,
+      );
+    } catch (err) {
+      thrown = err as Error;
+    }
+    expect(thrown).not.toBeNull();
+    expect(thrown!.message).toContain("child process exited prematurely");
+    expect(thrown!.message).toContain("code 1");
+    expect(thrown!.message).toContain("stderr tail");
+    expect(thrown!.message).toContain("SyntaxError");
+    expect(thrown!.message).toContain("@prisma/client");
+  });
+
+  it("preserves legacy 'last error' message when child arg omitted", async () => {
+    // Without child parameter, behavior matches pre-Gap-B: poll until
+    // timeout, throw "last error: connect ECONNREFUSED".
+    let thrown: Error | null = null;
+    try {
+      // Use a port unlikely to be in use; 250ms timeout for fast test.
+      await waitForDevServer("http://localhost:9998/health", 250, 50);
+    } catch (err) {
+      thrown = err as Error;
+    }
+    expect(thrown).not.toBeNull();
+    // Legacy message format: "last error: ..." or "no server response".
+    expect(
+      thrown!.message.includes("last error") ||
+        thrown!.message.includes("no server response"),
+    ).toBe(true);
+    expect(thrown!.message).not.toContain("child process exited prematurely");
   });
 });
