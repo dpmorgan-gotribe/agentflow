@@ -259,13 +259,30 @@ export async function runSynthesizedFlows({
   // verifier silently returns 0 failures + bug-router files 0 plans, masking
   // dev-server collisions / pnpm exec failures / config glitches.
   const totalRunMs = now() - startedAt;
-  const noResults = flows.passed.length + flows.failed.length === 0;
+  const noResults =
+    flows.passed.length + flows.failed.length + flows.skipped.length === 0;
   const suspiciouslyShort = totalRunMs < 15000;
   const runnerFailedToStart =
     specFiles.length > 0 && noResults && suspiciouslyShort;
+  // feat-057 Phase B follow-up (2026-05-06): when playwright ran for a long
+  // time (>= 15s) but still produced 0 results AND specs exist, that's a
+  // webServer timeout (Playwright internally waits up to 60s for webServer
+  // to respond before bailing). Distinct from runnerFailedToStart (config
+  // gap / missing browser) — this signals dev-server compile/boot failure
+  // (backend or frontend exited / never bound port). Empirical:
+  // 2026-05-06 reading-log-01 had Prisma DB-file-not-found error → backend
+  // exited → playwright waited 60s → 0 tests reported. Pre-fix this slipped
+  // through as ok:true (totalRunMs > 15s, suspiciouslyShort=false).
+  const webServerTimedOut =
+    specFiles.length > 0 && noResults && !suspiciouslyShort;
   if (runnerFailedToStart) {
     warnings.push(
       `runner returned 0 tests in ${totalRunMs}ms despite ${specFiles.length} synthesized spec(s) — Playwright likely failed to start. Common causes: webServer port collision (CI=1 disables reuseExistingServer), pnpm exec resolution failure, missing browser install. stderr (last 300 chars): ${reporterStderr.slice(-300)}`,
+    );
+  }
+  if (webServerTimedOut) {
+    warnings.push(
+      `runner returned 0 tests after ${totalRunMs}ms despite ${specFiles.length} synthesized spec(s) — playwright webServer likely timed out (backend or frontend dev-server failed to bind port within 60s). stderr (last 300 chars): ${reporterStderr.slice(-300)}`,
     );
   }
 
@@ -276,10 +293,51 @@ export async function runSynthesizedFlows({
   // ok:true + warning only — silent-success antipattern. The reason maps
   // to "runtime-error" via TOOL_REASON_TO_CAUSE in build-to-spec-verify.ts.
   if (runnerFailedToStart) {
+    // feat-057 Phase B (2026-05-06): distinguish missing browser binary
+    // from generic runner failure. When chromium isn't at
+    // ~/.cache/ms-playwright/, Playwright errors with a canonical
+    // signature. Routing this to a separate reason lets the bug-fix
+    // loop's defaultAgentSequence dispatch operator-action (empty
+    // agentSequence per bug-050 Phase B) instead of futile builder
+    // retries — no builder agent can install a runtime binary.
+    const browserMissing =
+      /Executable doesn't exist|Please run.*playwright install|chromium.*not found.*ms-playwright/i.test(
+        reporterStderr,
+      );
+    if (browserMissing) {
+      return {
+        ok: false,
+        reason: "playwright-browser-missing",
+        remediation:
+          "chromium browser binary missing at ~/.cache/ms-playwright/. Run `pnpm -C apps/web exec playwright install chromium` from project root (one-time per machine; cached at user level). For new projects, the react-next stack-skill template now includes a `postinstall: playwright install chromium` hook that auto-installs on `pnpm install`. Last stderr: " +
+          reporterStderr.slice(-200),
+        browser,
+        flows,
+        devServerStartedMs,
+        totalRunMs,
+        warnings,
+      };
+    }
     return {
       ok: false,
       reason: "playwright-runner-failed-to-start",
       remediation: `runner produced 0 tests in ${totalRunMs}ms despite ${specFiles.length} synthesized spec(s). Check: pnpm exec playwright --version (CLI works?); browser binary at ~/.cache/ms-playwright/ (run \`pnpm -C apps/web exec playwright install chromium\`); apps/web/playwright.config.ts (projects[] non-empty?). Last stderr: ${reporterStderr.slice(-200)}`,
+      browser,
+      flows,
+      devServerStartedMs,
+      totalRunMs,
+      warnings,
+    };
+  }
+  // feat-057 Phase B follow-up: webServer timeout → dev-server-compile bug
+  // (the dev-server-compile classification routes to backend-builder retry,
+  // which is the right surface to fix backend boot failures). Distinct from
+  // runner-failed-to-start (which is config / browser-binary territory).
+  if (webServerTimedOut) {
+    return {
+      ok: false,
+      reason: "dev-server-not-ready",
+      remediation: `playwright webServer timed out — backend or frontend dev-server failed to bind port within 60s. Inspect last stderr for the exit reason; common causes: (1) backend module import error (check apps/api/src/plugins/*.ts); (2) database connection failure (DATABASE_URL/DATABASE_PATH unset or file missing); (3) port already in use by another process. Last stderr: ${reporterStderr.slice(-300)}`,
       browser,
       flows,
       devServerStartedMs,

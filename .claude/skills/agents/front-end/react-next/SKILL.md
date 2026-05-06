@@ -422,7 +422,22 @@ Before any agent commits a Playwright spec, the runtime MUST be installed + conf
 }
 ```
 
-Plus a `"test:e2e": "playwright test"` entry in `scripts`. After the scaffold writes package.json, run `pnpm install` (CI=true if no TTY) so `node_modules/@playwright/test` is materialized — without `node_modules`, vitest still parse-errors. The orchestrator's `installIfPackageJsonChanged` hook (feat-019 Phase B) handles this automatically when the scaffold step commits.
+Plus these `scripts` entries:
+
+```json
+{
+  "scripts": {
+    "test:e2e": "playwright test",
+    "postinstall": "playwright install chromium"
+  }
+}
+```
+
+The `postinstall` hook is the **load-bearing fix for bug-037 Phase D / feat-057** — without it, `node_modules/@playwright/test` is materialized but the chromium browser binary at `~/.cache/ms-playwright/` is NOT, and `playwright test` fails silently with `0 tests in <15s` (looks like config gap → builder gets dispatched → builder can't fix runtime infrastructure → bug exhausts attempts).
+
+`playwright install chromium` is **idempotent**: cached at user level (`~/.cache/ms-playwright/chromium-XXXX/`); fresh install downloads ~150MB once, subsequent installs on the same machine are ~1s no-op. Empirical 2026-05-06 reading-log-01: prior to this hook, /fix-bugs hit maxAttempts on `bug-runtime-tooling-pre-flight` because the verifier kept re-flagging missing-binary as the same generic runner-failed-to-start.
+
+After the scaffold writes package.json, run `pnpm install` (CI=true if no TTY) — both `node_modules/@playwright/test` AND the chromium binary materialize in one step. The orchestrator's `installIfPackageJsonChanged` hook (feat-019 Phase B) handles this automatically when the scaffold step commits.
 
 **`apps/web/vitest.config.ts`** — verbatim minimum (the `exclude` is the load-bearing line):
 

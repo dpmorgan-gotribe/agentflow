@@ -176,6 +176,11 @@ const TOOL_REASON_TO_CAUSE: Record<string, FlowPrimaryCause> = {
   "playwright-not-installed": "runtime-error",
   "playwright-runner-threw": "runtime-error",
   "playwright-runner-failed-to-start": "runtime-error",
+  // feat-057 Phase B: separate reason for missing chromium binary so the
+  // file-bug-plan defaultAgentSequence routes to operator-action retry-
+  // target instead of dispatching futile builder retries (no builder agent
+  // can install a runtime binary).
+  "playwright-browser-missing": "runtime-error",
 };
 
 function synthesizeToolFailure(
