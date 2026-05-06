@@ -1,7 +1,7 @@
 ---
 id: bug-052-gitignore-missing-coverage
 type: bug
-status: draft
+status: completed
 author-agent: human
 created: 2026-05-06
 updated: 2026-05-06
@@ -35,13 +35,14 @@ stack-trace: null
 
 ## Bug Description
 
-Newly-scaffolded projects' `.gitignore` is missing the `coverage/` entry. When a backend or web feature's tester runs `pnpm vitest run --coverage` (mandatory per `.claude/rules/testing-policy.md` to verify the 80% line-coverage threshold), Vitest emits a full HTML report tree into `apps/{api,web}/coverage/` (index.html + clover.xml + coverage-final.json + base.css + prettify.* + per-source-directory drill-down dirs). The next builder agent that runs `git add -A` (the canonical pattern for committing feature work) sweeps these into the commit and they land on the merged feature branch, polluting master.
+Newly-scaffolded projects' `.gitignore` is missing the `coverage/` entry. When a backend or web feature's tester runs `pnpm vitest run --coverage` (mandatory per `.claude/rules/testing-policy.md` to verify the 80% line-coverage threshold), Vitest emits a full HTML report tree into `apps/{api,web}/coverage/` (index.html + clover.xml + coverage-final.json + base.css + prettify.\* + per-source-directory drill-down dirs). The next builder agent that runs `git add -A` (the canonical pattern for committing feature work) sweeps these into the commit and they land on the merged feature branch, polluting master.
 
 **Expected:** project `.gitignore` excludes `coverage/` + `**/coverage/` + `*.lcov` + `.nyc_output/`. Coverage reports stay local; tester parses the numeric summary line; builders never commit them.
 
 **Actual:** `.gitignore` lacks these entries on `reading-log-01` (project scaffolded 2026-05-05 from the agentflow-phase2 factory). Diff at `feat-bootstrap` merge includes ~30+ coverage-report files. Same risk for every subsequent merge in this project (feat-tags-manage + feat-settings are mid-flight as of 2026-05-06 02:55 with their own `apps/{api,web}/coverage/` populated).
 
 **Regression scope:** 3 shipped projects audit clean —
+
 - `kanban-webapp-09/.gitignore` — has `coverage/` (comment cites `bug-014 (investigate-005): comprehensive generated-artifact coverage`)
 - `finance-track-01/.gitignore` — same
 - `repo-health-dashboard-01/.gitignore` — has `coverage/` + `.coverage`
@@ -79,6 +80,7 @@ To be filled during investigation. Hypotheses:
 3. **Architect emits the gitignore additions, not /new-project** — the architect skill has bug-032 Phase C scaffolding for per-app `.env.example`, scripts/dev.mjs, etc. If gitignore additions live there but specifically per-stack (and the node-fastify path doesn't include coverage), reading-log-01 (first node-fastify project post-bug-014) is the regression instance.
 
 Investigation order:
+
 1. Read `plans/archive/investigate-005-gitignore-audit.md` (the prior audit) to understand what fix shape was applied.
 2. Read `plans/archive/bug-014-*.md` (referenced in the shipped gitignores) for the canonical fix.
 3. Diff `kanban-webapp-09/.gitignore` vs `reading-log-01/.gitignore` to identify the drift.
@@ -119,11 +121,34 @@ To be filled after root cause is confirmed. Likely shape:
 
 ## Attempt Log
 
-<!-- Populated by agents during fix.
+### Attempt 1 — 2026-05-06 — Shipped (extended scope: full kanban-09 superset)
 
-RETRY POLICY:
-  Attempt 1-2: Try different approaches
-  Attempt 3: Run /plan-investigation
-  Attempt 4: Try investigation's recommendation
-  Attempt 5: STOP and escalate to human
--->
+Filed earlier in same session after empirical regression on reading-log-01 feat-tags-manage merge (~50 false coverage AA conflicts during close-feature). Initial fix scoped to coverage entries only.
+
+**Validation phase revealed wider gap:** comparing `.claude/skills/new-project/SKILL.md` base block against `projects/kanban-webapp-09/.gitignore` (the canonical post-bug-014 shipped state) showed kanban-09 had MANY more entries (Playwright reports, .turbo/, .next/, dist/, build/, .swc/, .vite/, *.log, storybook-static/, etc.) — added to that project post-hoc but never propagated factory-side. Same pattern as bug-052 itself.
+
+**Operator decision (this session): extend bug-052 scope to mirror the full kanban-09 superset** rather than file a separate bug. Rationale: same problem class (factory template missing entries shipped projects added post-hoc); single comprehensive fix beats two partial ones; preventive — every future project inherits the hardened baseline.
+
+**Changes:**
+
+1. **`.claude/skills/new-project/SKILL.md` base block** — extended from 6 bug-052 lines to ~30 lines covering:
+   - Shell-cache: `desktop.ini`, `$RECYCLE.BIN/`, `.AppleDouble`
+   - bug-013 orchestrator runtime state: `.feature-context.json`
+   - bug-014 build outputs: `.turbo/`, `.next/`, `dist/`, `build/`, `storybook-static/`
+   - bug-014 compiler/bundler caches: `.swc/`, `apps/*/.swc/`, `.vite/`, `.vitest-cache/`, `.eslintcache`, `*.tsbuildinfo`
+   - bug-014 Next.js generated types + static export: `apps/*/next-env.d.ts`, `apps/*/out/`
+   - bug-014 Playwright outputs: `apps/*/playwright-report/`, `apps/*/test-results/`, `apps/*/blob-report/`, `apps/*/playwright/.cache/`
+   - bug-014 package-manager logs: `*.log`, `pnpm-debug.log*`, `npm-debug.log*`, `yarn-debug.log*`, `lerna-debug.log*`
+   - bug-052 test-runner output (already-shipped earlier in this session): `coverage/`, `**/coverage/`, `*.lcov`, `.nyc_output/`, `.coverage`
+   - `*.tsbuildinfo` consolidated under bug-014 (was under bug-052 in initial fix; bug-014 is the original surface citation)
+
+2. **`projects/reading-log-01/.gitignore`** — same extensions backported to the validation-target project. `git ls-files` confirmed 0 already-tracked artefacts of the new classes (the broader cleanup of `apps/api/coverage/*` happened earlier this session at commit `bb048f0`).
+
+**Validation criteria:**
+
+- ✅ New project scaffolded via `/new-project <test>` would inherit the comprehensive base block (factory template confirmed via grep).
+- ✅ `git ls-files | grep -E "(test-results|playwright-report|next-env|.turbo|.next/|.swc|.vite|.eslintcache|debug.log|storybook-static|out/)"` returns 0 entries on reading-log-01 (post-hoc cleanup not needed).
+- ✅ Existing shipped projects (kanban-webapp-09, finance-track-01, repo-health-dashboard-01) UNCHANGED — their per-project gitignores are now the strict superset of what the factory will scaffold; no regressions.
+- ✅ Cross-references: `bug-013-*` (orchestrator runtime state) + `bug-014-*` / `investigate-005-gitignore-audit` (the original wider audit) both cited inline so future maintainers can follow the chain.
+
+**Status: completed** — empirical validation deferred until next /new-project run; the SKILL.md content is verified-by-comparison against the canonical kanban-09 reference state.

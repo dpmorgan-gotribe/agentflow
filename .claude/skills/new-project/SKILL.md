@@ -269,16 +269,48 @@ credentials.json
 *.jks
 .DS_Store
 Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+.AppleDouble
 # feat-026: orchestrator-managed bug tracking (runtime artefacts)
 docs/bugs.yaml
 docs/bugs-archive/
+# bug-013: orchestrator per-worktree runtime state — never commit
+.feature-context.json
+# bug-014 (investigate-005): comprehensive generated-artefact coverage
+# build outputs (turbo / next / generic)
+.turbo/
+.next/
+dist/
+build/
+storybook-static/
+# compiler + bundler caches
+.swc/
+apps/*/.swc/
+.vite/
+.vitest-cache/
+.eslintcache
+*.tsbuildinfo
+# Next.js generated types + static export
+apps/*/next-env.d.ts
+apps/*/out/
+# Playwright outputs (reports + traces + browser cache)
+apps/*/playwright-report/
+apps/*/test-results/
+apps/*/blob-report/
+apps/*/playwright/.cache/
+# package-manager logs
+*.log
+pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+lerna-debug.log*
 # bug-052: test-runner output is build-artefact, not source
 coverage/
 **/coverage/
 *.lcov
 .nyc_output/
 .coverage
-*.tsbuildinfo
 ```
 
 **Additional exclusions by mode:**
