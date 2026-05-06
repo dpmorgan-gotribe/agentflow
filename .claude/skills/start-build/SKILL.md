@@ -75,6 +75,19 @@ Check each; abort on any missing:
 
 The orchestrator will also validate `docs/tasks.yaml` against `schemas/tasks.schema.json` before any feature fires.
 
+### Operator step — Playwright browser binary (bug-037 Phase D / feat-056 Gap D)
+
+**One-time per project, after first `pnpm install` succeeds.** The post-Mode-B `/build-to-spec-verify` flow-execution stage runs synthesized Playwright specs that need the chromium binary installed (~150MB download). Two-line operator step:
+
+```bash
+cd projects/<name>
+pnpm -C apps/web exec playwright install chromium
+```
+
+**Why operator-step (not auto)**: a post-install hook would download 150MB on every fresh `pnpm install` (slow + bandwidth-noisy). Lazy install (download on first spec dispatch) makes the first build's wall-clock 30s+ slower with a confusing pause. Operator-step is explicit + cached at the user level (Playwright keeps binaries in `~/.cache/ms-playwright/` so subsequent projects on the same machine reuse the install).
+
+**Gap-A enforcement (feat-056)**: when the binary is missing, `/build-to-spec-verify` now classifies the failure as a `runtime-error` tool-failure bug (was: silent warning) → bug-fix loop dispatches a hint to install. Pre-install once per machine to skip this round-trip.
+
 ## Steps
 
 ### 1. Parse + validate arguments

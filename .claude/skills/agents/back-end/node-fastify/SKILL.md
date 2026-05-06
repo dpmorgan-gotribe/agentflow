@@ -62,6 +62,13 @@ packages/api-client/
 └── package.json
 ```
 
+### 1c. Canonical port + spawn (feat-056 Gap C)
+
+- **Port-default:** `3001` (matches `STACK_DEFAULT_BACKEND_PORT["node-fastify"]` in `orchestrator/src/dev-server.ts`). The orchestrator's parity-verify dev-server resolver uses this when `apps/api/.env.local` + `apps/api/.env` + `process.env.PORT` are all unset.
+- **Spawn command:** `pnpm --filter @repo/api dev` from `<projectDir>`. The `apps/api/package.json` `dev` script must read `PORT` from env (via `dotenv-flow` or equivalent) — fastify's `app.listen({ port })` resolves it. Don't hardcode the port in source.
+- **Health endpoint:** GET `/health` MUST respond < 500 (200 preferred). The orchestrator's `waitForDevServer` polls this; any 5xx or connection refusal counts as not-ready.
+- **bug-038 Phase A regression test:** `orchestrator/tests/dev-server.test.ts` § "tier 5: architecture.yaml backend_framework stack-default — fastify→3001" enforces this default.
+
 ## 2. Idioms
 
 - **One plugin per domain.** `auth.routes.ts`, `users.routes.ts`, `billing.routes.ts`. Each is a fastify `FastifyPluginAsync` registered via `app.register(authRoutes, { prefix: "/auth" })`.

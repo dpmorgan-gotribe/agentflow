@@ -457,7 +457,10 @@ export default defineConfig({
         __dirname,
         "../../packages/ui-kit/src/index.ts",
       ),
-      "@repo/types": path.resolve(__dirname, "../../packages/types/src/index.ts"),
+      "@repo/types": path.resolve(
+        __dirname,
+        "../../packages/types/src/index.ts",
+      ),
       "@repo/api-client": path.resolve(
         __dirname,
         "../../packages/api-client/src/index.ts",
@@ -525,7 +528,7 @@ For Strategy A projects, replace `webServer.command` with `"pnpm exec next dev"`
 
 **Self-verify before reporting task complete:** after writing playwright.config.ts, read it back + grep for `webServer:` substring. If absent (or partially typed), edit to add the block per the decision table. Bug-041 root cause was builder omitting the block silently; this self-verify closes the gap.
 
-**Install command** (run from project root): `pnpm -C apps/web add -D @playwright/test && pnpm -C apps/web exec playwright install chromium`. The `playwright install` step downloads the browser binary (~150MB); skip it if CI provisions a pre-cached browser image. The orchestrator's `scripts/run-synthesized-flows.mjs` pre-flight checks the three artifacts above and gracefully degrades (warning, not failure) if any are missing — but the project still ships unrunnable specs, so the tester must close the gap.
+**Install command** (run from project root): `pnpm -C apps/web add -D @playwright/test && pnpm -C apps/web exec playwright install chromium`. The `playwright install` step downloads the browser binary (~150MB); skip it if CI provisions a pre-cached browser image. **Per feat-056 Gap A (2026-05-06)** the orchestrator's `scripts/run-synthesized-flows.mjs` pre-flight failures (Playwright runtime missing, browser binary missing, dev-server not responding) NO LONGER soft-gate as warnings — they file as `runtime-error` / `dev-server-compile` tool-failure bugs to `docs/bugs.yaml` + flip `verify.ok=false`. The bug-fix loop dispatches the appropriate retry-target. So the install command above is a **one-time-per-machine operator step** (Playwright caches binaries at `~/.cache/ms-playwright/`); the project still ships specs that the post-build verifier WILL exercise.
 
 ## 4. Commands
 
