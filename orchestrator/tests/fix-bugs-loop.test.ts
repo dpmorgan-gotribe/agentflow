@@ -1823,6 +1823,154 @@ describe("bug-059 — maxConcurrent clamp at 3", () => {
   });
 });
 
+// bug-061 (2026-05-06) — per-bug worktrees reuse stale base across sessions.
+// openPerBugWorktree now always tears down + recreates. Empirical: reading-
+// log-01 bhs2ki3i6 — backend-builder ran 25min in a worktree at the prior
+// session's commit (0505bf4) when current master had the load-bearing fix
+// at cb050f2. Zero commits landed. Always-recreate guarantees fresh-from-
+// baseBranch state. Supersedes bug-055 Phase A's orphan-only rm-rf.
+describe("bug-061 — openPerBugWorktree always tears down + recreates", () => {
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString();
+  }
+
+  function setupRepo(): {
+    repoRoot: string;
+    cleanup: () => void;
+  } {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bug-061-repo-"));
+    git(repoRoot, "init -q -b master");
+    git(repoRoot, "config user.email test@example.com");
+    git(repoRoot, "config user.name Test");
+    git(repoRoot, "config commit.gpgsign false");
+    writeFileSync(join(repoRoot, "README.md"), "v1\n");
+    const hooksDir = join(repoRoot, ".claude", "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    for (const h of [
+      "block-dangerous.sh",
+      "detect-loop.mjs",
+      "enforce-boundaries.sh",
+      "validate-brief.mjs",
+    ]) {
+      writeFileSync(join(hooksDir, h), "#!/bin/sh\n");
+    }
+    git(repoRoot, "add README.md .claude/hooks");
+    git(repoRoot, 'commit -q -m "initial"');
+
+    // Open fixup worktree on a fix branch to act as baseBranch.
+    const fixupWorktreePath = join(repoRoot, ".claude", "worktrees", "fixup");
+    mkdirSync(join(repoRoot, ".claude", "worktrees"), { recursive: true });
+    git(repoRoot, `worktree add "${fixupWorktreePath}" -b fix/bugs-yaml-iter`);
+
+    return {
+      repoRoot,
+      cleanup: () => rmSync(repoRoot, { recursive: true, force: true }),
+    };
+  }
+
+  it("recreates worktree at current baseBranch HEAD when worktree pre-existed at stale base", () => {
+    const { repoRoot, cleanup } = setupRepo();
+    try {
+      // 1. Initial dispatch: open per-bug worktree at original fixupBranch HEAD.
+      const r1 = openPerBugWorktree({
+        projectRoot: repoRoot,
+        bugId: "bug-foo-stale",
+        baseBranch: "fix/bugs-yaml-iter",
+      });
+      expect(r1.ok).toBe(true);
+      const bugWorktreePath = join(
+        repoRoot,
+        ".claude",
+        "worktrees",
+        "bug-foo-stale",
+      );
+      const initialBugSha = git(bugWorktreePath, "rev-parse HEAD").trim();
+
+      // 2. Advance fixupBranch in the fixup worktree (simulating a later
+      //    session's merge cascade landing new commits).
+      const fixupWorktreePath = join(repoRoot, ".claude", "worktrees", "fixup");
+      writeFileSync(join(fixupWorktreePath, "new-fix.txt"), "advanced\n");
+      git(fixupWorktreePath, "add new-fix.txt");
+      git(fixupWorktreePath, 'commit -q -m "advance fixup branch"');
+      const newFixupSha = git(fixupWorktreePath, "rev-parse HEAD").trim();
+      expect(newFixupSha).not.toBe(initialBugSha);
+
+      // 3. Re-open the same per-bug worktree (simulating a re-fired
+      //    /fix-bugs run after master moved).
+      const r2 = openPerBugWorktree({
+        projectRoot: repoRoot,
+        bugId: "bug-foo-stale",
+        baseBranch: "fix/bugs-yaml-iter",
+      });
+      expect(r2.ok).toBe(true);
+
+      // 4. Worktree HEAD should match current fixupBranch HEAD (recreated),
+      //    NOT the stale initial HEAD.
+      const recreatedSha = git(bugWorktreePath, "rev-parse HEAD").trim();
+      expect(recreatedSha).toBe(newFixupSha);
+      // The advance commit's file should be visible in the new tree.
+      expect(existsSync(join(bugWorktreePath, "new-fix.txt"))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("recreates worktree when prior dir is an orphan (bug-055 Phase A regression)", () => {
+    const { repoRoot, cleanup } = setupRepo();
+    try {
+      // Simulate orphan: dir exists with stale content, NOT registered.
+      const orphanPath = join(
+        repoRoot,
+        ".claude",
+        "worktrees",
+        "bug-orphan-bar",
+      );
+      mkdirSync(orphanPath, { recursive: true });
+      writeFileSync(join(orphanPath, "stale.txt"), "abandoned-prior-session\n");
+      expect(isRegisteredGitWorktree(repoRoot, orphanPath)).toBe(false);
+
+      const r = openPerBugWorktree({
+        projectRoot: repoRoot,
+        bugId: "bug-orphan-bar",
+        baseBranch: "fix/bugs-yaml-iter",
+      });
+      expect(r.ok).toBe(true);
+      // Stale file gone; fresh registered worktree created.
+      expect(existsSync(join(orphanPath, "stale.txt"))).toBe(false);
+      expect(isRegisteredGitWorktree(repoRoot, orphanPath)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("creates fresh worktree on first call (no pre-existing state)", () => {
+    const { repoRoot, cleanup } = setupRepo();
+    try {
+      const r = openPerBugWorktree({
+        projectRoot: repoRoot,
+        bugId: "bug-fresh-baz",
+        baseBranch: "fix/bugs-yaml-iter",
+      });
+      expect(r.ok).toBe(true);
+      const bugWorktreePath = join(
+        repoRoot,
+        ".claude",
+        "worktrees",
+        "bug-fresh-baz",
+      );
+      expect(isRegisteredGitWorktree(repoRoot, bugWorktreePath)).toBe(true);
+      // Branch fix/bug-fresh-baz exists.
+      const branchList = git(repoRoot, "branch --list fix/bug-fresh-baz");
+      expect(branchList).toContain("fix/bug-fresh-baz");
+    } finally {
+      cleanup();
+    }
+  });
+});
+
 // bug-058 (2026-05-06) — fixup worktree branches from stale fixupBranch
 // when master has diverged. openFixupWorktree now calls
 // ensureFixupTracksMaster after the worktree is opened to fast-forward

@@ -438,54 +438,86 @@ export function openPerBugWorktree(args: {
   const worktreePath = bugWorktreePath(args.projectRoot, args.bugId);
   const branch = bugBranchName(args.bugId);
 
-  // bug-055 Phase A — orphan-dir recovery. If the dir exists but is NOT a
-  // registered worktree (prior crash / partial cleanup), rm -rf it so the
-  // creation path below makes a fresh registered worktree. The orphan
-  // content is by definition unreachable (no branch points at it; agent's
-  // prior-run edits were already abandoned), so auto-cleanup is safe and
-  // preserves autonomous-run semantics.
+  // bug-061 (2026-05-06) — always teardown + recreate. Per-bug worktrees
+  // are ephemeral (created at dispatch, supposed to be torn down at
+  // closePerBugWorktree). When they survive across sessions (typically
+  // because closePerBugWorktree's git-remove hits Windows MAX_PATH —
+  // bug-060's lane — leaving the dir + branch persistent), reusing them
+  // risks stale-base regression: the worktree sits at fixupBranch HEAD
+  // from the PRIOR session, NOT current fixupBranch HEAD. Empirical
+  // motivator: reading-log-01 bhs2ki3i6 — backend-builder ran 25 min in
+  // a worktree at 0505bf4 (prior session) when current fixupBranch was
+  // at 9b3ffe8 with the load-bearing migrate-on-boot fix. Wall-clock
+  // aborted with zero commits.
+  //
+  // Supersedes bug-055 Phase A's orphan-only rm-rf — the orphan case is
+  // a subset of "anything pre-existing should be destroyed".
   if (
-    existsSync(worktreePath) &&
-    !isRegisteredGitWorktree(args.projectRoot, worktreePath)
+    existsSync(worktreePath) ||
+    isRegisteredGitWorktree(args.projectRoot, worktreePath)
   ) {
+    let teardownErr: Error | null = null;
+    // Cleanest path: git worktree remove --force.
     try {
-      rmSync(worktreePath, { recursive: true, force: true });
-    } catch (err) {
+      execSync(`git worktree remove --force ${shellQuote(worktreePath)}`, {
+        cwd: args.projectRoot,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (gitErr) {
+      // Windows MAX_PATH or other failure — bug-060-style fallback:
+      // git worktree prune (unregister) + Node fs.rmSync (NT-API path
+      // handles long paths on absolute paths).
+      try {
+        execSync(`git worktree prune`, {
+          cwd: args.projectRoot,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch {
+        /* best-effort prune */
+      }
+      try {
+        rmSync(worktreePath, {
+          recursive: true,
+          force: true,
+          maxRetries: 3,
+        });
+      } catch (rmErr) {
+        teardownErr = rmErr instanceof Error ? rmErr : new Error(String(rmErr));
+      }
+    }
+    if (teardownErr) {
       return {
         ok: false,
-        reason: `orphan-worktree-cleanup-failed: dir at ${worktreePath} exists but is not a registered worktree, and rm -rf failed: ${err instanceof Error ? err.message : String(err)}`,
+        reason: `bug-061: per-bug worktree teardown failed for ${worktreePath}: ${teardownErr.message}`,
       };
+    }
+    // Delete the per-bug branch if it exists. -D forces (in case it
+    // has unmerged commits from a prior session that never made it into
+    // fixupBranch). Per-bug branches are ephemeral; recreating from
+    // fresh baseBranch is safer than reusing.
+    try {
+      execSync(`git branch -D ${shellQuote(branch)}`, {
+        cwd: args.projectRoot,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      /* branch may not exist; non-fatal */
     }
   }
 
-  if (!existsSync(worktreePath)) {
-    mkdirSync(dirname(worktreePath), { recursive: true });
-    try {
-      // Branch from the current fixup-branch head so we see prior bugs' fixes.
-      execSync(
-        `git worktree add ${shellQuote(worktreePath)} -b ${shellQuote(branch)} ${shellQuote(args.baseBranch)}`,
-        { cwd: args.projectRoot, stdio: ["ignore", "pipe", "pipe"] },
-      );
-    } catch (err) {
-      // bug-pre-existing: a prior crash may have left the worktree+branch.
-      // If branch already exists, try worktree-add WITHOUT `-b` (reuses the branch).
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (/already exists/i.test(errMsg)) {
-        try {
-          execSync(
-            `git worktree add ${shellQuote(worktreePath)} ${shellQuote(branch)}`,
-            { cwd: args.projectRoot, stdio: ["ignore", "pipe", "pipe"] },
-          );
-        } catch (err2) {
-          return {
-            ok: false,
-            reason: err2 instanceof Error ? err2.message : String(err2),
-          };
-        }
-      } else {
-        return { ok: false, reason: errMsg };
-      }
-    }
+  // Create fresh worktree from current baseBranch HEAD. (bug-061: always
+  // reach this path — bug-055 Phase A's else-branch reuse path is gone.)
+  mkdirSync(dirname(worktreePath), { recursive: true });
+  try {
+    execSync(
+      `git worktree add ${shellQuote(worktreePath)} -b ${shellQuote(branch)} ${shellQuote(args.baseBranch)}`,
+      { cwd: args.projectRoot, stdio: ["ignore", "pipe", "pipe"] },
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `git worktree add failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
   // Seed hooks/permissions (same pattern as openFixupWorktree).
   const seed = seedWorktree(args.projectRoot, worktreePath);
