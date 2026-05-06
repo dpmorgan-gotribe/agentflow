@@ -1719,6 +1719,110 @@ describe("bug-055 — orphan worktree + empty-merge guards", () => {
   });
 });
 
+// bug-059 (2026-05-06) — event-loop starvation cap for parallel dispatch.
+// runFixBugsLoop now clamps maxConcurrent at 3 by default (overridable via
+// FIX_BUGS_MAXCONCURRENT_OVERRIDE env var). Empirical motivator: reading-
+// log-01 5-way parallel dispatch caused timer-callback queue starvation;
+// keepalive setInterval ticks dropped 5-17 times (drift 156-509s past
+// configured 300s abort threshold).
+describe("bug-059 — maxConcurrent clamp at 3", () => {
+  let stderrCaptured: string[];
+  let origStderrWrite: typeof process.stderr.write;
+
+  beforeEach(() => {
+    stderrCaptured = [];
+    origStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      stderrCaptured.push(typeof chunk === "string" ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stderr.write;
+  });
+
+  afterEach(() => {
+    process.stderr.write = origStderrWrite;
+    delete process.env.FIX_BUGS_MAXCONCURRENT_OVERRIDE;
+  });
+
+  it("clamps maxConcurrent=5 to 3 by default + emits stderr warning", async () => {
+    const bugs = [makeBug({ id: "bug-orphan-a" })];
+    writeBugsYamlDoc(bugs);
+
+    let observedConcurrency = 0;
+    const invokeAgent: InvokeAgentFn = async (a) => {
+      observedConcurrency = Math.max(observedConcurrency, 1);
+      return {
+        stage: a.agent,
+        taskStatus: { [`bug-orphan-a-${a.agent}`]: "completed" },
+        taskRetryRequests: {},
+        errors: {},
+        costUsd: 0,
+        durationMs: 1,
+      };
+    };
+
+    await runFixBugsLoop(
+      makeCtx(invokeAgent, cleanVerify, {
+        maxConcurrent: 5,
+        iterationCap: 1,
+      } as Partial<FixBugsLoopContext>),
+    );
+
+    const allStderr = stderrCaptured.join("");
+    expect(allStderr).toMatch(/maxConcurrent=5 clamped to 3/);
+    expect(allStderr).toContain("bug-059");
+  });
+
+  it("FIX_BUGS_MAXCONCURRENT_OVERRIDE env var lifts the clamp", async () => {
+    process.env.FIX_BUGS_MAXCONCURRENT_OVERRIDE = "5";
+    const bugs = [makeBug({ id: "bug-orphan-a" })];
+    writeBugsYamlDoc(bugs);
+
+    const invokeAgent: InvokeAgentFn = async (a) => ({
+      stage: a.agent,
+      taskStatus: { [`bug-orphan-a-${a.agent}`]: "completed" },
+      taskRetryRequests: {},
+      errors: {},
+      costUsd: 0,
+      durationMs: 1,
+    });
+
+    await runFixBugsLoop(
+      makeCtx(invokeAgent, cleanVerify, {
+        maxConcurrent: 5,
+        iterationCap: 1,
+      } as Partial<FixBugsLoopContext>),
+    );
+
+    const allStderr = stderrCaptured.join("");
+    // No clamp warning when env override allows the requested value.
+    expect(allStderr).not.toMatch(/maxConcurrent=5 clamped/);
+  });
+
+  it("requests under cap (e.g. 2) pass through unchanged with no warning", async () => {
+    const bugs = [makeBug({ id: "bug-orphan-a" })];
+    writeBugsYamlDoc(bugs);
+
+    const invokeAgent: InvokeAgentFn = async (a) => ({
+      stage: a.agent,
+      taskStatus: { [`bug-orphan-a-${a.agent}`]: "completed" },
+      taskRetryRequests: {},
+      errors: {},
+      costUsd: 0,
+      durationMs: 1,
+    });
+
+    await runFixBugsLoop(
+      makeCtx(invokeAgent, cleanVerify, {
+        maxConcurrent: 2,
+        iterationCap: 1,
+      } as Partial<FixBugsLoopContext>),
+    );
+
+    const allStderr = stderrCaptured.join("");
+    expect(allStderr).not.toMatch(/clamped/);
+  });
+});
+
 // bug-058 (2026-05-06) — fixup worktree branches from stale fixupBranch
 // when master has diverged. openFixupWorktree now calls
 // ensureFixupTracksMaster after the worktree is opened to fast-forward

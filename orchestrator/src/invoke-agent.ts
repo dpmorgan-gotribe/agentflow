@@ -1261,10 +1261,10 @@ async function runLlmAgent(
   let lastKeepAliveAt = dispatchedAt;
   let abortReason: string | null = null;
 
-  // Wall-clock timer fires once at stallTimeoutMs.
-  let wallTimer: NodeJS.Timeout | null = null;
-  // Keepalive watcher ticks every keepaliveCheckIntervalMs and warns at
-  // warnMs / aborts at abortMs since the last observed message.
+  // bug-059 Phase B (2026-05-06): single setInterval handles BOTH wall-
+  // clock + keepalive deadline polling. Pre-fix had a separate
+  // setTimeout for wall-clock that missed its deadline under event-loop
+  // starvation. Consolidated here so both checks share a polling tick.
   let keepaliveTimer: NodeJS.Timeout | null = null;
 
   const checkIntervalMs = cfg.keepaliveCheckIntervalMs ?? 30_000;
@@ -1272,17 +1272,27 @@ async function runLlmAgent(
   const abortMs = cfg.keepaliveAbortMs ?? 300_000;
   let warnedAt = 0;
 
-  if (stallTimeoutMs && stallTimeoutMs > 0) {
-    wallTimer = setTimeout(() => {
-      abortReason = `wall-clock-${stallTimeoutMs}ms`;
-      abortController.abort(abortReason);
-    }, stallTimeoutMs);
-  }
+  // bug-059 Phase B (2026-05-06): both wall-clock + keepalive checks live
+  // in a single setInterval that polls every checkIntervalMs. Pre-fix,
+  // wall-clock was a one-shot setTimeout that missed its deadline under
+  // event-loop starvation (investigate-019 H4: bug-parity-tags-manage ran
+  // 26.25min when budget was 25min — setTimeout fired late). Polling +
+  // single-timer eliminates timer-queue starvation skew between two
+  // independent timers. Tests with `checkIntervalMs: 0` disable both
+  // checks (matches the legacy `stallTimeoutMs=null` semantic).
+  const wallDeadlineAt =
+    stallTimeoutMs && stallTimeoutMs > 0 ? Date.now() + stallTimeoutMs : null;
   if (stallTimeoutMs !== null) {
     // Keepalive watcher uses checkIntervalMs ticks. We allow tests to
     // disable it by setting checkIntervalMs to 0.
     if (checkIntervalMs > 0) {
       keepaliveTimer = setInterval(() => {
+        // bug-059 Phase B: wall-clock polling lives in this same tick.
+        if (wallDeadlineAt !== null && Date.now() >= wallDeadlineAt) {
+          abortReason ??= `wall-clock-${stallTimeoutMs}ms`;
+          abortController.abort(abortReason);
+          return;
+        }
         const sinceLast = Date.now() - lastKeepAliveAt;
         if (sinceLast >= abortMs) {
           abortReason ??= `keepalive-gap-${sinceLast}ms`;
@@ -1301,10 +1311,6 @@ async function runLlmAgent(
   }
 
   function clearTimers(): void {
-    if (wallTimer) {
-      clearTimeout(wallTimer);
-      wallTimer = null;
-    }
     if (keepaliveTimer) {
       clearInterval(keepaliveTimer);
       keepaliveTimer = null;

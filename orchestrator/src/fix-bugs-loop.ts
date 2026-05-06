@@ -744,10 +744,50 @@ export function closePerBugWorktree(args: {
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (err) {
-    process.stderr.write(
-      `[fix-bugs-loop] WARNING: per-bug worktree cleanup for ${args.branch} failed; ` +
-        `dir at ${args.worktreePath} may persist as orphan. Detail: ${err instanceof Error ? err.message : String(err)}\n`,
-    );
+    const msg = err instanceof Error ? err.message : String(err);
+    // bug-060 (2026-05-06) — Windows MAX_PATH fallback. `git worktree
+    // remove --force` shells to Win32 file APIs without the `\\?\`
+    // long-path prefix, so deep node_modules paths past 260 chars
+    // fail with "Filename too long". Fall back to git-prune (cheap;
+    // unregisters from metadata) + Node's fs.rmSync (which uses NT API
+    // on absolute paths and handles long paths). On both-failed,
+    // surface the original WARNING.
+    if (
+      process.platform === "win32" &&
+      /Filename too long|path too long/i.test(msg)
+    ) {
+      try {
+        execSync(`git worktree prune`, {
+          cwd: args.projectRoot,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        rmSync(args.worktreePath, {
+          recursive: true,
+          force: true,
+          maxRetries: 3,
+        });
+        try {
+          execSync(`git branch -D ${shellQuote(args.branch)}`, {
+            cwd: args.projectRoot,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+        } catch {
+          // Branch may have been auto-cleaned during prune; non-fatal.
+        }
+        // Recovery succeeded — no warning needed.
+      } catch (rmErr) {
+        process.stderr.write(
+          `[fix-bugs-loop] WARNING: per-bug worktree cleanup for ${args.branch} failed (Windows MAX_PATH); ` +
+            `git remove + fs.rmSync fallback both failed. Dir at ${args.worktreePath} persists as orphan. ` +
+            `bug-055 Phase A will recover on next /fix-bugs run. Detail: ${rmErr instanceof Error ? rmErr.message : String(rmErr)}\n`,
+        );
+      }
+    } else {
+      process.stderr.write(
+        `[fix-bugs-loop] WARNING: per-bug worktree cleanup for ${args.branch} failed; ` +
+          `dir at ${args.worktreePath} may persist as orphan. Detail: ${msg}\n`,
+      );
+    }
     // Don't fail the close — merge already landed on fixup branch.
   }
   return { ok: true };
@@ -1265,7 +1305,29 @@ export async function runFixBugsLoop(
     // feat-046 Phase A.1 (2026-05-05): branch on maxConcurrent.
     //   maxConcurrent === 1 (default) → existing sequential single-worktree
     //   maxConcurrent >= 2 → per-bug-worktree batched dispatch via Promise.all
-    const maxConcurrent = ctx.maxConcurrent ?? 1;
+    //
+    // bug-059 Phase A (2026-05-06): clamp at 3 due to H4 (event-loop
+    // starvation under parallel SDK dispatch). Empirical reading-log-01:
+    // maxConcurrent=5 caused 5-17 keepalive ticks dropped (drift
+    // 156-509s past configured deadline). 3-way concurrency keeps the
+    // event loop responsive enough for timer-callback fidelity.
+    // Operators can lift the cap via FIX_BUGS_MAXCONCURRENT_OVERRIDE env
+    // var (no clamp) for empirical experimentation. Phase B's polling
+    // wall-clock timer + Phase C's worker-thread keepalive (deferred)
+    // will eventually allow the cap to lift safely.
+    const maxConcurrentRequested = ctx.maxConcurrent ?? 1;
+    const maxConcurrentCap =
+      process.env.FIX_BUGS_MAXCONCURRENT_OVERRIDE !== undefined
+        ? Number(process.env.FIX_BUGS_MAXCONCURRENT_OVERRIDE)
+        : 3;
+    const maxConcurrent = Math.min(maxConcurrentRequested, maxConcurrentCap);
+    if (maxConcurrentRequested > maxConcurrentCap) {
+      process.stderr.write(
+        `[fix-bugs-loop] WARNING: maxConcurrent=${maxConcurrentRequested} clamped to ${maxConcurrentCap} ` +
+          `(bug-059: H4 event-loop starvation under parallel dispatch). Set FIX_BUGS_MAXCONCURRENT_OVERRIDE ` +
+          `env var to override the cap.\n`,
+      );
+    }
 
     if (maxConcurrent === 1) {
       // Sequential path — preserves pre-feat-046 behavior verbatim.
