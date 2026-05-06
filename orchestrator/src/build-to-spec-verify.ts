@@ -5,6 +5,7 @@ import {
   BuildToSpecVerifyOutput,
   type BuildToSpecVerifyOutput as BuildToSpecVerifyOutputType,
   type FlowFailure,
+  type FlowPrimaryCause,
   type OrphanComponent,
   type OrphanRoute,
   type ParityVerifyOutput,
@@ -161,6 +162,43 @@ export type BugPlanViolation =
   | (ParityViolationShape & { kind: "parity-divergence" });
 
 /**
+ * feat-056 Gap A (2026-05-06) — classify `runSynthesizedFlows` pre-flight
+ * failures (Playwright not installed, dev-server didn't respond, runner
+ * crashed) into a synthetic FlowFailure so the downstream cascade-root
+ * file-bug logic catches them. Without this, the verifier soft-gates
+ * these as warnings and bugs.yaml stays empty — the silent-success
+ * antipattern. Maps known `reason` strings from
+ * `scripts/run-synthesized-flows.mjs` to existing FlowPrimaryCause enum
+ * values; unknown reasons fall back to `timeout-no-evidence`.
+ */
+const TOOL_REASON_TO_CAUSE: Record<string, FlowPrimaryCause> = {
+  "dev-server-not-ready": "dev-server-compile",
+  "playwright-not-installed": "runtime-error",
+  "playwright-runner-threw": "runtime-error",
+};
+
+function synthesizeToolFailure(
+  reason: string,
+  remediation?: string,
+): FlowFailure {
+  const primaryCause: FlowPrimaryCause =
+    TOOL_REASON_TO_CAUSE[reason] ?? "timeout-no-evidence";
+  return {
+    flowId: "tooling-pre-flight",
+    flowName: "tool pre-flight (dev-server / playwright)",
+    step: 0,
+    fromScreenId: null,
+    expectedScreenId: null,
+    actualScreenId: null,
+    selector: null,
+    screenshotPath: null,
+    htmlDumpPath: null,
+    primaryCause,
+    message: remediation ? `${reason}: ${remediation}` : reason,
+  };
+}
+
+/**
  * Default `runScript` implementation. Spawns `node <script> <projectDir>`
  * from the factory root, captures stdout/stderr, returns parseable JSON.
  */
@@ -297,11 +335,28 @@ export async function runBuildToSpecVerify(
         });
       runResult = await runFlows({ projectDir, factoryRoot });
     } catch (err) {
+      // feat-056 Gap A — runner crash classifies as runtime-error tool
+      // failure → cascade-root bug filed by downstream pipeline.
+      flowsFailed.push(
+        synthesizeToolFailure(
+          "playwright-runner-threw",
+          (err as Error).message,
+        ),
+      );
       warnings.push(`run-synthesized-flows threw: ${(err as Error).message}`);
     }
     if (runResult) {
       if (!runResult.ok && runResult.reason) {
-        // Soft-gate: surface as warning, don't fail the verify stage.
+        // feat-056 Gap A — classify pre-flight failures (dev-server
+        // didn't start, Playwright not installed, etc.) into a synthetic
+        // FlowFailure with the appropriate FlowPrimaryCause. The
+        // downstream cascade-root file-bug logic at "feat-027 Phase D"
+        // (~50 lines below) picks it up + dispatches to the correct
+        // retry-target. Without this, bugs.yaml stays empty even when
+        // the verifier's tooling can't run — silent-success antipattern.
+        flowsFailed.push(
+          synthesizeToolFailure(runResult.reason, runResult.remediation),
+        );
         warnings.push(
           `flow-execution: ${runResult.reason}${runResult.remediation ? ` (${runResult.remediation})` : ""}`,
         );

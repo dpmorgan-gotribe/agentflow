@@ -100,6 +100,17 @@ const stubSynthMissingManifest = () => ({
   exitCode: 0,
 });
 
+// feat-056 Gap A — benign runFlows stub for tests that don't care about
+// flow execution. Returns ok:true with empty arrays so the new
+// tool-failure-as-bug logic in build-to-spec-verify.ts doesn't synthesize
+// a FlowFailure (which would flip result.ok to false). Tests that DO
+// care about flow execution provide their own runFlows stub.
+const runFlowsOk = async () => ({
+  ok: true,
+  flows: { passed: [], failed: [], skipped: [] },
+  warnings: [],
+});
+
 describe("runBuildToSpecVerify — happy path (no violations)", () => {
   it("returns ok:true when both scripts return zero violations", async () => {
     const result = await runBuildToSpecVerify({
@@ -108,6 +119,7 @@ describe("runBuildToSpecVerify — happy path (no violations)", () => {
         script.includes("audit-app-reachability")
           ? stubReachOk()
           : stubSynthOk(),
+      runFlows: runFlowsOk,
       fileBugPlan: async () => ({
         planId: "should-not-be-called",
         planPath: "",
@@ -147,6 +159,7 @@ describe("runBuildToSpecVerify — violation routing", () => {
         script.includes("audit-app-reachability")
           ? stubReachWithViolations()
           : stubSynthOk(),
+      runFlows: runFlowsOk,
       fileBugPlan: async ({ violation }) => {
         const planId = `bug-001-${(violation as { kind: string }).kind}-stub`;
         filed.push(planId);
@@ -167,6 +180,7 @@ describe("runBuildToSpecVerify — violation routing", () => {
         script.includes("audit-app-reachability")
           ? stubReachOrphanRoute()
           : stubSynthOk(),
+      runFlows: runFlowsOk,
       fileBugPlan: async ({ violation }) => {
         const planId = `bug-002-${(violation as { kind: string }).kind}-stub`;
         filed.push(planId);
@@ -237,6 +251,7 @@ describe("runBuildToSpecVerify — script-output edge cases", () => {
         script.includes("audit-app-reachability")
           ? { stdout: "<<not-json>>", stderr: "", exitCode: 0 }
           : stubSynthOk(),
+      runFlows: runFlowsOk,
       fileBugPlan: async () => ({ planId: "x", planPath: "/tmp/x" }),
     });
     expect(result.warnings.join(" ")).toContain(
@@ -333,7 +348,9 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
     expect(runFlowsCalled).toBe(0);
   });
 
-  it("propagates playwright-not-installed as a WARNING not a failure", async () => {
+  it("classifies playwright-not-installed as runtime-error tool-failure bug + ok:false (feat-056 Gap A)", async () => {
+    let bugPlansFiledCount = 0;
+    let lastBugViolation: { kind?: string } = {};
     const result = await runBuildToSpecVerify({
       projectDir,
       runScript: async ({ script }) =>
@@ -347,10 +364,88 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
         flows: { passed: [], failed: [], skipped: [] },
         warnings: [],
       }),
+      fileBugPlan: async ({ violation }) => {
+        bugPlansFiledCount++;
+        lastBugViolation = violation as { kind?: string };
+        return {
+          planId: `bug-runtime-tooling-${bugPlansFiledCount}`,
+          planPath: `plans/active/bug-runtime-tooling-${bugPlansFiledCount}.md`,
+        };
+      },
     });
-    expect(result.ok).toBe(true); // soft-gate: no orphans, no failed flows
+    // bug-037 Phase C / feat-056 Gap A — was result.ok=true (soft-gate);
+    // now flips to false because tool-failure is a real bug, not a warning.
+    expect(result.ok).toBe(false);
+    expect(result.flows.failed.length).toBe(1);
+    expect(result.flows.failed[0]?.flowId).toBe("tooling-pre-flight");
+    expect(result.flows.failed[0]?.primaryCause).toBe("runtime-error");
+    expect(bugPlansFiledCount).toBe(1);
+    expect(lastBugViolation.kind).toBe("runtime-error");
+    // Warnings still preserved alongside the bug filing.
     expect(result.warnings.join(" ")).toContain("playwright-not-installed");
     expect(result.warnings.join(" ")).toContain("pnpm -C apps/web add -D");
+  });
+
+  it("classifies dev-server-not-ready as dev-server-compile tool-failure bug + ok:false (feat-056 Gap A)", async () => {
+    let bugPlansFiledCount = 0;
+    let lastBugViolation: { kind?: string } = {};
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) =>
+        script.includes("audit-app-reachability")
+          ? stubReachOk()
+          : stubSynthOk(),
+      runFlows: async () => ({
+        ok: false,
+        reason: "dev-server-not-ready",
+        remediation:
+          "dev server at http://localhost:3000 did not respond within 60000ms: ECONNREFUSED",
+        flows: { passed: [], failed: [], skipped: [] },
+        warnings: [],
+      }),
+      fileBugPlan: async ({ violation }) => {
+        bugPlansFiledCount++;
+        lastBugViolation = violation as { kind?: string };
+        return {
+          planId: `bug-compile-tooling-${bugPlansFiledCount}`,
+          planPath: `plans/active/bug-compile-tooling-${bugPlansFiledCount}.md`,
+        };
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.flows.failed.length).toBe(1);
+    expect(result.flows.failed[0]?.primaryCause).toBe("dev-server-compile");
+    expect(bugPlansFiledCount).toBe(1);
+    expect(lastBugViolation.kind).toBe("dev-server-compile");
+  });
+
+  it("classifies runFlows throw as runtime-error tool-failure bug + ok:false (feat-056 Gap A)", async () => {
+    let bugPlansFiledCount = 0;
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) =>
+        script.includes("audit-app-reachability")
+          ? stubReachOk()
+          : stubSynthOk(),
+      runFlows: async () => {
+        throw new Error("playwright-runner-threw: unexpected exit code 137");
+      },
+      fileBugPlan: async () => {
+        bugPlansFiledCount++;
+        return {
+          planId: `bug-runtime-tooling-throw`,
+          planPath: `plans/active/bug-runtime-tooling-throw.md`,
+        };
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.flows.failed.length).toBe(1);
+    expect(result.flows.failed[0]?.primaryCause).toBe("runtime-error");
+    expect(result.flows.failed[0]?.message).toContain(
+      "playwright-runner-threw",
+    );
+    expect(bugPlansFiledCount).toBe(1);
+    expect(result.warnings.join(" ")).toContain("run-synthesized-flows threw");
   });
 
   it("flow failures contribute to ok:false even with zero orphans", async () => {
@@ -479,7 +574,7 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
     expect(result.warnings.join(" ")).toContain("dev server took 45s");
   });
 
-  it("treats a thrown runFlows as a warning, not a fatal", async () => {
+  it("treats a thrown runFlows as a runtime-error tool-failure bug + ok:false (feat-056 Gap A)", async () => {
     const result = await runBuildToSpecVerify({
       projectDir,
       runScript: async ({ script }) =>
@@ -490,7 +585,12 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
         throw new Error("spawn ENOENT");
       },
     });
-    expect(result.ok).toBe(true); // no orphans, no failures recorded
+    // bug-037 Phase C / feat-056 Gap A — was result.ok=true (soft-gate);
+    // now flips to false because runner-throw is a real bug, not a warning.
+    expect(result.ok).toBe(false);
+    expect(result.flows.failed.length).toBe(1);
+    expect(result.flows.failed[0]?.flowId).toBe("tooling-pre-flight");
+    expect(result.flows.failed[0]?.primaryCause).toBe("runtime-error");
     expect(result.warnings.join(" ")).toContain("run-synthesized-flows threw");
     expect(result.warnings.join(" ")).toContain("spawn ENOENT");
   });
