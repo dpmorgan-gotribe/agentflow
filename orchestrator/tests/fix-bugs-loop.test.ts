@@ -21,6 +21,8 @@ import {
   closePerBugWorktree,
   groupDispatchableBugsByPattern,
   injectSlotEnvIntoWorktree,
+  isRegisteredGitWorktree,
+  openPerBugWorktree,
   runFixBugsLoop,
   type FixBugsLoopContext,
 } from "../src/fix-bugs-loop.js";
@@ -1439,5 +1441,279 @@ describe("runFixBugsLoop — feat-053 class-batched dispatch", () => {
     expect(batchDispatches).toBe(3); // builder + tester + reviewer for the pattern
     expect(singletonDispatches).toBe(6); // 2 orphans × 3 agents each
     expect(result.bugsResolved).toHaveLength(6);
+  });
+});
+
+// bug-055 (2026-05-06) — orphan worktree dir + empty-merge silent-success.
+// Empirically observed on reading-log-01 second /fix-bugs run: leftover
+// .claude/worktrees/<bugId>/ from a prior crash silently reused (existSync
+// guard true, registered-as-worktree false), agent dispatched into orphan
+// dir, agent's git ops resolved to project's master, per-bug branch had no
+// commits, closePerBugWorktree's `git merge` returned "Already up to date"
+// = exit 0 = ok:true, loop marked bug completed despite no fix landing.
+//
+// Three layers of defense:
+//   Phase A — isRegisteredGitWorktree pre-flight + orphan-dir rm-rf
+//   Phase B — HEAD-before/HEAD-after empty-merge guard in closePerBugWorktree
+//   Phase C — $0-spend stderr warning (defense-in-depth signal)
+describe("bug-055 — orphan worktree + empty-merge guards", () => {
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString();
+  }
+
+  function setupRepo(): {
+    repoRoot: string;
+    fixupWorktreePath: string;
+    cleanup: () => void;
+  } {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bug-055-repo-"));
+    git(repoRoot, "init -q -b master");
+    git(repoRoot, "config user.email test@example.com");
+    git(repoRoot, "config user.name Test");
+    git(repoRoot, "config commit.gpgsign false");
+    writeFileSync(join(repoRoot, "README.md"), "v1\n");
+    // seedWorktree (called from openPerBugWorktree) requires a .claude/hooks
+    // dir at projectRoot with the canonical REQUIRED_HOOKS files; otherwise
+    // its self-verify step fails. Stub each with a no-op body — the test
+    // never executes them.
+    const hooksDir = join(repoRoot, ".claude", "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    for (const h of [
+      "block-dangerous.sh",
+      "detect-loop.mjs",
+      "enforce-boundaries.sh",
+      "validate-brief.mjs",
+    ]) {
+      writeFileSync(join(hooksDir, h), "#!/bin/sh\n");
+    }
+    git(repoRoot, "add README.md .claude/hooks");
+    git(repoRoot, 'commit -q -m "initial"');
+
+    const fixupWorktreePath = join(repoRoot, ".claude", "worktrees", "fixup");
+    mkdirSync(join(repoRoot, ".claude", "worktrees"), { recursive: true });
+    git(repoRoot, `worktree add "${fixupWorktreePath}" -b fix/bugs-yaml-iter`);
+
+    return {
+      repoRoot,
+      fixupWorktreePath,
+      cleanup: () => rmSync(repoRoot, { recursive: true, force: true }),
+    };
+  }
+
+  it("isRegisteredGitWorktree returns true for a registered worktree, false for an orphan dir", () => {
+    const { repoRoot, fixupWorktreePath, cleanup } = setupRepo();
+    try {
+      // Registered fixup worktree → true.
+      expect(isRegisteredGitWorktree(repoRoot, fixupWorktreePath)).toBe(true);
+
+      // Orphan dir at expected per-bug path (NOT created via git worktree add).
+      const orphanPath = join(repoRoot, ".claude", "worktrees", "bug-orphan-x");
+      mkdirSync(orphanPath, { recursive: true });
+      writeFileSync(join(orphanPath, "leftover.txt"), "stale-content\n");
+      expect(isRegisteredGitWorktree(repoRoot, orphanPath)).toBe(false);
+
+      // Nonexistent dir → false (no throw).
+      const ghostPath = join(
+        repoRoot,
+        ".claude",
+        "worktrees",
+        "bug-does-not-exist",
+      );
+      expect(isRegisteredGitWorktree(repoRoot, ghostPath)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("openPerBugWorktree recovers from an orphan dir by rm-rf + creating a fresh registered worktree", () => {
+    const { repoRoot, cleanup } = setupRepo();
+    try {
+      const orphanPath = join(
+        repoRoot,
+        ".claude",
+        "worktrees",
+        "bug-orphan-recoverable",
+      );
+      // Simulate orphan: dir exists with stale content, NOT registered.
+      mkdirSync(orphanPath, { recursive: true });
+      writeFileSync(join(orphanPath, "stale.txt"), "abandoned-by-prior-run\n");
+      expect(isRegisteredGitWorktree(repoRoot, orphanPath)).toBe(false);
+
+      const result = openPerBugWorktree({
+        projectRoot: repoRoot,
+        bugId: "bug-orphan-recoverable",
+        baseBranch: "fix/bugs-yaml-iter",
+      });
+
+      if (!result.ok) {
+        throw new Error(
+          `openPerBugWorktree returned ok:false — ${result.reason}`,
+        );
+      }
+      expect(result.ok).toBe(true);
+      // Stale file gone — orphan was rm-rf'd.
+      expect(existsSync(join(orphanPath, "stale.txt"))).toBe(false);
+      // New registered worktree at the same path.
+      expect(isRegisteredGitWorktree(repoRoot, orphanPath)).toBe(true);
+      // Branch fix/bug-orphan-recoverable exists.
+      const branchList = git(
+        repoRoot,
+        "branch --list fix/bug-orphan-recoverable",
+      );
+      expect(branchList).toContain("fix/bug-orphan-recoverable");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("closePerBugWorktree returns ok:false when per-bug branch has 0 commits ahead (empty merge)", () => {
+    const { repoRoot, fixupWorktreePath, cleanup } = setupRepo();
+    try {
+      // Open a per-bug worktree on fix/bug-empty pointing at fixup HEAD —
+      // NO new commits on the per-bug branch. This is the silent-success
+      // scenario: agent dispatched into the worktree but committed nothing.
+      const bugWorktreePath = join(
+        repoRoot,
+        ".claude",
+        "worktrees",
+        "bug-empty",
+      );
+      git(repoRoot, `worktree add "${bugWorktreePath}" -b fix/bug-empty`);
+
+      const fixupHeadBefore = git(fixupWorktreePath, "rev-parse HEAD").trim();
+
+      const result = closePerBugWorktree({
+        projectRoot: repoRoot,
+        fixupWorktreePath,
+        worktreePath: bugWorktreePath,
+        branch: "fix/bug-empty",
+        fixupBranch: "fix/bugs-yaml-iter",
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toMatch(/empty-merge/);
+        expect(result.reason).toContain("fix/bug-empty");
+      }
+
+      // Fixup HEAD unchanged — no fake fix landed.
+      const fixupHeadAfter = git(fixupWorktreePath, "rev-parse HEAD").trim();
+      expect(fixupHeadAfter).toBe(fixupHeadBefore);
+
+      // Per-bug worktree NOT torn down on empty-merge failure (caller can
+      // inspect / next iteration may retry).
+      expect(existsSync(bugWorktreePath)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("closePerBugWorktree returns ok:true when per-bug branch has >= 1 commit (smoke regression)", () => {
+    const { repoRoot, fixupWorktreePath, cleanup } = setupRepo();
+    try {
+      const bugWorktreePath = join(
+        repoRoot,
+        ".claude",
+        "worktrees",
+        "bug-real-fix",
+      );
+      git(repoRoot, `worktree add "${bugWorktreePath}" -b fix/bug-real-fix`);
+      writeFileSync(join(bugWorktreePath, "fix.txt"), "real-content\n");
+      git(bugWorktreePath, "add fix.txt");
+      git(bugWorktreePath, 'commit -q -m "real fix"');
+
+      const fixupHeadBefore = git(fixupWorktreePath, "rev-parse HEAD").trim();
+
+      const result = closePerBugWorktree({
+        projectRoot: repoRoot,
+        fixupWorktreePath,
+        worktreePath: bugWorktreePath,
+        branch: "fix/bug-real-fix",
+        fixupBranch: "fix/bugs-yaml-iter",
+      });
+
+      expect(result.ok).toBe(true);
+      // Fixup HEAD moved (merge commit landed).
+      const fixupHeadAfter = git(fixupWorktreePath, "rev-parse HEAD").trim();
+      expect(fixupHeadAfter).not.toBe(fixupHeadBefore);
+      // Per-bug worktree torn down on successful merge.
+      expect(existsSync(bugWorktreePath)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("Phase C — $0-spend warning fires when dispatch reports success with cost 0 in a non-test run", async () => {
+    // Capture stderr writes from the loop's $0-spend defense-in-depth check.
+    const origStderrWrite = process.stderr.write.bind(process.stderr);
+    const captured: string[] = [];
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      captured.push(typeof chunk === "string" ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stderr.write;
+
+    // setupRepo creates a real on-disk repo so skipWorktreeManagement=false
+    // exercises the per-bug-worktree branch where the warning lives.
+    const { repoRoot, cleanup } = setupRepo();
+    try {
+      const bug = makeBug({
+        id: "bug-orphan-zero-spend",
+        agentSequence: ["web-frontend-builder"],
+      });
+      const projectBugsYaml = join(repoRoot, "docs", "bugs.yaml");
+      mkdirSync(join(repoRoot, "docs"), { recursive: true });
+      writeFileSync(
+        projectBugsYaml,
+        yaml.dump({
+          version: "1.0",
+          generated_at: new Date().toISOString(),
+          project_name: "test-project",
+          source_run_id: "run-test-001",
+          iteration: 1,
+          iteration_cap: 5,
+          bugs: [bug],
+        } satisfies BugsYaml),
+      );
+
+      // The agent invocation reports success but $0 spend AND commits a
+      // real change to the per-bug worktree — so closePerBugWorktree's
+      // empty-merge guard does NOT trip; the warning is the only signal.
+      const invokeAgent: InvokeAgentFn = async (a) => {
+        const cwd = a.cwd as string;
+        writeFileSync(join(cwd, "freebie.txt"), "free work\n");
+        execSync(`git add freebie.txt`, { cwd });
+        execSync(`git commit -q -m "free fix" --no-verify`, { cwd });
+        return {
+          stage: a.agent,
+          taskStatus: { [`${bug.id}-${a.agent}`]: "completed" },
+          taskRetryRequests: {},
+          errors: {},
+          costUsd: 0,
+          durationMs: 1,
+        };
+      };
+
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2, // forces parallel path where the warning lives
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+      expect(result.status).toBe("clean");
+
+      const allStderr = captured.join("");
+      expect(allStderr).toMatch(/\[fix-bugs-loop\] WARNING/);
+      expect(allStderr).toMatch(/\$0 spend/);
+      expect(allStderr).toContain("bug-orphan-zero-spend");
+    } finally {
+      process.stderr.write = origStderrWrite;
+      cleanup();
+    }
   });
 });

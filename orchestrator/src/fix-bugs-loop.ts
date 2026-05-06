@@ -1,5 +1,11 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import yaml from "js-yaml";
 import {
@@ -235,7 +241,43 @@ function bugBranchName(bugId: string): string {
   return `fix/${bugId}`;
 }
 
-function openPerBugWorktree(args: {
+/**
+ * bug-055 Phase A — verify a directory is a registered git worktree, not
+ * just a plain directory at the same path. The distinction matters because
+ * `existsSync(worktreePath)` returns true for both:
+ *   1. A live registered worktree (created by `git worktree add`)
+ *   2. An orphan dir left behind by a prior crash / partial cleanup
+ *
+ * Without this check, openPerBugWorktree silently reuses orphan dirs;
+ * subsequent agent dispatch into the orphan resolves git ops to the
+ * project's main worktree (master), agent edits never land on the
+ * per-bug branch, closePerBugWorktree's empty merge succeeds, and the
+ * loop reports a fake "fix landed". See bug-055 root cause analysis.
+ */
+export function isRegisteredGitWorktree(
+  projectRoot: string,
+  candidatePath: string,
+): boolean {
+  let out: string;
+  try {
+    out = execSync(`git worktree list --porcelain`, {
+      cwd: projectRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    return false;
+  }
+  const target = resolve(candidatePath);
+  for (const line of out.split("\n")) {
+    if (!line.startsWith("worktree ")) continue;
+    const registered = resolve(line.slice("worktree ".length).trim());
+    if (registered === target) return true;
+  }
+  return false;
+}
+
+export function openPerBugWorktree(args: {
   projectRoot: string;
   bugId: string;
   baseBranch: string;
@@ -265,6 +307,27 @@ function openPerBugWorktree(args: {
   | { ok: false; reason: string } {
   const worktreePath = bugWorktreePath(args.projectRoot, args.bugId);
   const branch = bugBranchName(args.bugId);
+
+  // bug-055 Phase A — orphan-dir recovery. If the dir exists but is NOT a
+  // registered worktree (prior crash / partial cleanup), rm -rf it so the
+  // creation path below makes a fresh registered worktree. The orphan
+  // content is by definition unreachable (no branch points at it; agent's
+  // prior-run edits were already abandoned), so auto-cleanup is safe and
+  // preserves autonomous-run semantics.
+  if (
+    existsSync(worktreePath) &&
+    !isRegisteredGitWorktree(args.projectRoot, worktreePath)
+  ) {
+    try {
+      rmSync(worktreePath, { recursive: true, force: true });
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `orphan-worktree-cleanup-failed: dir at ${worktreePath} exists but is not a registered worktree, and rm -rf failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
   if (!existsSync(worktreePath)) {
     mkdirSync(dirname(worktreePath), { recursive: true });
     try {
@@ -470,6 +533,27 @@ export function closePerBugWorktree(args: {
 }): { ok: true } | { ok: false; reason: string } {
   // The fixup-worktree was opened at loop bootstrap on `fixupBranch` and
   // stays checked out there; no `git checkout` needed. Just merge.
+  //
+  // bug-055 Phase B — capture HEAD before + after to detect empty merges.
+  // `git merge --no-ff <branch>` returns exit-0 with "Already up to date"
+  // when the branch has no commits ahead of fixupBranch — the loop must
+  // NOT read that as "fix landed". HEAD-before === HEAD-after means the
+  // agent never committed anything, dispatch is silent-success, return
+  // ok: false so the caller can mark the bug pending/failed for retry.
+  let beforeHead: string;
+  try {
+    beforeHead = execSync(`git rev-parse HEAD`, {
+      cwd: args.fixupWorktreePath,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `pre-merge HEAD capture failed in ${args.fixupWorktreePath}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
   try {
     execSync(
       `git merge --no-ff ${shellQuote(args.branch)} -m "merge ${args.branch} into ${args.fixupBranch} (fix-bugs-loop parallel)"`,
@@ -490,9 +574,36 @@ export function closePerBugWorktree(args: {
       reason: `merge ${args.branch} into ${args.fixupBranch} (in fixup worktree) failed: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+
+  // bug-055 Phase B — empty-merge guard.
+  let afterHead: string;
+  try {
+    afterHead = execSync(`git rev-parse HEAD`, {
+      cwd: args.fixupWorktreePath,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `post-merge HEAD capture failed in ${args.fixupWorktreePath}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (beforeHead === afterHead) {
+    return {
+      ok: false,
+      reason: `empty-merge: ${args.branch} produced 0 commits ahead of ${args.fixupBranch} — agent dispatched but did not commit any work (HEAD ${beforeHead.slice(0, 7)} unchanged)`,
+    };
+  }
+
   // Tear down the per-bug worktree + branch — worktree refs live in
   // projectRoot's `.git/worktrees/` so these ops run from projectRoot
   // regardless of where the merge happened.
+  //
+  // bug-055 Cross-cutting — cleanup failures are now noisy. Silent
+  // catch was the mechanism by which orphan dirs accumulate in the
+  // first place. Surface the failure so operators (and the next
+  // openPerBugWorktree call's orphan-recovery path) see it.
   try {
     execSync(`git worktree remove --force ${shellQuote(args.worktreePath)}`, {
       cwd: args.projectRoot,
@@ -502,8 +613,12 @@ export function closePerBugWorktree(args: {
       cwd: args.projectRoot,
       stdio: ["ignore", "pipe", "pipe"],
     });
-  } catch {
-    // Cleanup failure is non-fatal — merge already landed on fixup branch.
+  } catch (err) {
+    process.stderr.write(
+      `[fix-bugs-loop] WARNING: per-bug worktree cleanup for ${args.branch} failed; ` +
+        `dir at ${args.worktreePath} may persist as orphan. Detail: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    // Don't fail the close — merge already landed on fixup branch.
   }
   return { ok: true };
 }
@@ -1297,6 +1412,24 @@ export async function runFixBugsLoop(
               }
             }
             continue;
+          }
+          // bug-055 Phase C — defense-in-depth $0-spend warning. Phase B's
+          // empty-merge guard is the load-bearing fix; this is an
+          // operator-visible signal for the next-class silent-success
+          // (e.g. agent dispatch silently bypassed). When dispatch reports
+          // success but $0 was spent on a real (non-test) run, log a
+          // structured warning. Behavior unchanged — Phase B will still
+          // fail the close-feature merge if no commits landed.
+          if (
+            result.success &&
+            result.costUsd === 0 &&
+            !skipWorktreeManagement
+          ) {
+            process.stderr.write(
+              `[fix-bugs-loop] WARNING: unit ${result.unit.unitId} reported dispatch success with $0 spend — ` +
+                `verify the agent actually fired (could indicate an orchestrator dispatch skip). ` +
+                `Phase B's empty-merge guard will reject the close-feature step if no commits landed.\n`,
+            );
           }
           // Try to merge the per-unit branch into the fixup branch.
           let mergedOk = true;
