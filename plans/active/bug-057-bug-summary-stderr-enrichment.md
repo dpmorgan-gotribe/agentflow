@@ -1,8 +1,9 @@
 ---
 id: bug-057-bug-summary-stderr-enrichment
 type: bug
-status: draft
+status: completed
 author-agent: human
+attempt-count: 1
 created: 2026-05-06
 updated: 2026-05-06
 parent-plan: investigate-018-fix-bugs-dispatch-latency

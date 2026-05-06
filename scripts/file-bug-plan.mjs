@@ -699,6 +699,112 @@ function shortBugIdFor(planId) {
   return planId.replace(/^bug-\d+-/, "bug-");
 }
 
+/**
+ * bug-056 (2026-05-06) — infer the build tier (backend / web / mobile)
+ * from a violation's available signals so dispatch routes to the right
+ * builder. Empirical anchor: reading-log-01 dev-server-compile bug had
+ * `backend (node-fastify) did not respond on http://localhost:3001/health`
+ * in warnings but defaultAgentSequence routed to web-frontend-builder
+ * regardless. Agent burned ~8min producing nothing actionable before
+ * Phase B's empty-merge guard rejected it.
+ *
+ * Returns one of `"backend" | "web" | "mobile" | "unknown"`. Heuristics
+ * apply in priority order; first match wins. Returns "unknown" only
+ * when no signal is available — caller falls back to the default.
+ *
+ * Signals (priority order):
+ *   1. affectsFiles glob match: apps/api/** → backend; apps/mobile/** →
+ *      mobile; apps/web/** → web. Most reliable when present.
+ *   2. violation message / warnings substring: "backend"/"node-fastify"/
+ *      "fastapi"/"node-trpc-nest" → backend; "react-next"/"svelte-kit"/
+ *      "next.js"/"vite" → web; "expo"/"react-native"/"mobile" → mobile.
+ *   3. port-number heuristic: localhost:3000 / 5173 → web; localhost:300X
+ *      (where X != 0) → backend (factory convention; see node-fastify
+ *      stack-skill §1c).
+ *   4. stack-trace path or htmlDump: same apps/* match as (1).
+ *
+ * NOT used: violation.kind alone (already partly handled by cause-class
+ * routing in defaultAgentSequence; tier infers WHICH builder, not WHICH
+ * sequence-shape).
+ */
+export function inferTierFromViolation(violation) {
+  if (!violation || typeof violation !== "object") return "unknown";
+
+  // 1. affectsFiles glob match
+  const affectsFiles = Array.isArray(violation.affectsFiles)
+    ? violation.affectsFiles
+    : [];
+  // ALSO check derived fields the caller might have set
+  const candidatePaths = [
+    ...affectsFiles,
+    violation.path ?? "",
+    violation.componentPath ?? "",
+    ...(violation.suggestedImporters ?? []),
+  ].filter(Boolean);
+
+  const hasApiPath = candidatePaths.some((p) => /(?:^|\/)apps\/api\//.test(p));
+  const hasMobilePath = candidatePaths.some((p) =>
+    /(?:^|\/)apps\/mobile\//.test(p),
+  );
+  const hasWebPath = candidatePaths.some((p) => /(?:^|\/)apps\/web\//.test(p));
+  if (hasApiPath && !hasMobilePath && !hasWebPath) return "backend";
+  if (hasMobilePath && !hasApiPath && !hasWebPath) return "mobile";
+  if (hasWebPath && !hasApiPath && !hasMobilePath) return "web";
+
+  // 2. message + warnings substring match
+  const text = [
+    violation.message ?? "",
+    violation.summary ?? "",
+    ...(Array.isArray(violation.warnings) ? violation.warnings : []),
+    violation.flow?.name ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  // backend signals
+  if (
+    /\b(backend|node-fastify|node-trpc-nest|fastapi|nest|express|fastify)\b/.test(
+      text,
+    )
+  ) {
+    return "backend";
+  }
+  // mobile signals
+  if (/\b(expo|react-native|mobile)\b/.test(text)) return "mobile";
+  // web signals (broader; check after backend/mobile to avoid false-positives)
+  if (
+    /\b(react-next|svelte-kit|next\.js|vite|web-frontend|frontend dev-server)\b/.test(
+      text,
+    )
+  ) {
+    return "web";
+  }
+
+  // 3. port-number heuristic
+  // localhost:3000 (web default) or :5173 (vite) → web
+  // localhost:300X where X != 0 → backend (factory convention: 3001 fastify)
+  if (/localhost:(?:3000|5173)\b/.test(text)) return "web";
+  if (/localhost:300[1-9]\b/.test(text)) return "backend";
+
+  // 4. stack-trace path (rare — usually subsumed by signal 1)
+  const stackTrace = violation.stackTrace ?? violation.stack ?? "";
+  if (/(?:^|\/)apps\/api\//.test(stackTrace)) return "backend";
+  if (/(?:^|\/)apps\/mobile\//.test(stackTrace)) return "mobile";
+  if (/(?:^|\/)apps\/web\//.test(stackTrace)) return "web";
+
+  return "unknown";
+}
+
+/**
+ * bug-056 — map inferred tier → builder agent name. The default for
+ * "unknown" is web-frontend-builder (preserves pre-bug-056 behavior).
+ */
+function tierToBuilder(tier) {
+  if (tier === "backend") return "backend-builder";
+  if (tier === "mobile") return "mobile-frontend-builder";
+  return "web-frontend-builder"; // "web" + "unknown"
+}
+
 function defaultAgentSequence(violation, tier = "web-frontend-builder") {
   // bug-050 Phase B (2026-05-03) — route by primaryCause when present.
   // feat-058 (2026-05-06) — trim sequence length per cause class. Empirical
@@ -834,11 +940,31 @@ function buildBugEntry({
     // are wiring fixes the loop's re-verify catches on next pass; trim
     // tester out per the cheap-class table. Synthesize a primaryCause
     // sentinel so defaultAgentSequence gets the trimmed path.
-    agentSequence: defaultAgentSequence(
-      violation.kind === "orphan-component" || violation.kind === "orphan-route"
-        ? { primaryCause: "visual-parity" } // shares the [<tier>, reviewer] sequence
-        : violation,
-    ),
+    //
+    // bug-056 — tier inference. The violation's signals (affectsFiles
+    // globs / message substrings / port heuristic / stack-trace path)
+    // pick the right builder. For orphan violations, give the inference
+    // helper the affectsFiles WE just derived so apps/api orphans route
+    // to backend-builder.
+    agentSequence: (() => {
+      const violationForRouting =
+        violation.kind === "orphan-component" ||
+        violation.kind === "orphan-route"
+          ? { primaryCause: "visual-parity" } // shares the [<tier>, reviewer] sequence
+          : violation;
+      // Pass the derived affectsFiles into the tier inference for orphan
+      // violations (their original violation object lacks the field).
+      const violationForTier =
+        violation.kind === "orphan-component" ||
+        violation.kind === "orphan-route"
+          ? {
+              ...violation,
+              affectsFiles: deriveAffectsFiles(violation, relatedOrphan),
+            }
+          : violation;
+      const tier = tierToBuilder(inferTierFromViolation(violationForTier));
+      return defaultAgentSequence(violationForRouting, tier);
+    })(),
     status: "pending",
     attempts: 0,
     maxAttempts: 3,
@@ -848,7 +974,15 @@ function buildBugEntry({
       .relative(path.dirname(path.dirname(planPath)), planPath)
       .replace(/\\/g, "/")
       .replace(/^\.\.\//, ""),
-    errorLog: [],
+    // bug-057 (2026-05-06) — propagate captured stderr from tool-failure
+    // FlowFailures into errorLog so dispatched agents see the actual
+    // failure detail. The fix-bugs-loop's buildRetryContextMessage reads
+    // errorLog to populate retryContext.errorMessage. Without this, the
+    // agent's prompt has only the empty-after-colon summary like
+    // 'Dev-server compile error during tooling-pre-flight: '.
+    errorLog: violation.stderrTail
+      ? [`[verifier-captured-stderr] ${violation.stderrTail.slice(0, 1500)}`]
+      : [],
   };
 
   // feat-027 Phase D — surface dependsOnBugId so the bug-fix loop knows to
@@ -917,9 +1051,30 @@ function buildBugEntry({
 }
 
 function summaryFor(violation) {
+  // bug-057 (2026-05-06) — when violation has stderrTail (set by
+  // synthesizeToolFailure for tool-failure FlowFailures), prefer the FIRST
+  // line of stderrTail over the empty placeholder in the existing templates.
+  // Falls back to the legacy template when stderrTail is absent.
+  const stderrFirstLine = violation.stderrTail
+    ? violation.stderrTail.split("\n")[0]?.trim().slice(0, 140)
+    : null;
   if (violation.kind === "flow-failure") {
     const expected = violation.expectedScreenId;
     const actual = violation.actualScreenId ?? "(no screen-id)";
+    // For tool-failure FlowFailures (synthetic flowId='tooling-pre-flight',
+    // primaryCause='dev-server-compile'/'runtime-error'), expected/actual are
+    // null — those become "expected null, landed on (no screen-id)" which is
+    // useless. Prefer the stderrTail first-line for those.
+    if (
+      violation.primaryCause === "dev-server-compile" ||
+      violation.primaryCause === "runtime-error"
+    ) {
+      const detail = stderrFirstLine ?? violation.message ?? "tool failure";
+      return `${violation.primaryCause} during ${violation.flowId}: ${detail}`.slice(
+        0,
+        200,
+      );
+    }
     return `Flow ${violation.flowId} (${violation.flowName}) failed at step ${violation.step}: expected ${expected}, landed on ${actual}`.slice(
       0,
       200,
@@ -928,7 +1083,9 @@ function summaryFor(violation) {
   if (violation.kind === "dev-server-compile") {
     const overlay = violation.runtimeErrors?.devServerOverlay?.rawText ?? "";
     const head =
-      overlay.split("\n")[0]?.trim().slice(0, 120) ?? "compile error";
+      stderrFirstLine ??
+      overlay.split("\n")[0]?.trim().slice(0, 120) ??
+      "compile error";
     return `Dev-server compile error during ${violation.flowId}: ${head}`.slice(
       0,
       200,

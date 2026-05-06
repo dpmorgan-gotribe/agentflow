@@ -480,3 +480,276 @@ describe("fileBugPlan — bug-053 plan-file dedup", () => {
     expect(readdirSync(activeDir)).toHaveLength(2);
   });
 });
+
+// ─── bug-056 (2026-05-06): tier inference for cause-routing ─────────────────
+//
+// Empirical motivator: reading-log-01 dev-server-compile bug had
+// `backend (node-fastify) did not respond on http://localhost:3001/health`
+// in warnings but defaultAgentSequence routed to web-frontend-builder. Agent
+// burned ~8min producing nothing actionable before Phase B's empty-merge
+// guard rejected. Tier inference picks the right builder from violation
+// signals (affectsFiles globs + message substrings + port heuristic +
+// stack-trace path), priority order (first-match-wins).
+describe("inferTierFromViolation — bug-056 tier classifier", () => {
+  let inferTierFromViolation: (v: unknown) => string;
+  beforeEach(async () => {
+    const helper = await importHelper();
+    inferTierFromViolation = (
+      helper as unknown as {
+        inferTierFromViolation: (v: unknown) => string;
+      }
+    ).inferTierFromViolation;
+  });
+
+  it("affectsFiles glob match: apps/api/** → backend", () => {
+    const t = inferTierFromViolation({
+      kind: "flow-failure",
+      affectsFiles: ["apps/api/src/plugins/prisma.ts"],
+      message: "",
+    });
+    expect(t).toBe("backend");
+  });
+
+  it("affectsFiles glob match: apps/web/** → web", () => {
+    const t = inferTierFromViolation({
+      kind: "orphan-component",
+      affectsFiles: ["apps/web/src/components/Foo.tsx"],
+    });
+    expect(t).toBe("web");
+  });
+
+  it("affectsFiles glob match: apps/mobile/** → mobile", () => {
+    const t = inferTierFromViolation({
+      kind: "flow-failure",
+      affectsFiles: ["apps/mobile/screens/Home.tsx"],
+    });
+    expect(t).toBe("mobile");
+  });
+
+  it("message substring 'node-fastify' → backend", () => {
+    const t = inferTierFromViolation({
+      kind: "flow-failure",
+      message: "backend (node-fastify) did not respond",
+      affectsFiles: [],
+    });
+    expect(t).toBe("backend");
+  });
+
+  it("message substring 'react-next' → web", () => {
+    const t = inferTierFromViolation({
+      kind: "flow-failure",
+      message: "react-next dev-server compile error",
+      affectsFiles: [],
+    });
+    expect(t).toBe("web");
+  });
+
+  it("message substring 'expo' → mobile", () => {
+    const t = inferTierFromViolation({
+      kind: "flow-failure",
+      message: "expo metro bundler failed",
+      affectsFiles: [],
+    });
+    expect(t).toBe("mobile");
+  });
+
+  it("port heuristic: localhost:3001 → backend", () => {
+    const t = inferTierFromViolation({
+      kind: "flow-failure",
+      message: "did not respond on http://localhost:3001/health within 60s",
+      affectsFiles: [],
+    });
+    expect(t).toBe("backend");
+  });
+
+  it("port heuristic: localhost:3000 → web", () => {
+    const t = inferTierFromViolation({
+      kind: "flow-failure",
+      message: "frontend dev-server bound at http://localhost:3000",
+      affectsFiles: [],
+    });
+    expect(t).toBe("web");
+  });
+
+  it("affectsFiles takes precedence over message substring", () => {
+    // affectsFiles says backend, message says web — affectsFiles wins.
+    const t = inferTierFromViolation({
+      kind: "flow-failure",
+      affectsFiles: ["apps/api/src/server.ts"],
+      message: "react-next something",
+    });
+    expect(t).toBe("backend");
+  });
+
+  it("no signal → unknown (caller falls back to default)", () => {
+    const t = inferTierFromViolation({
+      kind: "flow-failure",
+      message: "generic failure with no tier hints",
+      affectsFiles: [],
+    });
+    expect(t).toBe("unknown");
+  });
+
+  it("empirical reading-log-01 fixture: backend port-bind warning → backend", () => {
+    // Verbatim fragment of the verifier warning that misrouted to
+    // web-frontend-builder pre-bug-056. Should now route to backend.
+    const t = inferTierFromViolation({
+      kind: "flow-failure",
+      message:
+        "dev-server: auto-boot failed: backend (node-fastify) did not respond on http://localhost:3001/health within 60000ms. Resolved spawn: pnpm.cmd --filter @repo/api dev",
+      affectsFiles: [],
+    });
+    expect(t).toBe("backend");
+  });
+});
+
+describe("fileBugPlan — bug-056 tier-routed agentSequence", () => {
+  it("dev-server-compile + backend signal → [backend-builder] (single-agent)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "flow-failure",
+        flowId: "tooling-pre-flight",
+        flowName: "tool pre-flight",
+        step: 0,
+        fromScreenId: null,
+        expectedScreenId: null,
+        actualScreenId: null,
+        selector: null,
+        screenshotPath: null,
+        htmlDumpPath: null,
+        message:
+          "backend (node-fastify) did not respond on http://localhost:3001/health within 60000ms",
+        primaryCause: "dev-server-compile",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["backend-builder"]);
+  });
+
+  it("orphan-component on apps/api/** → [backend-builder, reviewer]", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "orphan-component",
+        path: "apps/api/src/handlers/UnusedHandler.ts",
+        exportNames: ["UnusedHandler"],
+        owningFeature: "feat-foo",
+        suggestedImporters: ["apps/api/src/server.ts"],
+        reason: "no importer found",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["backend-builder", "reviewer"]);
+  });
+
+  it("dev-server-compile + no tier signal → [web-frontend-builder] (default)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "flow-failure",
+        flowId: "f",
+        flowName: "f",
+        step: 0,
+        fromScreenId: null,
+        expectedScreenId: null,
+        actualScreenId: null,
+        selector: null,
+        screenshotPath: null,
+        htmlDumpPath: null,
+        message: "no tier hints in message",
+        primaryCause: "dev-server-compile",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
+  });
+});
+
+// ─── bug-057 (2026-05-06): stderrTail propagation into bug.summary + errorLog
+//
+// Empirical motivator: reading-log-01 dev-server-compile bug surfaced with
+// summary 'Dev-server compile error during tooling-pre-flight: ' (empty
+// after colon). The verifier captured rich stderr in warnings[] but
+// file-bug-plan dropped it. Dispatched agent has zero context, burns
+// 5-10min reproducing what the verifier already had. Phase A wires the
+// stderr through synthesizeToolFailure → FlowFailure.stderrTail →
+// file-bug-plan.summaryFor + bug.errorLog[0].
+describe("fileBugPlan — bug-057 stderrTail propagation", () => {
+  it("violation with stderrTail populates bug.summary first-line + bug.errorLog", async () => {
+    const { fileBugPlan } = await importHelper();
+    const stderrTail =
+      "backend (node-fastify) did not respond on http://localhost:3001/health within 60000ms.\nResolved spawn: pnpm.cmd --filter @repo/api dev\nUnderlying: connection refused";
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "flow-failure",
+        flowId: "tooling-pre-flight",
+        flowName: "tool pre-flight (dev-server / playwright)",
+        step: 0,
+        fromScreenId: null,
+        expectedScreenId: null,
+        actualScreenId: null,
+        selector: null,
+        screenshotPath: null,
+        htmlDumpPath: null,
+        message: "dev-server-not-ready",
+        primaryCause: "dev-server-compile",
+        stderrTail,
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as {
+      bugs: Array<{ summary: string; errorLog: string[] }>;
+    };
+    // Summary first-line of stderrTail (NOT the empty-after-colon legacy).
+    expect(doc.bugs[0]?.summary).toContain("backend (node-fastify)");
+    expect(doc.bugs[0]?.summary).not.toMatch(
+      /tooling-pre-flight: $/, // no empty trailing after colon
+    );
+    // errorLog gets the full stderrTail (or the first 1500 chars).
+    expect(doc.bugs[0]?.errorLog).toHaveLength(1);
+    expect(doc.bugs[0]?.errorLog[0]).toContain("[verifier-captured-stderr]");
+    expect(doc.bugs[0]?.errorLog[0]).toContain("connection refused");
+  });
+
+  it("violation without stderrTail produces empty errorLog (back-compat)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "flow-failure",
+        flowId: "flow-1",
+        flowName: "flow 1",
+        step: 2,
+        fromScreenId: "screen-a",
+        expectedScreenId: "screen-b",
+        actualScreenId: null,
+        selector: '[data-kit-component="Foo"]',
+        screenshotPath: null,
+        htmlDumpPath: null,
+        message: "step transition failed",
+        primaryCause: "build-gap",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ errorLog: string[] }> };
+    expect(doc.bugs[0]?.errorLog).toEqual([]);
+  });
+});

@@ -186,10 +186,11 @@ const TOOL_REASON_TO_CAUSE: Record<string, FlowPrimaryCause> = {
 function synthesizeToolFailure(
   reason: string,
   remediation?: string,
+  stderrTail?: string,
 ): FlowFailure {
   const primaryCause: FlowPrimaryCause =
     TOOL_REASON_TO_CAUSE[reason] ?? "timeout-no-evidence";
-  return {
+  const out: FlowFailure = {
     flowId: "tooling-pre-flight",
     flowName: "tool pre-flight (dev-server / playwright)",
     step: 0,
@@ -202,6 +203,13 @@ function synthesizeToolFailure(
     primaryCause,
     message: remediation ? `${reason}: ${remediation}` : reason,
   };
+  // bug-057 (2026-05-06) — propagate captured stderr into the FlowFailure
+  // so file-bug-plan.mjs can enrich bug.summary + errorLog with the actual
+  // failure detail. Truncate defensively at 1500 chars (matches schema cap).
+  if (stderrTail && stderrTail.length > 0) {
+    out.stderrTail = stderrTail.slice(0, 1500);
+  }
+  return out;
 }
 
 /**
@@ -343,10 +351,13 @@ export async function runBuildToSpecVerify(
     } catch (err) {
       // feat-056 Gap A — runner crash classifies as runtime-error tool
       // failure → cascade-root bug filed by downstream pipeline.
+      // bug-057 — capture the err.message as stderrTail so the dispatched
+      // agent has the actual crash detail.
       flowsFailed.push(
         synthesizeToolFailure(
           "playwright-runner-threw",
           (err as Error).message,
+          (err as Error).stack ?? (err as Error).message,
         ),
       );
       warnings.push(`run-synthesized-flows threw: ${(err as Error).message}`);
@@ -360,8 +371,15 @@ export async function runBuildToSpecVerify(
         // (~50 lines below) picks it up + dispatches to the correct
         // retry-target. Without this, bugs.yaml stays empty even when
         // the verifier's tooling can't run — silent-success antipattern.
+        // bug-057 — pass remediation as stderrTail so file-bug-plan can
+        // populate bug.errorLog with the captured stderr; the dispatched
+        // agent reads it from retryContext.errorMessage.
         flowsFailed.push(
-          synthesizeToolFailure(runResult.reason, runResult.remediation),
+          synthesizeToolFailure(
+            runResult.reason,
+            runResult.remediation,
+            runResult.remediation,
+          ),
         );
         warnings.push(
           `flow-execution: ${runResult.reason}${runResult.remediation ? ` (${runResult.remediation})` : ""}`,

@@ -220,6 +220,16 @@ export const FlowFailure = z.object({
    * `step-transition` when omitted.
    */
   primaryCause: FlowPrimaryCause.optional(),
+  /**
+   * bug-057 (2026-05-06) — captured stderr / failure detail from upstream
+   * tooling. For dev-server-compile + runtime-error tool failures, this
+   * carries the actual failure text (backend stderr, Playwright runner
+   * crash, etc.) so the dispatched agent has real context instead of
+   * having to re-derive it from scratch. Capped at 1500 chars to keep
+   * bugs.yaml readable. Optional — v1 emitters omit it; only synthesized
+   * tool-failure FlowFailures populate it currently.
+   */
+  stderrTail: z.string().max(1500).optional(),
   message: z.string().min(1),
 });
 export type FlowFailure = z.infer<typeof FlowFailure>;
