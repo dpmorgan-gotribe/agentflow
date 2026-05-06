@@ -250,6 +250,129 @@ describe("fileBugPlan — bug-050 Phase B agent routing by primaryCause", () => 
   });
 });
 
+// ─── feat-058 (2026-05-06): trim agentSequence per cause class ────────────
+//
+// Pre-feat-058 every cause class returned a 3-agent sequence
+// [<builder>, tester, reviewer]. Empirical anchor: reading-log-01 single-bug
+// dispatches taking ~30min; tester+reviewer add ~10-20min for cheap classes
+// (dev-server-compile, runtime-error, visual-parity, reachability-orphan)
+// without catching what the loop's re-verify already catches. feat-058 trims:
+//   - dev-server-compile  → [<tier>]                   (re-verify IS the test)
+//   - runtime-error       → [<tier>, reviewer]         (drop tester)
+//   - visual-parity       → [<tier>, reviewer]         (parity-verify is the check)
+//   - reachability-orphan → [<tier>, reviewer]         (re-verify catches wiring)
+//   - flow-execution      → [<tier>, tester, reviewer] (KEEP — feature work)
+//   - build-gap           → [<tier>, tester, reviewer] (KEEP — feature work)
+//   - seed-setup          → [backend-builder, tester, reviewer] (KEEP)
+//   - manifest-author     → []                                  (KEEP — no dispatch)
+//
+// This block validates the new trimmed paths + that feature-class bugs keep
+// their full safety net.
+describe("fileBugPlan — feat-058 trimmed agentSequence per cause", () => {
+  const stubFlowFailure = (primaryCause: string) => ({
+    kind: "flow-failure" as const,
+    flowId: "flow-1",
+    flowName: "Test flow",
+    step: 2,
+    fromScreenId: null,
+    expectedScreenId: "destination",
+    actualScreenId: null,
+    selector: '[data-kit-component="Foo"]',
+    screenshotPath: null,
+    htmlDumpPath: null,
+    message: "test message",
+    primaryCause,
+  });
+
+  it("primaryCause=dev-server-compile → [<tier>] only (no tester, no reviewer)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: stubFlowFailure("dev-server-compile"),
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
+  });
+
+  it("primaryCause=runtime-error → [<tier>, reviewer] (drop tester, keep reviewer)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: stubFlowFailure("runtime-error"),
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual([
+      "web-frontend-builder",
+      "reviewer",
+    ]);
+  });
+
+  it("primaryCause=visual-parity → [<tier>, reviewer]", async () => {
+    const { fileBugPlan } = await importHelper();
+    // visual-parity bugs come via parity-divergence violation, not flow-failure.
+    // The cause field still drives the sequence; the violation kind only
+    // affects WHICH summary template is used.
+    await fileBugPlan({
+      projectDir,
+      violation: stubFlowFailure("visual-parity"),
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual([
+      "web-frontend-builder",
+      "reviewer",
+    ]);
+  });
+
+  it("orphan-component (no primaryCause) → [<tier>, reviewer] via synthesized routing", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "orphan-component",
+        path: "apps/web/src/components/Stranded.tsx",
+        exportNames: ["Stranded"],
+        owningFeature: "feat-foo",
+        suggestedImporters: ["apps/web/app/page.tsx"],
+        reason: "no importer found",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual([
+      "web-frontend-builder",
+      "reviewer",
+    ]);
+  });
+
+  it("primaryCause=flow-execution-failure → [<tier>, tester, reviewer] KEEP full safety net", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: stubFlowFailure("flow-execution-failure"),
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual([
+      "web-frontend-builder",
+      "tester",
+      "reviewer",
+    ]);
+  });
+});
+
 // ─── bug-053 (2026-05-05): plan-file dedup when stable bug-id exists ────────
 //
 // Earlier each /build-to-spec-verify run minted a NEW `bug-NNN-*.md` plan-file

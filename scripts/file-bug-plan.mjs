@@ -699,44 +699,70 @@ function shortBugIdFor(planId) {
   return planId.replace(/^bug-\d+-/, "bug-");
 }
 
-function defaultAgentSequence(violation) {
+function defaultAgentSequence(violation, tier = "web-frontend-builder") {
   // bug-050 Phase B (2026-05-03) — route by primaryCause when present.
-  // Pre-bug-050: this function literally `void violation;` and returned the
-  // same agent sequence for every bug class. Empirical evidence on
-  // finance-track-01 9-flow run: 5 of 9 failures would have misrouted —
-  // builders dispatched against seed-mismatch / manifest-author bugs either
-  // produce wrong fixes (rename source to match a wrong test expectation) or
-  // fail-loop indefinitely. The classifier (feat-049 Phase B) supplies the
-  // primaryCause; this function maps cause → agent sequence.
+  // feat-058 (2026-05-06) — trim sequence length per cause class. Empirical
+  //   anchor: reading-log-01 single-bug dispatches taking ~30min with full
+  //   3-agent sequence; for cheap classes (dev-server-compile,
+  //   reachability-orphan, visual-parity, runtime-error) tester+reviewer
+  //   add ~10-20min without catching what the loop's re-verify already
+  //   catches. See investigate-018 + feat-058 for the full reasoning.
   //
-  // Routing table:
-  //   - build-gap         → web-frontend-builder, tester, reviewer (default)
-  //   - seed-setup        → backend-builder, tester, reviewer
-  //                         (Strategy C `/test/seed-baseline` endpoint missing/
-  //                         broken — backend's lane, not frontend's)
-  //   - manifest-author   → []  (NO dispatch — flow author hallucinated;
-  //                         fix is /user-flows-generator regen which lives
-  //                         in design-stage skill, not Mode B builders. Loop
-  //                         surfaces these for operator review instead of
-  //                         burning $ on builder dispatches that cannot fix.)
-  //   - dev-server-compile / runtime-error / timeout-no-evidence /
-  //     step-transition / unknown → default (web-frontend-builder, ...)
-  //                         These haven't been narrowed to a specific lane yet;
-  //                         web-frontend-builder is the best general guess.
+  // Routing table (post-feat-058):
   //
-  // Orphan-component / orphan-route violations have no primaryCause field
-  // (they come from the reachability analyzer, not the flow runner) — they
-  // fall through to default which is correct (always a frontend wiring job).
+  //   CHEAP CLASSES (re-verify is the natural test; reviewer adds ~0):
+  //     - dev-server-compile → [<tier>]
+  //         Re-verify literally answers "does the dev-server boot now?".
+  //         Reviewer can't add semantic value on plumbing fixes.
+  //     - runtime-error      → [<tier>, reviewer]
+  //         Re-verify catches the runtime failure; reviewer kept for
+  //         semantic check (was the fix correct or a workaround?).
+  //     - visual-parity      → [<tier>, reviewer]
+  //         Parity-verify is the structural check; tester redundant.
+  //     - reachability-orphan→ [<tier>, reviewer]
+  //         Wiring fix verified by re-verify; reviewer for semantic.
+  //         (Orphan violations have no primaryCause — handled at the
+  //         buildBugEntry call-site separately.)
+  //
+  //   FEATURE-CLASS BUGS (real work, full safety net):
+  //     - build-gap          → [<tier>, tester, reviewer]
+  //     - seed-setup         → [backend-builder, tester, reviewer]
+  //         (Strategy C `/test/seed-baseline` endpoint missing/broken —
+  //         backend's lane regardless of <tier>.)
+  //     - flow-execution-failure → [<tier>, tester, reviewer]
+  //
+  //   OPERATOR-ONLY (no dispatch):
+  //     - manifest-author    → []
+  //         Flow author hallucinated; fix is /user-flows-generator regen
+  //         in design-stage skill, not Mode B builders.
+  //
+  //   UNKNOWN / step-transition → [<tier>, tester, reviewer] (default;
+  //         conservative — keep full sequence until classifier narrows).
+  //
+  // The `tier` parameter (default web-frontend-builder for backward
+  // compat with pre-bug-056 callers) lets bug-056 layer tier inference
+  // on top of feat-058's sequence trim. Cause-specific overrides
+  // (e.g. seed-setup → backend-builder) take precedence over `tier`.
   const cause = violation && violation.primaryCause;
   switch (cause) {
-    case "build-gap":
-      return ["web-frontend-builder", "tester", "reviewer"];
+    // Cheap classes: re-verify is the test; reviewer adds 0 on plumbing.
+    case "dev-server-compile":
+      return [tier];
+    // Cheap classes with semantic risk: drop tester, keep reviewer.
+    case "runtime-error":
+    case "visual-parity":
+      return [tier, "reviewer"];
+    // Real backend work: full safety net (overrides `tier`).
     case "seed-setup":
       return ["backend-builder", "tester", "reviewer"];
+    // Operator-review-only — out-of-band fix.
     case "manifest-author":
       return [];
+    // Real feature work: full safety net.
+    case "build-gap":
+    case "flow-execution-failure":
     default:
-      return ["web-frontend-builder", "tester", "reviewer"];
+      return [tier, "tester", "reviewer"];
   }
 }
 
@@ -803,7 +829,16 @@ function buildBugEntry({
     correlatedOrphanPath: relatedOrphan?.path ?? null,
     owningFeature,
     affectsFiles: deriveAffectsFiles(violation, relatedOrphan),
-    agentSequence: defaultAgentSequence(violation),
+    // feat-058 — reachability-orphan violations have no primaryCause field
+    // (they come from the reachability analyzer, not the flow runner). They
+    // are wiring fixes the loop's re-verify catches on next pass; trim
+    // tester out per the cheap-class table. Synthesize a primaryCause
+    // sentinel so defaultAgentSequence gets the trimmed path.
+    agentSequence: defaultAgentSequence(
+      violation.kind === "orphan-component" || violation.kind === "orphan-route"
+        ? { primaryCause: "visual-parity" } // shares the [<tier>, reviewer] sequence
+        : violation,
+    ),
     status: "pending",
     attempts: 0,
     maxAttempts: 3,
