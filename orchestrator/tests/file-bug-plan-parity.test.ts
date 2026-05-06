@@ -313,6 +313,37 @@ describe("fileBugPlan — feat-058 trimmed agentSequence per cause", () => {
     ]);
   });
 
+  it("violation.kind=parity-divergence → [<tier>, reviewer] (feat-058-followup)", async () => {
+    // feat-058-followup (2026-05-06): parity-divergence violations don't
+    // carry primaryCause (they come from parity-verify, not the flow runner).
+    // Pre-followup: fell through to default 3-agent. Post-followup: remapped
+    // to visual-parity → [<tier>, reviewer].
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "parity-divergence",
+        screen: "book-create",
+        pattern: "layout-regrouping",
+        severity: "P1",
+        detail: {
+          missing: ["Modal[0]"],
+          extra: ["AppShell[0]"],
+          variantDrift: [],
+          styleDrift: [],
+        },
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual([
+      "web-frontend-builder",
+      "reviewer",
+    ]);
+  });
+
   it("primaryCause=visual-parity → [<tier>, reviewer]", async () => {
     const { fileBugPlan } = await importHelper();
     // visual-parity bugs come via parity-divergence violation, not flow-failure.

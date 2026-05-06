@@ -947,9 +947,17 @@ function buildBugEntry({
     // helper the affectsFiles WE just derived so apps/api orphans route
     // to backend-builder.
     agentSequence: (() => {
+      // feat-058-followup (2026-05-06) — `parity-divergence` violations
+      // come from parity-verify (not flow-runner), so they don't carry
+      // `primaryCause`. Without this remap they fell through to the 3-
+      // agent default in defaultAgentSequence's switch; empirical
+      // reading-log-01 today: 6 visual-parity bugs all got 3 agents
+      // despite feat-058's intent of 2. Synthesizing primaryCause here
+      // routes them through the trimmed `[<tier>, reviewer]` sequence.
       const violationForRouting =
         violation.kind === "orphan-component" ||
-        violation.kind === "orphan-route"
+        violation.kind === "orphan-route" ||
+        violation.kind === "parity-divergence"
           ? { primaryCause: "visual-parity" } // shares the [<tier>, reviewer] sequence
           : violation;
       // Pass the derived affectsFiles into the tier inference for orphan

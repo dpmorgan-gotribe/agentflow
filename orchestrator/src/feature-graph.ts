@@ -1818,6 +1818,17 @@ export async function runFeatureGraph(
         ...(ctx.maxConcurrentFeatures && ctx.maxConcurrentFeatures >= 2
           ? { maxConcurrent: ctx.maxConcurrentFeatures }
           : {}),
+        // feat-061 (2026-05-06) — class-batched-fix-dispatch ON by
+        // default. feat-053 already implements grouping (N parity bugs
+        // sharing a pattern → 1 dispatch); we just flip the default.
+        // Empirical motivator (investigate-020): per-bug dispatch is
+        // ~15-25min × 100 bugs = 25-40h on mature projects; class-
+        // batching collapses N → 1 for shell-stripping / layout-
+        // regrouping / token-drift / variant-drift parity classes.
+        // Operators can opt OUT via FIX_BUGS_DISABLE_CLASS_BATCHING
+        // env var.
+        enableClassBatchedDispatch:
+          process.env.FIX_BUGS_DISABLE_CLASS_BATCHING !== "1",
       };
       bugLoopResult = await fixRunner(loopCtx);
       totalCostUsd += bugLoopResult.totalCostUsd;
