@@ -88,6 +88,12 @@ export interface FixBugsLoopContext {
   fixupWorktreePath?: string;
   /** Branch name for the fixup worktree. Default `fix/bugs-yaml-iter`. */
   fixupBranchName?: string;
+  /**
+   * bug-058 (2026-05-06) — project base branch the fixup worktree should
+   * track. Default `master`. Configurable so projects using `main` or
+   * other conventions can opt in.
+   */
+  baseBranchName?: string;
   /** Override path for `docs/bugs.yaml`. Default `<projectRoot>/docs/bugs.yaml`. */
   bugsYamlPath?: string;
   /**
@@ -193,6 +199,8 @@ function openFixupWorktree(args: {
   projectRoot: string;
   worktreePath: string;
   branch: string;
+  /** bug-058 — project base branch (default "master"). */
+  baseBranch?: string;
 }): { ok: true } | { ok: false; reason: string } {
   if (!existsSync(args.worktreePath)) {
     mkdirSync(dirname(args.worktreePath), { recursive: true });
@@ -219,7 +227,129 @@ function openFixupWorktree(args: {
       reason: `fixup-worktree-seed-failed (${seed.reason}): ${seed.detail}`,
     };
   }
+
+  // bug-058 — bring fixupBranch up to date with master if it has fallen
+  // behind. Without this, per-bug worktrees branched from fixupBranch see
+  // a stale tree — agents miss operator commits made between /fix-bugs
+  // runs and may regress them. See bug-058 for empirical motivator
+  // (reading-log-01 bjw01o7js: agent regressed .npmrc + tsconfig fixes
+  // that landed on master via b1c3e20 between runs).
+  const sync = ensureFixupTracksMaster({
+    projectRoot: args.projectRoot,
+    worktreePath: args.worktreePath,
+    baseBranch: args.baseBranch ?? "master",
+  });
+  if (!sync.ok) return sync;
+
   return { ok: true };
+}
+
+/**
+ * bug-058 (2026-05-06) — keep `fix/bugs-yaml-iter` aligned with master
+ * across /fix-bugs runs. The fixup branch persists between runs only on
+ * abnormal exits (auto-merge-to-master conflict, orchestrator crash,
+ * manual paused.json removal); in the normal happy path closeFixupWorktree
+ * deletes it. When it persists across runs, master may have moved forward
+ * via operator commits — and per-bug worktrees branched from fixupBranch
+ * will be stale.
+ *
+ * Decision tree:
+ *   1. fixupBranch SHA === master SHA               → no-op
+ *   2. fixupBranch is BEHIND master (FF possible)   → fast-forward
+ *   3. fixupBranch is AHEAD of master (descendant)  → no-op (preserve WIP)
+ *   4. fixupBranch + master have diverged           → real merge; on
+ *                                                     conflict, abort +
+ *                                                     return ok:false
+ *
+ * Returns `ok: true` on every state where the worktree is usable; ok:false
+ * only on case (4) merge conflict OR rev-parse failure.
+ */
+export function ensureFixupTracksMaster(args: {
+  projectRoot: string;
+  worktreePath: string;
+  baseBranch: string;
+}): { ok: true } | { ok: false; reason: string } {
+  let masterSha: string;
+  let fixupSha: string;
+  try {
+    masterSha = execSync(`git rev-parse ${shellQuote(args.baseBranch)}`, {
+      cwd: args.projectRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    fixupSha = execSync(`git rev-parse HEAD`, {
+      cwd: args.worktreePath,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `bug-058: rev-parse failed for ${args.baseBranch} or fixup HEAD: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  if (masterSha === fixupSha) return { ok: true };
+
+  const isAncestor = (
+    cwd: string,
+    ancestor: string,
+    descendant: string,
+  ): boolean => {
+    try {
+      execSync(
+        `git merge-base --is-ancestor ${shellQuote(ancestor)} ${shellQuote(descendant)}`,
+        { cwd, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Case 2: fixup is behind master (master is descendant of fixup).
+  if (isAncestor(args.projectRoot, fixupSha, masterSha)) {
+    try {
+      execSync(`git merge --ff-only ${shellQuote(args.baseBranch)}`, {
+        cwd: args.worktreePath,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      return { ok: true };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `bug-058: fast-forward of fixup branch to ${args.baseBranch} failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  // Case 3: fixup is ahead of master (fixup is descendant of master).
+  // WIP preserved — no-op. Subsequent merge cascades integrate it later.
+  if (isAncestor(args.projectRoot, masterSha, fixupSha)) {
+    return { ok: true };
+  }
+
+  // Case 4: diverged — real merge. On conflict, abort + surface.
+  try {
+    execSync(
+      `git merge --no-ff ${shellQuote(args.baseBranch)} -m "merge ${args.baseBranch} into fixup (bug-058 stale-base recovery)"`,
+      { cwd: args.worktreePath, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    return { ok: true };
+  } catch (err) {
+    try {
+      execSync(`git merge --abort`, {
+        cwd: args.worktreePath,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      // best-effort; merge --abort fails when there's nothing to abort
+    }
+    return {
+      ok: false,
+      reason: `bug-058: fixup branch diverged from ${args.baseBranch} AND merge failed: ${err instanceof Error ? err.message : String(err)}. Manually reconcile fix/bugs-yaml-iter with ${args.baseBranch} before re-running /fix-bugs.`,
+    };
+  }
 }
 
 /**
@@ -1063,6 +1193,7 @@ export async function runFixBugsLoop(
       projectRoot: ctx.projectRoot,
       worktreePath,
       branch: fixupBranch,
+      baseBranch: ctx.baseBranchName ?? "master",
     });
     if (!open.ok) {
       return {

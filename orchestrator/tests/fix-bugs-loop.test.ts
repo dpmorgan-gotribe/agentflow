@@ -19,6 +19,7 @@ import { BudgetTracker } from "../src/budget-tracker.js";
 import { execSync } from "node:child_process";
 import {
   closePerBugWorktree,
+  ensureFixupTracksMaster,
   groupDispatchableBugsByPattern,
   injectSlotEnvIntoWorktree,
   isRegisteredGitWorktree,
@@ -1713,6 +1714,178 @@ describe("bug-055 — orphan worktree + empty-merge guards", () => {
       expect(allStderr).toContain("bug-orphan-zero-spend");
     } finally {
       process.stderr.write = origStderrWrite;
+      cleanup();
+    }
+  });
+});
+
+// bug-058 (2026-05-06) — fixup worktree branches from stale fixupBranch
+// when master has diverged. openFixupWorktree now calls
+// ensureFixupTracksMaster after the worktree is opened to fast-forward
+// or merge as appropriate. Empirical motivator: reading-log-01 bjw01o7js
+// agent regressed .npmrc + tsconfig fixes that landed on master via
+// b1c3e20 between /fix-bugs runs because its worktree branched from
+// fix/bugs-yaml-iter at f0f7f77 (stale).
+describe("bug-058 — ensureFixupTracksMaster", () => {
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString();
+  }
+
+  function setupRepo(): {
+    repoRoot: string;
+    fixupWorktreePath: string;
+    cleanup: () => void;
+  } {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bug-058-repo-"));
+    git(repoRoot, "init -q -b master");
+    git(repoRoot, "config user.email test@example.com");
+    git(repoRoot, "config user.name Test");
+    git(repoRoot, "config commit.gpgsign false");
+    writeFileSync(join(repoRoot, "README.md"), "v1\n");
+    git(repoRoot, "add README.md");
+    git(repoRoot, 'commit -q -m "initial"');
+
+    const fixupWorktreePath = join(repoRoot, ".claude", "worktrees", "fixup");
+    mkdirSync(join(repoRoot, ".claude", "worktrees"), { recursive: true });
+    git(repoRoot, `worktree add "${fixupWorktreePath}" -b fix/bugs-yaml-iter`);
+
+    return {
+      repoRoot,
+      fixupWorktreePath,
+      cleanup: () => rmSync(repoRoot, { recursive: true, force: true }),
+    };
+  }
+
+  it("no-ops when fixupBranch is at master HEAD (idempotent)", () => {
+    const { repoRoot, fixupWorktreePath, cleanup } = setupRepo();
+    try {
+      const before = git(fixupWorktreePath, "rev-parse HEAD").trim();
+      const result = ensureFixupTracksMaster({
+        projectRoot: repoRoot,
+        worktreePath: fixupWorktreePath,
+        baseBranch: "master",
+      });
+      expect(result.ok).toBe(true);
+      const after = git(fixupWorktreePath, "rev-parse HEAD").trim();
+      expect(after).toBe(before); // no movement
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("fast-forwards fixupBranch when behind master (empirical bjw01o7js shape)", () => {
+    const { repoRoot, fixupWorktreePath, cleanup } = setupRepo();
+    try {
+      // Operator commits new file to master AFTER fixup branch was created.
+      writeFileSync(
+        join(repoRoot, ".npmrc"),
+        "public-hoist-pattern[]=*prisma*\n",
+      );
+      git(repoRoot, "add .npmrc");
+      git(repoRoot, 'commit -q -m "operator: add npmrc"');
+      const masterSha = git(repoRoot, "rev-parse master").trim();
+      const fixupBefore = git(fixupWorktreePath, "rev-parse HEAD").trim();
+      expect(fixupBefore).not.toBe(masterSha); // fixup is BEHIND
+
+      const result = ensureFixupTracksMaster({
+        projectRoot: repoRoot,
+        worktreePath: fixupWorktreePath,
+        baseBranch: "master",
+      });
+      expect(result.ok).toBe(true);
+
+      const fixupAfter = git(fixupWorktreePath, "rev-parse HEAD").trim();
+      expect(fixupAfter).toBe(masterSha); // fast-forwarded
+      // The .npmrc file is now visible in the fixup worktree.
+      expect(existsSync(join(fixupWorktreePath, ".npmrc"))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("preserves WIP when fixupBranch is ahead of master (descendant)", () => {
+    const { repoRoot, fixupWorktreePath, cleanup } = setupRepo();
+    try {
+      // Add a WIP commit to fixupBranch only.
+      writeFileSync(join(fixupWorktreePath, "fixup-wip.txt"), "WIP\n");
+      git(fixupWorktreePath, "add fixup-wip.txt");
+      git(fixupWorktreePath, 'commit -q -m "WIP on fixup"');
+      const fixupBefore = git(fixupWorktreePath, "rev-parse HEAD").trim();
+      const masterSha = git(repoRoot, "rev-parse master").trim();
+      expect(fixupBefore).not.toBe(masterSha);
+
+      const result = ensureFixupTracksMaster({
+        projectRoot: repoRoot,
+        worktreePath: fixupWorktreePath,
+        baseBranch: "master",
+      });
+      expect(result.ok).toBe(true);
+      const fixupAfter = git(fixupWorktreePath, "rev-parse HEAD").trim();
+      expect(fixupAfter).toBe(fixupBefore); // WIP preserved (no movement)
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("merges master into fixupBranch on divergence (both have new commits)", () => {
+    const { repoRoot, fixupWorktreePath, cleanup } = setupRepo();
+    try {
+      // Add WIP commit to fixupBranch on a file that won't conflict.
+      writeFileSync(join(fixupWorktreePath, "fixup-only.txt"), "fixup wip\n");
+      git(fixupWorktreePath, "add fixup-only.txt");
+      git(fixupWorktreePath, 'commit -q -m "fixup wip commit"');
+
+      // Operator commits to master on a different file.
+      writeFileSync(join(repoRoot, "operator-only.txt"), "operator wip\n");
+      git(repoRoot, "add operator-only.txt");
+      git(repoRoot, 'commit -q -m "operator commit"');
+
+      // Both branches have commits the other doesn't → diverged.
+      const result = ensureFixupTracksMaster({
+        projectRoot: repoRoot,
+        worktreePath: fixupWorktreePath,
+        baseBranch: "master",
+      });
+      expect(result.ok).toBe(true);
+
+      // Both files should be visible in fixupBranch after merge.
+      expect(existsSync(join(fixupWorktreePath, "fixup-only.txt"))).toBe(true);
+      expect(existsSync(join(fixupWorktreePath, "operator-only.txt"))).toBe(
+        true,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("returns ok:false on merge conflict + leaves clean tree", () => {
+    const { repoRoot, fixupWorktreePath, cleanup } = setupRepo();
+    try {
+      // Both branches edit the SAME file with different content → conflict.
+      writeFileSync(join(fixupWorktreePath, "README.md"), "fixup version\n");
+      git(fixupWorktreePath, "add README.md");
+      git(fixupWorktreePath, 'commit -q -m "fixup edits readme"');
+
+      writeFileSync(join(repoRoot, "README.md"), "operator version\n");
+      git(repoRoot, "add README.md");
+      git(repoRoot, 'commit -q -m "operator edits readme"');
+
+      const result = ensureFixupTracksMaster({
+        projectRoot: repoRoot,
+        worktreePath: fixupWorktreePath,
+        baseBranch: "master",
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toMatch(/diverged|merge.*failed/);
+      }
+      // After conflict, the merge --abort should leave the working tree clean.
+      const status = git(fixupWorktreePath, "status --short").trim();
+      expect(status).toBe("");
+    } finally {
       cleanup();
     }
   });
