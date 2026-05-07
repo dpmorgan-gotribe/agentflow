@@ -50,11 +50,36 @@ export default async function globalSetup(): Promise<void> {
           fs.readFileSync(baselineSignalPath, "utf8"),
         );
         if (signal.callSeedBaseline === true) {
+          // bug-070 (2026-05-07) — env-var name + default-port fix.
+          // Pre-fix this fell through to "http://127.0.0.1:8000" (Python
+          // FastAPI default) for ALL Strategy C projects regardless of
+          // backend stack. Empirical: reading-log-01 (node-fastify, port
+          // 3001) hit ECONNREFUSED on every globalSetup run because
+          // canonical var is `NEXT_PUBLIC_API_BASE` (no `_URL` suffix —
+          // see react-next stack-skill SKILL.md + architect SKILL.md §7b).
+          //
+          // Resolution chain:
+          //   1. SEED_BASE_URL (explicit operator override)
+          //   2. NEXT_PUBLIC_API_BASE (canonical react-next env contract;
+          //      what apps/web/.env.local actually sets)
+          //   3. API_BASE_URL (alternate alias)
+          //   4. NEXT_PUBLIC_API_BASE_URL (legacy alias from pre-bug-070
+          //      template)
+          //   5. signal.persistenceLayer-derived stack default (3001 for
+          //      node-*, 8000 for python-fastapi) — synthesizer-supplied
+          //      via required-baseline.json (bug-070 Phase B: extend
+          //      synthesizer to write `backendPort` in the signal).
+          //   6. Last-resort hardcoded localhost:3001 (matches the
+          //      majority Strategy C node-fastify shape; better than 8000
+          //      which only fits python-fastapi).
           const seedBase =
             process.env.SEED_BASE_URL ??
+            process.env.NEXT_PUBLIC_API_BASE ??
             process.env.API_BASE_URL ??
             process.env.NEXT_PUBLIC_API_BASE_URL ??
-            "http://127.0.0.1:8000";
+            (typeof signal.backendPort === "number"
+              ? `http://127.0.0.1:${signal.backendPort}`
+              : "http://127.0.0.1:3001");
           const res = await ctx.post(`${seedBase}/test/seed-baseline`, {
             data: {},
             failOnStatusCode: false,
