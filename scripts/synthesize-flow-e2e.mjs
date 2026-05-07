@@ -614,7 +614,29 @@ function specForFlowInteractions(flow, flowIndex, strategy) {
   lines.push(
     `      await page.screenshot({ path: \`\${FAILURE_DIR}/${flowFileBase}-failure.png\`, fullPage: true }).catch(() => {});`,
   );
-  lines.push(`      const html = await page.content().catch(() => "");`);
+  // bug-072: capture envelope when page.content() can't read (page died,
+  // browser crashed, globalSetup threw before page existed). Pre-fix the
+  // .catch(() => "") swallow wrote 0-byte files; operators saw blank
+  // failure HTML with no debugging context.
+  lines.push(`      let html = null;`);
+  lines.push(
+    `      try { html = await page.content(); } catch { /* page closed */ }`,
+  );
+  lines.push(`      if (!html) {`);
+  lines.push(`        let url;`);
+  lines.push(
+    `        try { url = page.url(); } catch { url = "<unavailable>"; }`,
+  );
+  lines.push(
+    `        const errMsg = err instanceof Error ? err.message : String(err);`,
+  );
+  lines.push(
+    `        const errStack = (err instanceof Error && err.stack) ? err.stack : "";`,
+  );
+  lines.push(
+    `        html = \`<!doctype html><html><body><pre>${flowFileBase} captured no page content (page died before content() resolved).\\n\\nURL when error fired: \${url}\\nError: \${errMsg}\\n\\nStack:\\n\${errStack}\\n</pre></body></html>\`;`,
+  );
+  lines.push(`      }`);
   lines.push(`      const fs = await import("node:fs");`);
   lines.push(`      fs.mkdirSync(FAILURE_DIR, { recursive: true });`);
   lines.push(
@@ -806,7 +828,28 @@ function specForFlow(flow, flowIndex) {
     lines.push(
       `          await page.screenshot({ path: \`\${FAILURE_DIR}/${flowFileBase}-step-${i + 1}.png\`, fullPage: true }).catch(() => {});`,
     );
-    lines.push(`          const html = await page.content().catch(() => "");`);
+    // bug-072: envelope-fallback when page.content() fails (page died /
+    // browser crashed). Pre-fix the .catch(() => "") swallow wrote 0-byte
+    // step-N.html files with no debugging context.
+    lines.push(`          let html = null;`);
+    lines.push(
+      `          try { html = await page.content(); } catch { /* page closed */ }`,
+    );
+    lines.push(`          if (!html) {`);
+    lines.push(`            let url;`);
+    lines.push(
+      `            try { url = page.url(); } catch { url = "<unavailable>"; }`,
+    );
+    lines.push(
+      `            const errMsg = err instanceof Error ? err.message : String(err);`,
+    );
+    lines.push(
+      `            const errStack = (err instanceof Error && err.stack) ? err.stack : "";`,
+    );
+    lines.push(
+      `            html = \`<!doctype html><html><body><pre>${flowFileBase}-step-${i + 1} captured no page content (page died before content() resolved).\\n\\nURL when error fired: \${url}\\nError: \${errMsg}\\n\\nStack:\\n\${errStack}\\n</pre></body></html>\`;`,
+    );
+    lines.push(`          }`);
     lines.push(`          const fs = await import("node:fs");`);
     lines.push(`          fs.mkdirSync(FAILURE_DIR, { recursive: true });`);
     lines.push(
