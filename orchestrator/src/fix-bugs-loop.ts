@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import yaml from "js-yaml";
 import {
   BugsYamlSchema,
@@ -942,7 +942,10 @@ async function auditTesterCommit(worktreeDir: string): Promise<
   // Resolve scripts/audit-tester-diff.mjs relative to the orchestrator's
   // factory root. Use pathToFileURL so the dynamic import works on Windows
   // (raw `file://${path}` produces 2-slash URLs that don't load on Win).
-  const factoryRoot = resolve(__dirname, "..", "..");
+  // ESM context — __dirname doesn't exist; derive from import.meta.url
+  // (this file lives at orchestrator/src/fix-bugs-loop.ts; ../../ → factory root).
+  const here = dirname(fileURLToPath(import.meta.url));
+  const factoryRoot = resolve(here, "..", "..");
   const scriptPath = resolve(factoryRoot, "scripts", "audit-tester-diff.mjs");
   if (!existsSync(scriptPath)) return [];
   try {
