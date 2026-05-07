@@ -7,7 +7,7 @@
       "scoped_to": ["ui-designer", "html-verifier"],
       "config": {
         "command": "npx",
-        "args": ["@playwright/mcp@latest"]
+        "args": ["@playwright/mcp@0.0.74"]
       }
     },
     {

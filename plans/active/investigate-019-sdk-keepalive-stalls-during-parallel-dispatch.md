@@ -423,3 +423,107 @@ patch, ship inside Mitigation A.
 
 (empty — plan filed by human 2026-05-06 with empirical data from
 session ending be56zlptr at 20:55)
+
+### 2026-05-07 supplementary finding — H6: MCP server spawn time
+
+While monitoring an in-flight reading-log-01 /fix-bugs run, captured a
+keepalive warning live:
+
+```
+[runLlmAgent] web-frontend-builder on bug-parity-books-list-layout-regrouping:
+  no SDK message in 116s (warn threshold 90000ms)
+[runLlmAgent] web-frontend-builder on bug-parity-books-list-layout-regrouping:
+  no SDK message in 94s (warn threshold 90000ms)
+```
+
+Process-tree inspection at the moment of the second warning:
+
+```
+9672  orchestrator main (120 min, 34.7 MB)
+└─ 46652  orchestrator worker (123 min, 55 MB)
+   └─ 49276  claude.exe — Claude Agent SDK (4.6 min, 518 MB)
+      └─ 52676  cmd "npx -y @playwright/mcp@latest" (4.6 min)
+         └─ 48924  npx-cli (4.6 min, 92 MB)
+```
+
+The agent SDK process had spawned `npx -y @playwright/mcp@latest` 4.6
+minutes prior and the npx call was STILL running (no MCP server
+ready yet). During this entire window, the agent emitted no SDK
+messages because it was blocked waiting for MCP-tool availability.
+
+**Root cause (new hypothesis H6 — adds to H1-H5)**: Factory `.mcp.json`
+registers Playwright MCP at the project root with
+`"command": "npx", "args": ["-y", "@playwright/mcp@latest"]`. Claude
+Agent SDK auto-starts ALL registered MCP servers per agent dispatch.
+Each spawn:
+
+1. `npx` resolves `@latest` (network round-trip to npm registry)
+2. If not cached, downloads + extracts playwright-mcp tarball
+3. First-ever-spawn-on-machine: installs Chromium + Firefox + WebKit
+   browsers (~150-300 MB)
+4. Spawns the MCP server process
+5. MCP handshake with the agent SDK
+
+On Windows + slow disk + npx + parallel dispatches (4 simultaneous),
+this stack regularly takes 90-300 seconds per dispatch. EVERY agent
+that uses the project — even agents that never actually call
+playwright tools (like web-frontend-builder writing React code) —
+pays this cost up front because MCP servers start at agent-init.
+
+This is a STRONGER explanation than H4 (event-loop starvation): the
+gaps don't cluster at the same wall-time across siblings (which H4
+predicted) — they cluster around dispatch-start because each agent
+hits the same npx cold-start independently. The earlier empirical
+data (`gaps 326s-808s`) is consistent with longer Windows install
+times under disk contention from 4 parallel npx invocations.
+
+### Mitigations targeted at H6
+
+**M-D (lowest risk)** ✅ SHIPPED 2026-05-07: Pin the version in `.mcp.json` —
+`@playwright/mcp@VERSION` instead of `@latest` — so npx skips the
+registry round-trip. Saves ~5-15s per spawn but doesn't fix the
+install time. ~2 lines of factory change.
+
+Pinned to `@playwright/mcp@0.0.74` (latest at ship time per
+`npm view @playwright/mcp version`). Updated both `.mcp.json` (factory
+runtime registration) AND `mcp-defaults-design.json` (template that
+gets copied to new projects via `/new-project` step 5b). Existing
+projects with their own `.mcp.json` (none currently) are operator-owned
+config; no automatic update.
+
+Empirical motivator: reading-log-01 2026-05-07 /fix-bugs run hit 12+
+keepalive warnings spread across web-frontend-builder, backend-builder,
+reviewer dispatches; one bug (bug-parity-books-list-layout-regrouping)
+exhausted its 3 retries on keepalive aborts before any code could
+land.
+
+**M-E (medium risk)**: Pre-install playwright-mcp globally as part of
+factory bootstrap (`pnpm install -g @playwright/mcp@VERSION`) so npx
+finds it cached + skips download. Requires factory-side install
+script + per-machine setup. Saves 60-150s per spawn after first run.
+
+**M-F (highest leverage)**: Per-agent MCP scoping. Most agents don't
+need playwright (web-frontend-builder writes code; reviewer reads
+code; security audits source). Add `agentMcpServers` declaration in
+`.claude/agents/{agent}.md` frontmatter; orchestrator filters
+`.mcp.json` per-dispatch so each agent only sees the servers it
+declares. Reduces playwright-mcp invocations from "every agent" to
+"tester + visual-review only". Could reduce keepalive warnings by
+~80% on web-frontend-builder + reviewer dispatches.
+
+**M-G**: Bypass `npx` entirely by emitting a direct `node ...` invocation
+once the path is known. Avoids npm/pnpm wrapper overhead but
+sensitive to path layouts.
+
+Recommended order: M-D first (5-min change, immediate win), then M-F
+(architectural change, biggest leverage). M-E is a nice-to-have
+but adds factory-bootstrap complexity.
+
+### Cross-reference for H6
+
+- `.mcp.json` at factory root + per-project — current registration
+- `.claude/agents/web-frontend-builder.md` — frontmatter would gain
+  `agentMcpServers: []` for M-F implementation
+- `orchestrator/src/invoke-agent.ts` `buildAgentOptions` — where the
+  MCP server set is currently determined (probably reads .mcp.json
+  verbatim; M-F adds the per-agent filter step)
