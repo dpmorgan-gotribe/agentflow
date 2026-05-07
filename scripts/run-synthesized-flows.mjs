@@ -334,10 +334,19 @@ export async function runSynthesizedFlows({
   // which is the right surface to fix backend boot failures). Distinct from
   // runner-failed-to-start (which is config / browser-binary territory).
   if (webServerTimedOut) {
+    // bug-067 (2026-05-07) — interpolate actual timeouts in remediation
+    // text. Pre-fix: hardcoded "within 60s" misled operators when project
+    // had bumped playwright.config.ts webServer.timeout to 120s/180s.
+    // Two timeouts gate dev-server boot:
+    //   (a) runner pre-flight (devServerTimeoutMs param)
+    //   (b) playwright.config.ts webServer.timeout
+    // The webServerTimedOut path fires from (b) — the runner already
+    // confirmed /health responded for (a).
+    const runnerWaitS = Math.round(devServerTimeoutMs / 1000);
     return {
       ok: false,
       reason: "dev-server-not-ready",
-      remediation: `playwright webServer timed out — backend or frontend dev-server failed to bind port within 60s. Inspect last stderr for the exit reason; common causes: (1) backend module import error (check apps/api/src/plugins/*.ts); (2) database connection failure (DATABASE_URL/DATABASE_PATH unset or file missing); (3) port already in use by another process. Last stderr: ${reporterStderr.slice(-300)}`,
+      remediation: `playwright webServer timed out — backend or frontend dev-server failed to bind port. Two timeouts apply: (a) runner pre-flight wait was ${runnerWaitS}s; (b) playwright.config.ts webServer.timeout governs playwright's own spawn-and-wait (typically 120s default; bug-067 recommends 180s for Strategy C real-db projects). The fact you see this means (b) fired. Inspect last stderr for the exit reason; common causes: (1) backend module import error (check apps/api/src/plugins/*.ts); (2) database connection failure (DATABASE_URL/DATABASE_PATH unset or file missing); (3) port already in use by another process; (4) Prisma migrate-on-boot exceeds the timeout for Strategy C projects — bump playwright.config.ts webServer.timeout to 180_000. Last stderr: ${reporterStderr.slice(-300)}`,
       browser,
       flows,
       devServerStartedMs,

@@ -250,6 +250,116 @@ describe("runParityVerify — default screen-list loader", () => {
     expect(seen.sort()).toEqual(["home", "settings"]);
     expect(result.screensChecked).toBe(2);
   });
+
+  // bug-066 (2026-05-07) — verifier reads routePattern from screens-manifest
+  // for accurate URL resolution. Without this, `/${id}` heuristic produces
+  // false-positives on Next.js projects with route groups + dynamic routes
+  // (empirical: reading-log-01 4/5 shell-stripping bugs were 404-page
+  // false-positives).
+  it("propagates routePattern from screens-manifest.json to ScreenEntry", async () => {
+    const dir = join(projectDir, "docs/screens/webapp");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "books-list.html"), "<html></html>");
+    writeFileSync(join(dir, "book-detail.html"), "<html></html>");
+    writeFileSync(join(dir, "settings.html"), "<html></html>");
+    writeFileSync(
+      join(projectDir, "docs/screens-manifest.json"),
+      JSON.stringify({
+        version: "1.0",
+        files: [
+          {
+            path: "docs/screens/webapp/books-list.html",
+            platform: "webapp",
+            screenId: "books-list",
+            routePattern: "/",
+          },
+          {
+            path: "docs/screens/webapp/book-detail.html",
+            platform: "webapp",
+            screenId: "book-detail",
+            routePattern: "/books/[id]",
+          },
+          {
+            path: "docs/screens/webapp/settings.html",
+            platform: "webapp",
+            screenId: "settings",
+            routePattern: "/settings",
+          },
+        ],
+      }),
+    );
+
+    const captured: Array<{ id: string; routePattern?: string }> = [];
+    const result = await runParityVerify({
+      projectDir,
+      compareScreen: async ({ screen }) => {
+        captured.push({
+          id: screen.id,
+          ...(screen.routePattern !== undefined
+            ? { routePattern: screen.routePattern }
+            : {}),
+        });
+        return { divergences: [], warnings: [] };
+      },
+    });
+    expect(result.screensChecked).toBe(3);
+    const byId = Object.fromEntries(
+      captured.map((c) => [c.id, c.routePattern]),
+    );
+    expect(byId["books-list"]).toBe("/");
+    expect(byId["book-detail"]).toBe("/books/[id]");
+    expect(byId["settings"]).toBe("/settings");
+  });
+
+  it("falls back to /${id} heuristic when routePattern is absent (legacy projects)", async () => {
+    const dir = join(projectDir, "docs/screens/webapp");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "about.html"), "<html></html>");
+    // No screens-manifest.json on disk (legacy project shape).
+
+    const captured: Array<{ id: string; routePattern?: string }> = [];
+    await runParityVerify({
+      projectDir,
+      compareScreen: async ({ screen }) => {
+        captured.push({
+          id: screen.id,
+          ...(screen.routePattern !== undefined
+            ? { routePattern: screen.routePattern }
+            : {}),
+        });
+        return { divergences: [], warnings: [] };
+      },
+    });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.routePattern).toBeUndefined();
+  });
+
+  it("ignores malformed manifest gracefully (fall through to heuristic)", async () => {
+    const dir = join(projectDir, "docs/screens/webapp");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "home.html"), "<html></html>");
+    writeFileSync(
+      join(projectDir, "docs/screens-manifest.json"),
+      "this is not valid json {{{",
+    );
+
+    const captured: Array<{ id: string; routePattern?: string }> = [];
+    await runParityVerify({
+      projectDir,
+      compareScreen: async ({ screen }) => {
+        captured.push({
+          id: screen.id,
+          ...(screen.routePattern !== undefined
+            ? { routePattern: screen.routePattern }
+            : {}),
+        });
+        return { divergences: [], warnings: [] };
+      },
+    });
+    expect(captured).toHaveLength(1);
+    // Heuristic fallback — no routePattern set
+    expect(captured[0]?.routePattern).toBeUndefined();
+  });
 });
 
 // ─── mergeByScreenPattern unit tests ───────────────────────────────────────

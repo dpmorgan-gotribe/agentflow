@@ -106,6 +106,20 @@ export interface ScreenEntry {
   platform: string;
   /** Absolute path to the mockup HTML on disk. */
   mockupPath: string;
+  /**
+   * bug-066 (2026-05-07) — built-app URL pattern from screens-manifest.json.
+   * Authoritative when present (overrides the `/${id}` heuristic in
+   * `resolveBuiltUrl`). Supports static paths ("/", "/settings", "/tags")
+   * AND dynamic segments ("/books/[id]") which the verifier substitutes
+   * with fixture values per the route-fixture map.
+   *
+   * Without this field, the verifier falls back to `/${id}` which produces
+   * false-positives for projects with route groups, dynamic routes, or
+   * alias paths (empirical: reading-log-01 bk0g13gk1 — 4/5 shell-stripping
+   * bugs were 100% false-positives because /books-list, /book-detail,
+   * /tags-manage routes don't exist; actual routes are /, /books/[id], /tags).
+   */
+  routePattern?: string;
 }
 
 export interface ScreenComparisonResult {
@@ -122,15 +136,49 @@ function defaultLoadScreenList(projectDir: string): Promise<ScreenEntry[]> {
   const out: ScreenEntry[] = [];
   const dir = join(projectDir, "docs/screens/webapp");
   if (!existsSync(dir)) return Promise.resolve(out);
+
+  // bug-066 (2026-05-07) — load routePattern overlay from screens-manifest.json.
+  // The manifest's files[] entries SHOULD include a routePattern field per
+  // the pm SKILL.md bug-025 contract. When present, parity-verify uses it
+  // for URL resolution; absent → fallback to `/${id}` heuristic + warning.
+  const routePatternByScreen = new Map<string, string>();
+  const manifestPath = join(projectDir, "docs/screens-manifest.json");
+  if (existsSync(manifestPath)) {
+    try {
+      const raw = readFileSync(manifestPath, "utf8");
+      const manifest = JSON.parse(raw) as {
+        files?: Array<{
+          platform?: string;
+          screenId?: string;
+          routePattern?: string;
+        }>;
+      };
+      for (const f of manifest.files ?? []) {
+        if (
+          f.platform === "webapp" &&
+          typeof f.screenId === "string" &&
+          typeof f.routePattern === "string" &&
+          f.routePattern.length > 0
+        ) {
+          routePatternByScreen.set(f.screenId, f.routePattern);
+        }
+      }
+    } catch {
+      /* malformed manifest — fall through to heuristic */
+    }
+  }
+
   for (const file of readdirSync(dir)) {
     if (!file.endsWith(".html")) continue;
     if (file.startsWith("_")) continue;
     if (file === "index.html") continue;
     const id = file.replace(/\.html$/, "");
+    const routePattern = routePatternByScreen.get(id);
     out.push({
       id,
       platform: "webapp",
       mockupPath: join(dir, file),
+      ...(routePattern !== undefined ? { routePattern } : {}),
     });
   }
   return Promise.resolve(out);
@@ -239,10 +287,26 @@ function resolveBuiltUrl(
   ctx: { devServerUrl?: string; screenUrlMap?: Record<string, string> },
 ): { url: string } | { skipReason: string } {
   const base = (ctx.devServerUrl ?? "http://localhost:3000").replace(/\/$/, "");
+
+  // 1. Explicit ctx.screenUrlMap (test seam / operator override) — highest priority
   const explicit = ctx.screenUrlMap?.[screen.id];
   if (explicit) return { url: `${base}${explicit}` };
+
+  // 2. bug-066 (2026-05-07) — manifest-supplied routePattern. When the
+  // /screens skill has populated screens-manifest.json with a routePattern
+  // for this screen, use it. Substitute dynamic segments (`[id]`,
+  // `[slug]`) with placeholder fixture values so the URL resolves to a
+  // real route. Operators can refine via screenUrlMap if a screen needs
+  // a specific fixture (e.g. "/books/abc-123" instead of "/books/sample").
+  if (screen.routePattern) {
+    const url = substituteDynamicSegments(screen.routePattern);
+    return { url: `${base}${url}` };
+  }
+
+  // 3. "home" alias for "/"
   if (screen.id === "home") return { url: `${base}/` };
-  // Heuristic: dynamic-route mockups typically have ids with sub-states
+
+  // 4. Heuristic: dynamic-route mockups typically have ids with sub-states
   // ("compare-half-empty", "report-loading", "report-network-error",
   // "report-not-found", "report-private", "report-rate-limited"). They
   // need fixture URLs to render meaningfully.
@@ -257,11 +321,33 @@ function resolveBuiltUrl(
     screen.id === "compare"
   ) {
     return {
-      skipReason: `dynamic route — needs ctx.screenUrlMap['${screen.id}'] (e.g. '/report/facebook/react')`,
+      skipReason: `dynamic route — needs ctx.screenUrlMap['${screen.id}'] OR routePattern in screens-manifest.json (e.g. '/report/[owner]/[repo]')`,
     };
   }
-  // Static-route fallback: `/{id}` (e.g. "about" → "/about").
+  // 5. Static-route fallback: `/{id}` (e.g. "about" → "/about").
+  // bug-066: emit a warning at the loadScreenList layer when this fires for
+  // a project that has manifest entries — likely a routePattern-missing
+  // omission.
   return { url: `${base}/${screen.id}` };
+}
+
+/**
+ * bug-066 (2026-05-07) — substitute dynamic-segment placeholders in a
+ * routePattern with fixture values. Next.js convention: `[name]` for
+ * required segments, `[[name]]` for optional, `[...name]` for catch-all.
+ *
+ * MVP fixture: replace `[id]` → "1" (the first row of any seeded baseline),
+ * `[slug]` → "sample", everything else → the segment name itself. This is
+ * "good enough" for parity-verify (which checks DOM structure, not data
+ * specifics) but operators wanting precise fixtures can override via
+ * `ctx.screenUrlMap`.
+ */
+function substituteDynamicSegments(pattern: string): string {
+  return pattern.replace(/\[(?:\.\.\.)?([\w-]+)\]/g, (_, name: string) => {
+    if (name === "id") return "1";
+    if (name === "slug") return "sample";
+    return name;
+  });
 }
 
 async function defaultCompareScreen({
