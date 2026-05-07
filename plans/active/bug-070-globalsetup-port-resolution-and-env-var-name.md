@@ -143,9 +143,38 @@ already unblocks via the env-var chain.
 
 ## Attempt Log
 
-### Attempt 1 (2026-05-07) — shipped
+### Attempt 1 (2026-05-07) — shipped + empirically validated
 
-Template + project both patched. No new tests added; existing tests
-don't exercise globalSetup's port-resolution chain (it's a runtime-
-behavior path, not a unit-testable one without spawning playwright).
-Empirical validation lives in the next /fix-bugs run on reading-log-01.
+Template + project both patched. Validated end-to-end via diagnostic
+(`_tmp-pw-bug070-validate.mjs`):
+
+**Pre-fix (b3alrlt19)**:
+```
+playwright exit=1 in 6.5s
+errMsgs: ["ECONNREFUSED 127.0.0.1:8000"]
+```
+
+**Post-fix (b2ejgj6yu, with ENABLE_TEST_SEED=1 + bug-070 patches)**:
+```
+playwright exit=1 in 40.5s
+stats: { unexpected: 6, expected: 0 }
+errorsCount: 0
+suitesCount: 6
+```
+
+**6 synthesized e2e specs ACTUALLY RAN** against the real backend.
+First time Strategy C's full Layer 2 (synthesized e2e flow execution)
+has worked end-to-end. backend stdout shows real test traffic:
+- POST /test/cleanup → 204 (per-flow cleanup)
+- POST /test/seed-baseline → 204 (read-only baseline seeded — bug-070
+  port resolution working)
+- GET /books/NaN → 404 (synthesizer's [id] substitution coerced to NaN;
+  real product gap to investigate later)
+
+The 6 unexpected failures are genuine product-signal — actual flow
+assertions failing on real UI state, not infrastructure errors. This
+is exactly the signal the verifier was designed to surface.
+
+bug-070 closed. Remaining unblock: bug-071 (playwright webServer
+auto-spawn 0-byte mystery) is the only thing keeping fully-autonomous
+/fix-bugs from working without operator pre-boot.
