@@ -152,14 +152,19 @@ export async function runSynthesizedFlows({
   }
 
   // ── Step 3: spawn dev server + wait for ready ─────────────────────────────
-  // bug-052 (2026-05-03): if playwright.config.ts has a `webServer:` block
-  // (mandatory for Strategy C per bug-041), skip the runner's own dev-server
-  // boot — Playwright handles it via the webServer command which runs the
-  // multi-tier orchestrator (`node scripts/dev.mjs`). The runner's legacy
-  // boot only spawns `pnpm -C apps/web dev` (frontend only), which on
-  // multi-tier projects leaves the backend unbooted → `reuseExistingServer:
-  // true` makes Playwright skip its own webServer boot → global-setup fails
-  // because backend is unreachable → tests never run, runner returns 0/0/0.
+  // bug-071 fix (2026-05-07): when `baseUrlOverride` is provided, the
+  // ORCHESTRATOR has already pre-booted the dev-server via
+  // orchestrator/src/dev-server.ts → bootDevServer (which sets
+  // ENABLE_TEST_SEED=1 + co-boots backend with port coordination). Skip
+  // own spawn AND the legacy "defer to playwright.config.ts webServer
+  // block" path — playwright's `reuseExistingServer:!CI` will see the
+  // running servers + skip its own webServer spawn (the path that
+  // 0-bytes for 180s on Windows under nested pnpm shells).
+  //
+  // bug-052 (2026-05-03) — legacy path retained for backward-compat
+  // (operators running this script standalone without a pre-booted
+  // server still hit the deferring-to-webServer-block path; it works for
+  // small test projects, fails on Strategy C in autonomous mode).
   const baseUrl = baseUrlOverride ?? readBaseUrlFromConfig(cfgPath, fsApi);
   let devProc = null;
   let devServerStartedMs = 0;
@@ -170,7 +175,29 @@ export async function runSynthesizedFlows({
     cfgText = "";
   }
   const hasWebServerBlock = /\bwebServer\s*:/.test(cfgText);
-  if (!hasWebServerBlock) {
+  if (baseUrlOverride) {
+    // Pre-booted by caller — confirm the server is actually responding
+    // before we hand off to playwright. Cheap (~1s when up; up to 10s if
+    // there's a transient hiccup). Skips the bug-052 deferring-warning
+    // since we know servers are up.
+    warnings.push(
+      `dev-server: pre-booted by caller at ${baseUrlOverride} (bug-071 fix path — playwright will reuseExistingServer)`,
+    );
+    try {
+      await waitForDevServer(baseUrl, 10_000, httpGet, now, pollIntervalMs);
+    } catch (err) {
+      return {
+        ok: false,
+        reason: "dev-server-not-ready",
+        remediation: `pre-booted dev-server at ${baseUrl} did not respond: ${err.message}. Caller passed baseUrlOverride but the server appears to have died. Check orchestrator's bootDevServer logs.`,
+        browser,
+        flows: { passed: [], failed: [], skipped: [] },
+        devServerStartedMs: 0,
+        totalRunMs: now() - startedAt,
+        warnings,
+      };
+    }
+  } else if (!hasWebServerBlock) {
     const devServerStart = now();
     devProc = spawnDevServer(spawnFn, projectDir);
     try {
@@ -197,7 +224,7 @@ export async function runSynthesizedFlows({
     }
   } else {
     warnings.push(
-      "dev-server: deferring to playwright.config.ts webServer block (per bug-041 Phase B)",
+      "dev-server: deferring to playwright.config.ts webServer block (per bug-041 Phase B; trips bug-071 in autonomous Strategy C — pass baseUrlOverride to bypass)",
     );
   }
 

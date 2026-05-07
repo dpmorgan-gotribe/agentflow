@@ -108,7 +108,14 @@ function spawnBackend() {
     detached: !IS_WIN,
     windowsHide: true,
     shell: IS_WIN,
-    env: { ...MERGED_ENV, PORT: String(BACKEND_PORT) },
+    // bug-071 sub-fix D (2026-05-07) — set ENABLE_TEST_SEED=1 by default in
+    // dev.mjs so operators who manually boot for review can subsequently run
+    // the verifier (synth-e2e specs need /test/seed-baseline).
+    env: {
+      ...MERGED_ENV,
+      PORT: String(BACKEND_PORT),
+      ENABLE_TEST_SEED: MERGED_ENV.ENABLE_TEST_SEED ?? "1",
+    },
   });
   if (!IS_WIN && typeof child.unref === "function") child.unref();
   child.on("error", (err) => {

@@ -115,7 +115,90 @@ suite in seconds.
 
 ## Attempt Log
 
-(empty — drafted; deferred pending bug-070 empirical re-validation. If
-bug-070 alone unblocks Strategy C via pre-booted backend, bug-071 is a
-lower-priority polish item. If Strategy C still wedges in fully-
-autonomous /fix-bugs runs, bug-071 becomes urgent.)
+### 2026-05-07 — Empirical reframing + fix architecture
+
+After investigate-022 (factory-verifier missed 8 review bugs on reading-
+log-01), promoted bug-071 from deferred → urgent. The `synth-e2e wedge`
+explains 5 of 8 review-bug misses (62.5% of the gap). The factory's
+behavior tier (synthesized e2e specs) is dead-on-arrival in autonomous
+mode because every dispatch hits this 0-byte spawn issue.
+
+**Empirical isolation test (reading-log-01 master @ 9d28a0d, 2026-05-07)**:
+
+Manual-bypass run reproduced the working path:
+
+```
+1. Boot backend with ENABLE_TEST_SEED=1:
+     `pnpm --filter @repo/api dev` (env: ENABLE_TEST_SEED=1)
+2. Boot frontend (already up via `node scripts/dev.mjs`)
+3. From apps/web/, run:
+     `pnpm exec playwright test e2e/synthesized/ --project=chromium`
+```
+
+Result: **all 6 synth-e2e specs RAN in 3 minutes**. 6 failures with real
+locator-not-found errors at interaction 2-3 — exactly the kinds of
+bugs the verifier was designed to surface (e.g. "role=link[name=/The
+Overstory/i]" not found ↔ user's manually-discovered `/books/NaN`
+bug; "role=button[name='Rename tag']" not found ↔ user's manually-
+discovered tag-rename-broken bug).
+
+**Wedge isolated to the SPAWN.** When playwright (or its webServer
+block, or run-synthesized-flows.mjs's spawnDevServer) tries to spawn
+the dev server fresh, 0 bytes for 180s. When the dev server is
+ALREADY running and playwright sees it via `reuseExistingServer:true`,
+all 6 specs run.
+
+**Sister findings during isolation test**:
+
+1. **`scripts/dev.mjs` doesn't set ENABLE_TEST_SEED=1** — operators
+   manually booting for review can't subsequently run the verifier
+   because `/test/seed-baseline` returns 404 (route gated by env var).
+   The orchestrator's `dev-server.ts` line 230 sets it correctly for
+   verifier-mode, but the operator-mode `dev.mjs` doesn't.
+
+2. **`reuseExistingServer` health-check is too weak** —
+   playwright.config.ts probes `/health` for reuse. A pre-booted server
+   without ENABLE_TEST_SEED=1 PASSES `/health` but lacks `/test/seed-baseline`.
+   Playwright reuses it silently → globalSetup fails → 0 tests run.
+   Should probe `/test/seed-baseline` (or a similarly gated endpoint)
+   for Strategy C reuse.
+
+### Fix architecture (shipping)
+
+**Main fix — orchestrator pre-boots dev-server before synth-e2e**:
+
+- `orchestrator/src/build-to-spec-verify.ts` already calls
+  `parityVerify({ autoBootDevServer: true })` which uses `dev-server.ts`'s
+  `bootDevServer()` (works ✓ — emits "auto-booted at http://localhost:3000
+  (took 7367ms)" empirically).
+- Currently `runFlows` doesn't get a pre-booted URL — it shells to
+  `scripts/run-synthesized-flows.mjs` which detects `webServer:` block in
+  playwright.config.ts and DEFERS to playwright's auto-spawn (which 0-bytes).
+- Fix: hoist the dev-server boot to the orchestrator-level, share the
+  URL across `runFlows` AND `parityVerify`, teardown at end.
+
+**Sub-fix D — `dev.mjs` templates set ENABLE_TEST_SEED=1**:
+
+All 4 backend stack variants under
+`.claude/templates/dev-multi-tier-*.mjs.template`. Two-line change per
+template — set `ENABLE_TEST_SEED: "1"` in the backend spawn env.
+
+**Sub-fix E (deferred)**: enrich playwright.config.ts's
+`reuseExistingServer` health probe to verify `/test/seed-baseline`
+when Strategy C. Defer pending main-fix empirical confirmation; the
+main fix bypasses webServer block entirely so reuse-health-check is
+moot in the orchestrator path.
+
+### Cross-references
+
+- `investigate-019` H6 — orthogonal MCP-keepalive issue affecting
+  agent dispatches (M-D shipped 76d29a5). Not the same as bug-071's
+  webServer issue.
+- `investigate-022` — meta-analysis showing 5 of 8 review-bug misses
+  trace to bug-071's wedge. THIS plan is the ship surface for that
+  finding.
+- `bug-070` — sister wedge issue at globalSetup port resolution
+  (shipped). bug-071 is the LAYER ABOVE — even if globalSetup works,
+  the dev-server has to be reachable first.
+- `bug-072` — envelope-fallback for failure-HTML capture (shipped
+  335642f); makes bug-071's eventual fix-cycle output debuggable.

@@ -12,7 +12,12 @@ import {
   type ParityDivergence,
 } from "@repo/orchestrator-contracts";
 import { runParityVerify, type ParityVerifyContext } from "./parity-verify.js";
-import { readPersistenceLayerSlug } from "./dev-server.js";
+import {
+  bootDevServer,
+  readPersistenceLayerSlug,
+  teardownDevServer,
+  type DevServerHandle,
+} from "./dev-server.js";
 
 /**
  * feat-022 Phase 4 — orchestrator-side wrapper for the
@@ -322,6 +327,43 @@ export async function runBuildToSpecVerify(
     );
   }
 
+  // ── bug-071 fix (2026-05-07): pre-boot dev-server ONCE for both runFlows
+  // ── and parityVerify, share URL, teardown at end. ────────────────────────
+  //
+  // Pre-fix architecture: parityVerify auto-booted (works ✓) but tore down
+  // before runFlows; runFlows shelled to scripts/run-synthesized-flows.mjs
+  // which detected playwright.config.ts's `webServer:` block and DEFERRED
+  // to playwright's auto-spawn (which 0-bytes for 180s on Windows under
+  // nested pnpm shells — the actual bug-071). Net: synth-e2e tier was dead-
+  // on-arrival; investigate-022 traced 5 of 8 manually-found review bugs
+  // back to this wedge.
+  //
+  // Post-fix: orchestrator hoists the dev-server lifecycle. bootDevServer()
+  // ALREADY sets ENABLE_TEST_SEED=1 in the backend env (dev-server.ts:230)
+  // so /test/seed-baseline is reachable. With servers up before playwright
+  // fires, `reuseExistingServer:!CI` (default in playwright.config.ts)
+  // sees them + skips its own webServer spawn. Empirically validated
+  // 2026-05-07: 6 synth-e2e specs run in 3min when servers pre-booted vs.
+  // 0 specs / 180s timeout when playwright spawns fresh.
+  const needsDevServer =
+    (ctx.executeFlows !== false && generatedFiles.length > 0) ||
+    ctx.runParity !== false;
+  let sharedDevServerHandle: DevServerHandle | null = null;
+  if (needsDevServer) {
+    try {
+      const persistenceLayer = readPersistenceLayerSlug(projectDir);
+      const bootTimeoutMs = persistenceLayer === "real-db" ? 180_000 : 60_000;
+      sharedDevServerHandle = await bootDevServer(projectDir, bootTimeoutMs);
+      warnings.push(
+        `dev-server: pre-booted at ${sharedDevServerHandle.baseUrl} (took ${Date.now() - sharedDevServerHandle.startedAtMs}ms)`,
+      );
+    } catch (err) {
+      warnings.push(
+        `dev-server pre-boot failed: ${(err as Error).message}; runFlows + parityVerify will fall back to their own spawn paths (which trip bug-071 on Strategy C — synth-e2e likely 0-tests-run)`,
+      );
+    }
+  }
+
   // ── feat-025 Phase 3: execute synthesized flow specs ─────────────────────
   // Call the runner only when synthesis emitted at least one spec AND
   // executeFlows isn't explicitly disabled. The runner shells out to
@@ -342,6 +384,7 @@ export async function runBuildToSpecVerify(
             runSynthesizedFlows: (args: {
               projectDir: string;
               devServerTimeoutMs?: number;
+              baseUrlOverride?: string;
             }) => Promise<RunFlowsResult>;
           };
           // factoryRoot is unused by the runner (it doesn't shell to other
@@ -358,9 +401,17 @@ export async function runBuildToSpecVerify(
           const persistenceLayer = readPersistenceLayerSlug(pd);
           const devServerTimeoutMs =
             persistenceLayer === "real-db" ? 180_000 : undefined;
+          // bug-071 fix (2026-05-07) — pass pre-booted dev-server URL when
+          // the orchestrator hoisted the boot above runFlows. The runner
+          // detects this + skips its own spawn / playwright-webServer-
+          // deferral path. With servers up, playwright's
+          // `reuseExistingServer:!CI` (default) sees them + skips its own
+          // webServer spawn (which is what 0-bytes for 180s on Windows).
+          const baseUrlOverride = sharedDevServerHandle?.baseUrl;
           return mod.runSynthesizedFlows({
             projectDir: pd,
             ...(devServerTimeoutMs !== undefined ? { devServerTimeoutMs } : {}),
+            ...(baseUrlOverride !== undefined ? { baseUrlOverride } : {}),
           });
         });
       runResult = await runFlows({ projectDir, factoryRoot });
@@ -598,18 +649,40 @@ export async function runBuildToSpecVerify(
   if (ctx.runParity !== false) {
     const parityVerify = ctx.parityVerify ?? runParityVerify;
     try {
-      parity = await parityVerify({
-        projectDir,
-        factoryRoot,
-        // feat-036 — orchestrator-driven build-to-spec-verify auto-boots
-        // the dev server for parity. Operator running parity-verify
-        // standalone with --dev-server-url uses manual mode instead.
-        autoBootDevServer: true,
-      });
+      // bug-071 fix (2026-05-07) — when sharedDevServerHandle is set, pass
+      // its baseUrl to parityVerify (skipping its own auto-boot). When
+      // pre-boot failed (handle null), fall back to the legacy autoBoot
+      // path so parity still gets a server to render against.
+      const parityArgs: ParityVerifyContext = sharedDevServerHandle
+        ? {
+            projectDir,
+            factoryRoot,
+            devServerUrl: sharedDevServerHandle.baseUrl,
+            autoBootDevServer: false,
+          }
+        : {
+            projectDir,
+            factoryRoot,
+            autoBootDevServer: true,
+          };
+      parity = await parityVerify(parityArgs);
       for (const w of parity.warnings) warnings.push(`parity: ${w}`);
     } catch (err) {
       warnings.push(`parity-verify threw: ${(err as Error).message}`);
     }
+  }
+
+  // ── bug-071 fix: teardown the shared dev-server now that runFlows AND
+  // ── parityVerify have both consumed it. ─────────────────────────────
+  if (sharedDevServerHandle) {
+    try {
+      teardownDevServer(sharedDevServerHandle);
+    } catch (err) {
+      warnings.push(
+        `dev-server teardown threw (orphan processes possible): ${(err as Error).message}`,
+      );
+    }
+    sharedDevServerHandle = null;
   }
 
   // Auto-file ONE bug per (screen, pattern) parity divergence — the
