@@ -14,3 +14,6 @@
 20260502-040618-human-finance-track-01-seeding-pipeline-bugs-filed.md
 20260503-014230-human-seeding-pipeline-fix-empirically-validated.md
 20260503-023937-human-synthesizer-hardening-shipped-end-of-day.md
+20260505-222041-human-cost-reduction-stack-shipped-and-validation-project-mid-pipeline.md
+20260506-134403-human-reading-log-01-shipped-and-factory-bugs.md
+20260507-004018-human-investigate-018-021-stack-shipped-and-strategy-c-gaps-found.md

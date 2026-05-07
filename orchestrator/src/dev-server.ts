@@ -318,6 +318,30 @@ function readBackendFrameworkSlug(projectDir: string): string | null {
 }
 
 /**
+ * bug-062 (2026-05-07) — read `persistence_layer` slot from architecture.yaml
+ * to inform Strategy-C-aware behavior. Returns "real-db" | "external-api-only"
+ * | "localStorage" | null. The verifier scales its dev-server-not-ready
+ * timeout based on this — Strategy C (real-db) projects boot Prisma migrations
+ * + DB connect on every dev-server start, routinely exceeding the 60s default.
+ *
+ * Lightweight regex parse mirroring `readBackendFrameworkSlug`. Per
+ * `.claude/skills/architect/SKILL.md §4`, persistence_layer is a canonical
+ * slot in `tooling.stack.persistence_layer:`.
+ */
+export function readPersistenceLayerSlug(projectDir: string): string | null {
+  const archPath = join(projectDir, ".claude", "architecture.yaml");
+  if (!existsSync(archPath)) return null;
+  try {
+    const text = readFileSync(archPath, "utf8");
+    const m = text.match(/^\s*persistence_layer:\s*"?([\w-]+)"?\s*(?:#.*)?$/m);
+    if (!m || !m[1]) return null;
+    return m[1];
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve the backend port for `<projectDir>/apps/api/`. Precedence (bug-038
  * Phase A — 2026-05-02 — extends the legacy 3-tier chain):
  *

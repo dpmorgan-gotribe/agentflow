@@ -375,3 +375,77 @@ describe("waitForDevServer — child-exit watchdog (feat-056 Gap B)", () => {
     expect(thrown!.message).not.toContain("child process exited prematurely");
   });
 });
+
+// bug-062 (2026-05-07) — readPersistenceLayerSlug is the discriminator that
+// lets the verifier extend its dev-server-not-ready timeout for Strategy C
+// (real-db) projects. Empirical motivator: reading-log-01 first ship — Prisma
+// migrate-on-boot routinely pushes backend cold-boot past the 60s default.
+describe("readPersistenceLayerSlug (bug-062)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "bug-062-arch-"));
+    mkdirSync(join(dir, ".claude"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns 'real-db' for Strategy C projects (reading-log-01 shape)", async () => {
+    writeFileSync(
+      join(dir, ".claude", "architecture.yaml"),
+      [
+        "tooling:",
+        "  stack:",
+        "    backend_framework: node-fastify",
+        "    persistence_layer: real-db",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const { readPersistenceLayerSlug } = await import("../src/dev-server.js");
+    expect(readPersistenceLayerSlug(dir)).toBe("real-db");
+  });
+
+  it("returns 'external-api-only' for Strategy D projects (RHD-01 shape)", async () => {
+    writeFileSync(
+      join(dir, ".claude", "architecture.yaml"),
+      [
+        "tooling:",
+        "  stack:",
+        "    backend_framework: node-fastify",
+        "    persistence_layer: external-api-only",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const { readPersistenceLayerSlug } = await import("../src/dev-server.js");
+    expect(readPersistenceLayerSlug(dir)).toBe("external-api-only");
+  });
+
+  it("returns 'localStorage' for Strategy A projects (kanban-09 shape)", async () => {
+    writeFileSync(
+      join(dir, ".claude", "architecture.yaml"),
+      "tooling:\n  stack:\n    persistence_layer: localStorage\n",
+      "utf8",
+    );
+    const { readPersistenceLayerSlug } = await import("../src/dev-server.js");
+    expect(readPersistenceLayerSlug(dir)).toBe("localStorage");
+  });
+
+  it("returns null when architecture.yaml is missing (legacy projects)", async () => {
+    const { readPersistenceLayerSlug } = await import("../src/dev-server.js");
+    expect(readPersistenceLayerSlug(dir)).toBeNull();
+  });
+
+  it("returns null when persistence_layer field is absent", async () => {
+    writeFileSync(
+      join(dir, ".claude", "architecture.yaml"),
+      "tooling:\n  stack:\n    backend_framework: node-fastify\n",
+      "utf8",
+    );
+    const { readPersistenceLayerSlug } = await import("../src/dev-server.js");
+    expect(readPersistenceLayerSlug(dir)).toBeNull();
+  });
+});

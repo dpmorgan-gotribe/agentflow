@@ -12,6 +12,7 @@ import {
   type ParityDivergence,
 } from "@repo/orchestrator-contracts";
 import { runParityVerify, type ParityVerifyContext } from "./parity-verify.js";
+import { readPersistenceLayerSlug } from "./dev-server.js";
 
 /**
  * feat-022 Phase 4 — orchestrator-side wrapper for the
@@ -340,12 +341,27 @@ export async function runBuildToSpecVerify(
           const mod = (await import(specifier)) as unknown as {
             runSynthesizedFlows: (args: {
               projectDir: string;
+              devServerTimeoutMs?: number;
             }) => Promise<RunFlowsResult>;
           };
           // factoryRoot is unused by the runner (it doesn't shell to other
           // factory scripts) but we accept it for symmetry with reach/synth.
           void fr;
-          return mod.runSynthesizedFlows({ projectDir: pd });
+          // bug-062 (2026-05-07) — extend dev-server-not-ready timeout from
+          // 60s default to 180s for Strategy C (real-db) projects. Empirical
+          // motivator: reading-log-01 (first Strategy C ship) backend cold-
+          // boot routinely exceeds 60s on Windows because Prisma migrate-on-
+          // boot adds 5-15s + pnpm shell adds 3-5s + fastify init adds 2-5s.
+          // 60s default fires before /health responds → 0 e2e tests run →
+          // behavioral verification layer blocked. Strategy A/D projects
+          // keep the 60s default since they don't boot a real backend.
+          const persistenceLayer = readPersistenceLayerSlug(pd);
+          const devServerTimeoutMs =
+            persistenceLayer === "real-db" ? 180_000 : undefined;
+          return mod.runSynthesizedFlows({
+            projectDir: pd,
+            ...(devServerTimeoutMs !== undefined ? { devServerTimeoutMs } : {}),
+          });
         });
       runResult = await runFlows({ projectDir, factoryRoot });
     } catch (err) {
