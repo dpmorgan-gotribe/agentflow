@@ -148,11 +148,69 @@ When an edge-case test fails AND the failure looks like a real bug (matches the 
 
 If the failing test requires interpretive latitude to call "correct behavior" — that's test-authoring noise. Adjust the test, don't flag.
 
+### Anti-patterns that DISQUALIFY interpretive-latitude excuse — investigate-023
+
+The "interpretive latitude" carve-out is for test-authoring noise (selector
+ambiguity, async-timing races, fixture-naming nits). It is NOT a license
+to mask product bugs by reshaping the test until it passes.
+
+**The following 6 anti-patterns DISQUALIFY interpretive latitude. If your
+test-fix iteration includes ANY of them, you MUST flag as
+`genuineProductBugs[]` instead.** The post-tester diff audit
+(M-D, `orchestrator/src/tester-diff-audit.ts`) detects these mechanically
+and rejects the tester's "test fixed" outcome when they appear without a
+corresponding flag.
+
+1. **Seed-data shape manipulation** — injecting fixtures whose ID / email /
+   format differs from production-realistic format. Example (the
+   investigate-023 smoking gun): hardcoding `const BOOK_ID = "1001"`
+   (numeric string) when production IDs are CUIDs (`cmovsn7vw...`). If the
+   build's `Number(id)` chokes on real CUIDs but works on numeric strings,
+   that's a product bug — flag it. Don't inject fake numeric IDs.
+
+2. **URL substitution to match the build** — rewriting the spec's expected
+   URL to match what the build emits when the build's URL is wrong per
+   spec. Example: the spec asserts the test should land on `/books/<id>`
+   after creating a book, but the build redirects to `/books`; tester
+   "corrects" the spec to expect `/books`. Wrong — flag the redirect bug.
+
+3. **Assertion loosening** — weakening `expect(x).toBe(y)` to
+   `expect(x).toBeDefined()` or `expect(x).toBeTruthy()` because the build
+   emits an unexpected value. The original assertion was correct; the
+   build's value is the bug. Flag it.
+
+4. **Removed assertions** — deleting `expect()` calls entirely when the
+   build can't satisfy them. If the spec had an assertion, that assertion
+   represents intended behavior. Removing it = masking the gap. Flag it.
+
+5. **Long-sleep race workarounds** — adding `page.waitForTimeout(N)` with
+   N > 1000ms (or similar pause primitives) to make a flaky test stable.
+   If the test races a product timing bug, the bug is the race, not the
+   test's lack of patience. Flag it. (Sleeps ≤ 1000ms for genuine async
+   settle are fine.)
+
+6. **Type-coercion fixtures** — adding `Number(...)` / `String(...)` /
+   `parseInt(...)` / similar conversion logic specifically to make the
+   build's incorrect type handling work. If the build passes a CUID where
+   a number is expected (or vice versa), that's a type bug — flag it.
+
+**Empirical motivator**: reading-log-01 /fix-bugs run 2026-05-07
+($35.63, 6h 7m, 17-of-18 reported as "resolved"). Manual review surfaced
+9+ bugs that map directly to "resolved" entries. Smoking gun was commit
+b83e39a (flow-3 spec): tester hardcoded `BOOK_ID = "1001"` into seed
+fixtures + literally documented "Numeric-string ID so the detail page's
+Number(id) conversion works correctly" — instead of flagging the
+Number(id)-on-CUID bug. User-visible result: real CUID-based deletes
+return 400 in production. ~50% of the bug-fix-loop's "resolved" count
+was empty (test passed, no product fix).
+
 ### Cross-references
 
 - `.claude/agents/tester.md` §Hard constraint — primary enforcement surface (system prompt)
 - `.claude/skills/tester/SKILL.md` §Hard constraint — skill-driven dispatch context mirror
 - `plans/archive/bug-024-tester-modifies-source.md` — the bug that motivated promoting this from guidance to constraint
+- `plans/active/investigate-023-tester-prefers-spec-fixes-over-flagging-product-bugs.md` — the investigation that surfaced the 6-anti-pattern checklist
+- `orchestrator/src/tester-diff-audit.ts` (M-D) — mechanical post-tester audit that detects + rejects these anti-patterns
 
 ## E2E data-seeding strategy (feat-038 Phase 0)
 

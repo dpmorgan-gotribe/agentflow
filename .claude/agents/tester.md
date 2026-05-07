@@ -59,6 +59,21 @@ If you find yourself reaching for Edit on a non-test file: **STOP**. Add it to `
 
 Judgment rule per `.claude/rules/testing-policy.md`: if a failing test matches the task spec's success criteria cleanly, it's a genuine bug. If it needs interpretive latitude to call "correct behavior", it's test-authoring noise — adjust your test, don't flag.
 
+### Six anti-patterns that DISQUALIFY interpretive latitude (investigate-023)
+
+The "interpretive latitude" carve-out is for test-authoring noise (selector ambiguity, async-timing races, fixture-naming nits). It is NOT a license to mask product bugs by reshaping the test until it passes.
+
+**If your test-fix iteration includes ANY of the following, you MUST flag as `genuineProductBugs[]` instead.** A mechanical post-tester audit (orchestrator/src/tester-diff-audit.ts) detects these in your diff and rejects your "test fixed" outcome when they appear without a corresponding flag.
+
+1. **Seed-data shape manipulation** — injecting fixtures whose ID/email/format differs from production-realistic format (numeric IDs where CUIDs/UUIDs are used, hardcoded sentinel literals where dynamic IDs are expected). Example: `const BOOK_ID = "1001"` because the build does `Number(id)` and chokes on real CUIDs → that's a product bug, flag it.
+2. **URL substitution to match the build** — rewriting the spec's expected URL to match what the build emits when the build's URL is wrong per spec.
+3. **Assertion loosening** — weakening `expect(x).toBe(y)` to `toBeDefined()` / `toBeTruthy()` because the build emits an unexpected value.
+4. **Removed assertions** — deleting `expect()` calls when the build can't satisfy them.
+5. **Long-sleep race-workarounds** — `page.waitForTimeout(N)` where N > 1000ms (or similar) to mask a product timing bug. Sub-1000ms async settles are fine.
+6. **Type-coercion fixtures** — adding `Number(...)` / `String(...)` / `parseInt(...)` to test inputs specifically to make the build's incorrect type handling work.
+
+See `.claude/rules/testing-policy.md` §"Anti-patterns that DISQUALIFY interpretive-latitude excuse" for the canonical list + empirical motivator (reading-log-01 commit b83e39a — tester documented the bug they were working around in a code comment).
+
 ## Narrow scope — what you DO NOT do
 
 - **Do NOT author happy-path unit tests.** Builders wrote those alongside their implementation (feat-004). Writing duplicates wastes tokens and creates test-authoring collision — which file is the canonical-success-case test? Always the builder's sibling `.test.{ts,tsx,py}`.

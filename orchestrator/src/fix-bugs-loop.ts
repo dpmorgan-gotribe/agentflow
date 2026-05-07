@@ -7,6 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import yaml from "js-yaml";
 import {
   BugsYamlSchema,
@@ -913,6 +914,60 @@ function bugPriorityComparator(a: BugEntry, b: BugEntry): number {
  * the suggested integration point so the builder doesn't have to
  * re-derive context from scratch.
  */
+/**
+ * investigate-023 M-D — post-tester anti-pattern audit.
+ *
+ * Wraps `scripts/audit-tester-diff.mjs` (CLI helper that diffs HEAD~1..HEAD
+ * in the worktree + scans for the 6 disqualifying anti-patterns from
+ * `.claude/rules/testing-policy.md §"Anti-patterns that DISQUALIFY
+ * interpretive-latitude excuse"`). Returns the empty array when the
+ * tester's commit is clean OR when the audit script can't be loaded
+ * (graceful degradation — older projects without the script keep
+ * working).
+ *
+ * Empirical anchor: reading-log-01 commit b83e39a (flow-3 spec) — caught
+ * `const BOOK_ID = "1001"` (seed-data-shape) + the tester's own
+ * "Number(id) conversion" comment (type-coercion-fixture). The audit's
+ * exit code 1 + JSON output translate into AntiPatternFinding[].
+ */
+async function auditTesterCommit(worktreeDir: string): Promise<
+  Array<{
+    kind: string;
+    file: string;
+    evidence: string;
+    lineNumber: number;
+    explanation: string;
+  }>
+> {
+  // Resolve scripts/audit-tester-diff.mjs relative to the orchestrator's
+  // factory root. Use pathToFileURL so the dynamic import works on Windows
+  // (raw `file://${path}` produces 2-slash URLs that don't load on Win).
+  const factoryRoot = resolve(__dirname, "..", "..");
+  const scriptPath = resolve(factoryRoot, "scripts", "audit-tester-diff.mjs");
+  if (!existsSync(scriptPath)) return [];
+  try {
+    const mod = (await import(pathToFileURL(scriptPath).href)) as {
+      auditTesterDiffFromGit: (args: {
+        worktreeDir: string;
+        oldRef?: string;
+        newRef?: string;
+      }) => Promise<
+        Array<{
+          kind: string;
+          file: string;
+          evidence: string;
+          lineNumber: number;
+          explanation: string;
+        }>
+      >;
+    };
+    return await mod.auditTesterDiffFromGit({ worktreeDir });
+  } catch {
+    // graceful degradation — audit failure should NOT crash the loop
+    return [];
+  }
+}
+
 function buildRetryContextMessage(bug: BugEntry): string {
   const lines: string[] = [];
   lines.push(`Bug ${bug.id} (iteration ${bug.iteration}): ${bug.summary}`);
@@ -1062,6 +1117,26 @@ async function dispatchAgentsForPatternGroup(args: {
       );
       return { success: false, costUsd, errorLog };
     }
+    // investigate-023 M-D — post-tester anti-pattern audit. When the
+    // tester's diff includes seed-data manipulation, type-coercion
+    // fixtures, etc. (the 6 anti-patterns in
+    // `.claude/rules/testing-policy.md`), reject the "test fixed"
+    // outcome — the failing test was masking a product bug, not test-
+    // authoring noise. Force the loop to retry (which gives the tester
+    // another shot at flagging via genuineProductBugs[]).
+    if (agent === "tester") {
+      const findings = await auditTesterCommit(worktreeCwd);
+      if (findings.length > 0) {
+        errorLog.push(
+          `[tester-anti-pattern-detected] ${findings.length} M-D anti-pattern(s) in tester's diff: ${findings
+            .map((f) => `${f.kind} (${f.file}:${f.lineNumber})`)
+            .join(
+              ", ",
+            )} — see investigate-023; tester should flag genuineProductBugs[] instead of working around the build's bug`,
+        );
+        return { success: false, costUsd, errorLog };
+      }
+    }
   }
   return { success: true, costUsd, errorLog };
 }
@@ -1150,6 +1225,24 @@ async function dispatchAgentsForBug(args: {
         `[${agent}] ${result.errors[syntheticTask.id] ?? "agent did not return success"}`,
       );
       return { success: false, costUsd, errorLog };
+    }
+    // investigate-023 M-D — post-tester anti-pattern audit (per-bug path).
+    // Mirrors the batched-dispatch hook above. Rejects "test fixed"
+    // outcomes when the tester's diff masks a product bug via the 6
+    // disqualifying anti-patterns. Forces the loop to retry the agent
+    // sequence so the tester can flag via genuineProductBugs[] instead.
+    if (agent === "tester") {
+      const findings = await auditTesterCommit(worktreeCwd);
+      if (findings.length > 0) {
+        errorLog.push(
+          `[tester-anti-pattern-detected] ${findings.length} M-D anti-pattern(s) in tester's diff: ${findings
+            .map((f) => `${f.kind} (${f.file}:${f.lineNumber})`)
+            .join(
+              ", ",
+            )} — see investigate-023; tester should flag genuineProductBugs[] instead of working around the build's bug`,
+        );
+        return { success: false, costUsd, errorLog };
+      }
     }
   }
 
