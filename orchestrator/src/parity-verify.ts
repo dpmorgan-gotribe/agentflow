@@ -381,12 +381,18 @@ async function defaultCompareScreen({
 
   // feat-035 Phase A — Playwright as a hard devDep. Dynamic import keeps
   // graceful degradation when chromium binary isn't downloaded yet.
+  type PWPage = {
+    goto: (url: string, opts?: unknown) => Promise<unknown>;
+    setContent: (html: string, opts?: unknown) => Promise<unknown>;
+    content: () => Promise<string>;
+    evaluate: <T>(
+      fn: (...args: unknown[]) => T,
+      ...args: unknown[]
+    ) => Promise<T>;
+  };
   type PWChromium = {
     launch: (opts?: unknown) => Promise<{
-      newPage: (opts?: unknown) => Promise<{
-        goto: (url: string, opts?: unknown) => Promise<unknown>;
-        content: () => Promise<string>;
-      }>;
+      newPage: (opts?: unknown) => Promise<PWPage>;
       close: () => Promise<void>;
     }>;
   };
@@ -405,16 +411,62 @@ async function defaultCompareScreen({
     };
   }
 
-  // feat-035 Phase B — actually render the built page + extract HTML.
+  // feat-035 Phase B + investigate-022 Step 3 — render built page,
+  // capture HTML AND computed-styles snapshot for the same DOM walk so
+  // we can run BOTH the kit-skeleton diff (existing) and the
+  // audit-computed-styles diff (newly wired) against this screen.
   let browser: Awaited<ReturnType<PWChromium["launch"]>> | undefined;
   let builtHtml: string;
+  let builtSnapshot: Record<string, Record<string, string>> = {};
+  let mockupSnapshot: Record<string, Record<string, string>> = {};
+  let computedStyleWarnings: string[] = [];
   try {
     browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage({
+    const builtPage = await browser.newPage({
       viewport: { width: 1440, height: 900 },
     });
-    await page.goto(builtUrl, { waitUntil: "networkidle", timeout: 30_000 });
-    builtHtml = await page.content();
+    await builtPage.goto(builtUrl, {
+      waitUntil: "networkidle",
+      timeout: 30_000,
+    });
+    builtHtml = await builtPage.content();
+    // Capture computed-style snapshot on the rendered built page.
+    try {
+      builtSnapshot = await captureComputedStyleSnapshot(builtPage);
+    } catch (err) {
+      computedStyleWarnings.push(
+        `built computed-style capture failed: ${(err as Error).message}`,
+      );
+    }
+    // Capture mockup snapshot — open a SECOND page, navigate to the
+    // mockup HTML file via file:// URL. setContent() doesn't reliably
+    // load external scripts on a synthesized origin (Tailwind Play CDN
+    // is JIT-compiled in-browser; it needs network access + post-load
+    // time to apply utility classes). file:// URLs give full network
+    // access + treat the document like a real navigation, so the CDN
+    // loads + compiles before networkidle fires. Plus 1000ms post-idle
+    // grace period for Tailwind's JIT to flush styles to the DOM.
+    try {
+      const mockupPage = await browser.newPage({
+        viewport: { width: 1440, height: 900 },
+      });
+      const mockupFileUrl = new URL(
+        `file://${screen.mockupPath.replace(/\\/g, "/")}`,
+      ).href;
+      await mockupPage.goto(mockupFileUrl, {
+        waitUntil: "networkidle",
+        timeout: 15_000,
+      });
+      // Tailwind Play CDN flushes styles asynchronously after networkidle
+      // fires. 1s grace is empirically sufficient on a 6-screen project;
+      // bump to 3s if false-positives surface on slow machines.
+      await new Promise((r) => setTimeout(r, 1000));
+      mockupSnapshot = await captureComputedStyleSnapshot(mockupPage);
+    } catch (err) {
+      computedStyleWarnings.push(
+        `mockup computed-style capture failed: ${(err as Error).message}`,
+      );
+    }
   } catch (err) {
     if (browser) await browser.close().catch(() => {});
     return {
@@ -455,15 +507,168 @@ async function defaultCompareScreen({
     };
   }
 
-  // Run the diff. Each divergence is already shaped as ParityDivergence
-  // (per scripts/diff-kit-skeleton.mjs:299-309).
+  // Run the kit-skeleton diff. Each divergence is already shaped as
+  // ParityDivergence (per scripts/diff-kit-skeleton.mjs:299-309).
   void projectDir; // reserved for future fixture-resolution
   const result = diffAndClassify({
     screenId: screen.id,
     mockupHtml,
     builtHtml,
   });
-  return { divergences: result.divergences ?? [], warnings: [] };
+
+  // ── investigate-022 Step 3 — wire audit-computed-styles ──────────────────
+  // Pre-investigate-022: scripts/audit-computed-styles.mjs existed but was
+  // CLI-only / never invoked by orchestrator. Catches the visual / layout
+  // divergences (sidebar height, header alignment, padding/margin drift,
+  // token drift) that the kit-skeleton differ misses by design (skeleton
+  // walks structural identity; computed-style walks rendered dimensions
+  // + tokens).
+  type AuditAndClassify = (args: {
+    screenId: string;
+    mockupSnapshot: Record<string, Record<string, string>>;
+    builtSnapshot: Record<string, Record<string, string>>;
+  }) => {
+    diff: unknown;
+    divergences: ParityDivergence[];
+  };
+  let styleAuditAndClassify: AuditAndClassify | null = null;
+  try {
+    const scriptUrl = new URL(
+      `file://${factoryRoot.replace(/\\/g, "/")}/scripts/audit-computed-styles.mjs`,
+    ).href;
+    const mod = (await import(scriptUrl)) as unknown as {
+      auditAndClassify: AuditAndClassify;
+    };
+    styleAuditAndClassify = mod.auditAndClassify;
+  } catch (err) {
+    computedStyleWarnings.push(
+      `failed to import audit-computed-styles: ${(err as Error).message}`,
+    );
+  }
+
+  let styleDivergences: ParityDivergence[] = [];
+  if (
+    styleAuditAndClassify !== null &&
+    Object.keys(builtSnapshot).length > 0 &&
+    Object.keys(mockupSnapshot).length > 0
+  ) {
+    try {
+      const styleResult = styleAuditAndClassify({
+        screenId: screen.id,
+        mockupSnapshot,
+        builtSnapshot,
+      });
+      styleDivergences = styleResult.divergences ?? [];
+    } catch (err) {
+      computedStyleWarnings.push(
+        `audit-computed-styles diff threw: ${(err as Error).message}`,
+      );
+    }
+  } else if (styleAuditAndClassify !== null) {
+    // Either snapshot empty — capture failed earlier; warning was already
+    // pushed at capture time. Don't double-warn.
+  }
+
+  return {
+    divergences: [...(result.divergences ?? []), ...styleDivergences],
+    warnings: computedStyleWarnings,
+  };
+}
+
+// ── investigate-022 Step 3 helper — capture computed-style snapshot via
+// page.evaluate(). The snapshot is keyed by an indexed kit-component path
+// matching what diff-kit-skeleton.mjs emits (e.g.
+// "AppShell[0] > AppShellMain[0] > Card[1]"), so the mockup + built
+// snapshots can be diffed property-by-property by selector.
+async function captureComputedStyleSnapshot(page: {
+  evaluate: <T>(
+    fn: (...args: unknown[]) => T,
+    ...args: unknown[]
+  ) => Promise<T>;
+}): Promise<Record<string, Record<string, string>>> {
+  const properties = [
+    "color",
+    "background-color",
+    "border-color",
+    "border-top-color",
+    "border-bottom-color",
+    "font-family",
+    "font-size",
+    "font-weight",
+    "line-height",
+    "letter-spacing",
+    "padding",
+    "padding-top",
+    "padding-right",
+    "padding-bottom",
+    "padding-left",
+    "margin",
+    "margin-top",
+    "margin-right",
+    "margin-bottom",
+    "margin-left",
+    "gap",
+    "row-gap",
+    "column-gap",
+    "border-radius",
+    "border-width",
+    "display",
+    "flex-direction",
+    "justify-content",
+    "align-items",
+    "width",
+    "min-width",
+    "max-width",
+    "height",
+    "min-height",
+    "max-height",
+  ];
+  // The evaluate callback runs in the browser, not Node — `document` /
+  // `window` / `HTMLElement` only exist there. We type-erase to `any`
+  // inside this body since orchestrator's tsconfig doesn't include "dom"
+  // lib (we'd contaminate every other Node.js module that doesn't need
+  // browser globals).
+  return await page.evaluate((props: unknown) => {
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const doc: any = (globalThis as any).document;
+    const win: any = (globalThis as any).window;
+    const propList = props as string[];
+    const out: Record<string, Record<string, string>> = {};
+    const all: any[] = Array.from(doc.querySelectorAll("[data-kit-component]"));
+    const counters = new Map<string, number>();
+    const pathById = new WeakMap<any, string>();
+    for (const el of all) {
+      const kitAncestors: any[] = [];
+      let parent: any = el.parentElement;
+      while (parent) {
+        if (parent.hasAttribute("data-kit-component")) {
+          kitAncestors.push(parent);
+        }
+        parent = parent.parentElement;
+      }
+      kitAncestors.reverse();
+      const ancestorPath = kitAncestors
+        .map((a: any) => pathById.get(a))
+        .filter((p): p is string => Boolean(p))
+        .join(" > ");
+      const component: string =
+        el.getAttribute("data-kit-component") ?? "Unknown";
+      const counterKey = `${ancestorPath}::${component}`;
+      const idx = counters.get(counterKey) ?? 0;
+      counters.set(counterKey, idx + 1);
+      const segment = `${component}[${idx}]`;
+      const fullPath = ancestorPath ? `${ancestorPath} > ${segment}` : segment;
+      pathById.set(el, fullPath);
+      const cs = win.getComputedStyle(el);
+      const styles: Record<string, string> = {};
+      for (const prop of propList) {
+        styles[prop] = cs.getPropertyValue(prop);
+      }
+      out[fullPath] = styles;
+    }
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+    return out;
+  }, properties);
 }
 
 /**

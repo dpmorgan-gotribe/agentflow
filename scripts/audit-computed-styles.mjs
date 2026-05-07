@@ -72,6 +72,15 @@ export const CURATED_PROPERTIES = Object.freeze([
   "flex-direction",
   "justify-content",
   "align-items",
+  // sizing tokens (investigate-022 Step 3 — reading-log-01 bug #3 sidebar
+  // height + bug #7 header alignment surfaced as runtime-only divergences;
+  // catching them requires comparing computed dimensions side-by-side)
+  "width",
+  "min-width",
+  "max-width",
+  "height",
+  "min-height",
+  "max-height",
 ]);
 
 // Per-property tolerance: numeric properties tolerate ±1px drift (rounding
@@ -286,17 +295,38 @@ export function classifyStyleDivergence(screenId, diff) {
     }
   }
 
-  return [...buckets.entries()].map(([pattern, b]) => ({
-    screen: screenId,
-    pattern,
-    detail: {
-      missing: [],
-      extra: [],
-      variantDrift: [],
-      styleDrift: b.styleDrift,
-    },
-    severity: b.severity,
-  }));
+  // investigate-022 Step 3 (2026-05-07) — bound noise via TWO gates:
+  //
+  // (1) Per-bucket cap: limit each (screen, pattern) tuple to top
+  //     MAX_DRIFTS_PER_BUCKET entries. Without this the bug-fix loop
+  //     drowns in token-polish + can't reach behavior fixes.
+  //
+  // (2) Pattern allowlist: token-drift / copy-sizing-drift /
+  //     spacing-token-drift catch tier-2 polish (token-binding tweaks).
+  //     reading-log-01 review-bugs #3 (sidebar height) + #7 (header
+  //     alignment) are layout-regrouping patterns — those use display /
+  //     flex / width / height / min-height props. Ship layout-regrouping
+  //     only for now; re-enable the other 3 patterns when an operator
+  //     opts into a polish pass via env flag.
+  //
+  // Operator override: set AUDIT_COMPUTED_ALL_PATTERNS=1 to ship all 4
+  // patterns (gives full audit coverage at the cost of more bug-plans).
+  const MAX_DRIFTS_PER_BUCKET = 5;
+  const allPatterns = process.env.AUDIT_COMPUTED_ALL_PATTERNS === "1";
+  const PATTERN_ALLOWLIST = new Set(["layout-regrouping"]);
+  return [...buckets.entries()]
+    .filter(([pattern]) => allPatterns || PATTERN_ALLOWLIST.has(pattern))
+    .map(([pattern, b]) => ({
+      screen: screenId,
+      pattern,
+      detail: {
+        missing: [],
+        extra: [],
+        variantDrift: [],
+        styleDrift: b.styleDrift.slice(0, MAX_DRIFTS_PER_BUCKET),
+      },
+      severity: b.severity,
+    }));
 }
 
 /**
