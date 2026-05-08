@@ -104,6 +104,40 @@ const DEFAULT_PIPELINE_MAX_USD = 150;
  * (per-dimension cap or diff-summarization pre-pass) — see bug-037 if
  * filed.
  */
+/**
+ * feat-065-followup (2026-05-08) — Factory-shipped agents that may not
+ * yet be present in operator-managed `~/.claude/models.yaml`. When the
+ * resolver can't find an agent in either project or global YAML, it
+ * checks here first before throwing "No model resolved".
+ *
+ * Precedence (lowest first):
+ *   1. FACTORY_DEFAULT_AGENT_TIERS (this map)
+ *   2. global ~/.claude/models.yaml agents.<name>
+ *   3. project .claude/models.yaml agents.<name>
+ *   4. ANTHROPIC_MODEL env var (highest)
+ *
+ * Add an entry here whenever the factory ships a new agent that isn't
+ * already documented in the canonical `~/.claude/models.yaml` template.
+ * The operator can override the tier/effort here by adding the agent
+ * to their home YAML.
+ *
+ * Empirical motivator: reading-log-02 validation 2026-05-08 — bug-fixer
+ * (feat-064) was added to the factory + project models.yaml but the
+ * operator's home file lacked it. Existing projects with empty
+ * `agents: {}` in their project YAML hit "No model resolved" cascade-
+ * fail.
+ */
+const FACTORY_DEFAULT_AGENT_TIERS: Record<
+  string,
+  { tier?: string; effort?: ModelConfig["effort"] }
+> = {
+  // bug-fixer — narrow-scope patch agent for /fix-bugs loop dispatches
+  // (feat-064). tier:building + effort:medium reflects "narrow-scope
+  // with pre-loaded context" — bug-fixer doesn't need full exploration
+  // depth (the orchestrator's buildBugContextEnvelope supplies it).
+  "bug-fixer": { tier: "building", effort: "medium" },
+};
+
 const DEFAULT_STALL_TIMEOUT_BY_AGENT: Record<string, number | null> = {
   "backend-builder": 25 * 60 * 1000,
   "web-frontend-builder": 25 * 60 * 1000,
@@ -218,7 +252,16 @@ export function readModelConfig(
 
   const globalAgent = globalCfg.agents?.[agentName] ?? {};
   const projectAgent = projectCfg.agents?.[agentName] ?? {};
-  const agent = { ...globalAgent, ...projectAgent };
+  // feat-065-followup (2026-05-08) — `FACTORY_DEFAULT_AGENT_TIERS` is a
+  // hardcoded fallback for agents that ship in the factory but may not be
+  // present in operator-managed `~/.claude/models.yaml` yet (typical for
+  // freshly-introduced agents like bug-fixer). Without this fallback, a
+  // /fix-bugs run on an existing project crashes with "No model resolved"
+  // until the operator manually edits their home file. The fallback is
+  // applied with LOWEST precedence — both project + global YAML override
+  // it. Empirical: reading-log-02 validation 2026-05-08.
+  const factoryDefault = FACTORY_DEFAULT_AGENT_TIERS[agentName] ?? {};
+  const agent = { ...factoryDefault, ...globalAgent, ...projectAgent };
 
   let model: string | undefined;
   if (process.env.ANTHROPIC_MODEL) {

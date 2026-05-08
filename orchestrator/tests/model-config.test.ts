@@ -151,6 +151,44 @@ describe("readModelConfig — missing files", () => {
       readModelConfig("no-such-agent", tmpDir, { globalPath, projectPath }),
     ).toThrow(/No model resolved for agent 'no-such-agent'/);
   });
+
+  it("feat-065-followup: bug-fixer resolves via FACTORY_DEFAULT_AGENT_TIERS even when both YAML files lack the entry", () => {
+    // The motivating scenario: an existing project's models.yaml has
+    // empty `agents: {}` (scaffolded pre-feat-064), and the operator's
+    // ~/.claude/models.yaml also lacks bug-fixer. Pre-feat-065-followup
+    // this hit "No model resolved" + cascade-failed every /fix-bugs
+    // dispatch. Post-followup: factory-default fallback resolves
+    // tier:building → claude-sonnet-4-6.
+    writeFileSync(
+      globalPath,
+      `defaults:\n  building: claude-sonnet-4-6\n  planning: claude-opus-4-7\nagents:\n  analyst: { tier: planning }\n`,
+    );
+    writeFileSync(projectPath, `agents: {}\n`);
+    const cfg = readModelConfig("bug-fixer", tmpDir, {
+      globalPath,
+      projectPath,
+    });
+    expect(cfg.model).toBe("claude-sonnet-4-6");
+    expect(cfg.effort).toBe("medium");
+  });
+
+  it("feat-065-followup: project-level override wins over FACTORY_DEFAULT_AGENT_TIERS", () => {
+    // Operator can override the factory default via project YAML.
+    writeFileSync(
+      globalPath,
+      `defaults:\n  building: claude-sonnet-4-6\n  planning: claude-opus-4-7\n`,
+    );
+    writeFileSync(
+      projectPath,
+      `agents:\n  bug-fixer: { tier: planning, effort: max }\n`,
+    );
+    const cfg = readModelConfig("bug-fixer", tmpDir, {
+      globalPath,
+      projectPath,
+    });
+    expect(cfg.model).toBe("claude-opus-4-7");
+    expect(cfg.effort).toBe("max");
+  });
 });
 
 describe("readBudgetCaps", () => {

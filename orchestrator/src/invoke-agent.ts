@@ -1214,13 +1214,29 @@ async function runLlmAgent(
   cfg: CreateInvokeAgentConfig,
   queryFn: QueryFn,
 ): Promise<InvokeAgentResult> {
-  // bug-010: PM's schema enum (AgentSequenceMember) deliberately includes
-  // agents the factory hasn't shipped yet (e.g., security, devops) — design B
-  // intent per scaffolding/26-039-agent-expert.md. When the orchestrator
-  // hits an unshipped agent, throw vs skip is the difference between
-  // crashing the entire Mode B run vs degrading one feature gracefully.
-  // Mark the dispatched task(s) as completed (NOT failed — failed would
-  // trigger task-retry → exhaust → cascade abort) and surface a warning.
+  // bug-010 (legacy): PM's schema enum (AgentSequenceMember) deliberately
+  // included agents the factory hadn't shipped yet (security, devops) —
+  // design B intent per scaffolding/26-039-agent-expert.md. To avoid
+  // crashing the entire Mode B run when one of those agents was recruited,
+  // missing-config used to mark task COMPLETED + surface a warning.
+  //
+  // feat-064-followup-3 (2026-05-08) — flipped to FAILED. Empirical: with
+  // bug-fixer (feat-064) routing many bug-fix dispatches through a NEW
+  // agent that wasn't yet in the operator's ~/.claude/models.yaml, the
+  // legacy "skip-completed" behavior cascaded:
+  //   1. /fix-bugs dispatches bug-fixer
+  //   2. readModelConfig throws "No model resolved"
+  //   3. legacy path returned `taskStatus: completed`, $0 spend
+  //   4. fix-bugs-loop reported success → empty-merge guard rejected
+  //      (per bug-055) → status:pending → bug-073 convergence detector
+  //      escalated to failed at attempts=2 (wasting 1 retry slot)
+  //   5. Operator saw "all bugs failed" with NO clear signal that the
+  //      root cause was a missing model config
+  //
+  // Returning FAILED makes the missing-config signal explicit + lets the
+  // retry policy + max-attempts handle cascade prevention naturally
+  // (single failed task per attempt, not a runaway). Skip-completed
+  // behavior was designed before retry caps shipped.
   let modelConfig: ModelConfig;
   try {
     modelConfig = readModelConfig(
@@ -1233,13 +1249,17 @@ async function runLlmAgent(
     const reason = `agent '${agent}' not configured: ${msg.split("\n")[0]}`;
     // eslint-disable-next-line no-console
     console.warn(
-      `[runLlmAgent] ${reason}. Skipping ${args.tasks.length} task(s) and continuing agent_sequence.`,
+      `[runLlmAgent] ${reason}. Marking ${args.tasks.length} task(s) failed so the dispatch error propagates to bugs.yaml errorLog / feature retry-cap.`,
     );
-    const skipped: Record<string, "completed" | "failed"> = {};
-    for (const t of args.tasks) skipped[t.id] = "completed";
+    const failed: Record<string, "completed" | "failed"> = {};
+    const errors: Record<string, string> = {};
+    for (const t of args.tasks) {
+      failed[t.id] = "failed";
+      errors[t.id] = reason;
+    }
     return {
-      taskStatus: skipped,
-      errors: {},
+      taskStatus: failed,
+      errors,
       costUsd: 0,
       skippedReason: reason,
       ...(isBuildAgent(agent) ? { lastWritingAgent: agent } : {}),

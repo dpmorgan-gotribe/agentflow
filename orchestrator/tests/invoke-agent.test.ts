@@ -1424,7 +1424,14 @@ describe("invokeAgent — builder missing-task handling", () => {
 // `security` — using `security` in this test would have stopped exercising
 // the skip path the moment bug-011 landed.
 describe("invokeAgent — graceful skip on unshipped agent (bug-010)", () => {
-  it("dispatching unshipped agent → returns completed + skippedReason, no throw", async () => {
+  it("dispatching unshipped agent → returns FAILED + skippedReason, no throw (feat-064-followup-3)", async () => {
+    // bug-010 (legacy): returned `completed` + skippedReason to avoid
+    // crashing the run on unshipped agents. feat-064-followup-3
+    // (2026-05-08) flipped to `failed` after empirical evidence that
+    // the legacy "skip-completed" pattern silently masked missing-config
+    // failures in /fix-bugs (bug-fixer wasn't in operator's
+    // ~/.claude/models.yaml → silent-success → empty-merge guard
+    // caught it but bug-073 convergence detector wasted retry slots).
     const budget = mkBudget();
     const queryFn = makeFakeQuery(() => ({
       subtype: "success",
@@ -1450,10 +1457,11 @@ describe("invokeAgent — graceful skip on unshipped agent (bug-010)", () => {
       tasks: [task1, task2],
     });
     expect(result.taskStatus).toEqual({
-      t1: "completed",
-      t2: "completed",
+      t1: "failed",
+      t2: "failed",
     });
-    expect(result.errors).toEqual({});
+    expect(result.errors.t1).toContain("agent 'xyz-fake-agent' not configured");
+    expect(result.errors.t2).toContain("agent 'xyz-fake-agent' not configured");
     expect(result.costUsd).toBe(0);
     expect(result.skippedReason).toContain(
       "agent 'xyz-fake-agent' not configured",
