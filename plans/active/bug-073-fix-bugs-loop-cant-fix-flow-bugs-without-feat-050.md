@@ -205,6 +205,54 @@ so it's discoverable from the test-policy entry-point too.
 
 ## Attempt Log
 
-(empty — plan filed by human 2026-05-08 mid /fix-bugs run b0e1281c
-hard-pause. Investigation completed in conversation; no code attempts
-yet.)
+### Attempt 1 — 2026-05-08 (Phase B shipped)
+
+**Trigger**: post-pause, with feat-050 audit revealing that Phases
+A+B were already shipped 2026-05-03 and only Phase D was missing.
+Phase B convergence detector ships in parallel as a complement —
+catches "orchestrator hits same wall" failure modes (port collision,
+EBUSY teardown, recurring merge conflicts) that aren't fixed by
+feat-050's manifest-side change.
+
+**Shipped**:
+
+1. `orchestrator/src/fix-bugs-loop.ts` gains 2 helpers:
+   - `detectConvergedFailure(bug)` — returns `{ converged, reason }`
+     by comparing the last 2 errorLog entries for byte-identical OR
+     first-200-char-identical match
+   - `transitionFailedDispatch(bug)` — single source-of-truth state
+     transition: convergence first, then maxAttempts cap, else pending
+2. All 4 escalation sites refactored to call
+   `transitionFailedDispatch`:
+   - sequential-path dispatch failure (line ~1483)
+   - parallel-path open-failed (line ~1715)
+   - parallel-path completed-or-failed not-success (line ~1728)
+   - parallel-path merge-cascade failed (line ~1858)
+3. `orchestrator/tests/fix-bugs-loop.test.ts`:
+   - existing "marks failed after maxAttempts" test updated to use
+     varying error messages (so the test asserts the maxAttempts
+     cap path, not the convergence path)
+   - existing "succeeds within attempt cap" test updated to vary the
+     "first-agent flap" error per attempt
+   - 2 new tests added for convergence detector:
+     - byte-identical errorLog → fails at attempt 2 with bug-073 marker
+     - first-200-char-prefix-identical errorLog → same outcome
+
+**Tests**: `pnpm --filter orchestrator test -- fix-bugs-loop.test.ts`
+56/56 pass.
+
+**Deferred**:
+
+- Phase A (feat-050 ship + Phase D guidance) — actually shipped this
+  same session: feat-050 Phase A+B were already in factory pre-2026-05-08,
+  Phase D shipped 2026-05-08
+- Phase C (project-side recovery for reading-log-02) — manifest
+  re-authored this session; pending /fix-bugs retry validation
+- Phase D (additional `/user-flows-generator` hardening) — covered
+  by feat-050 Phase D
+
+**Validation pending**: re-run /fix-bugs reading-log-02 with new routing
+
+- updated manifest. Expected outcome: flow-failure bugs resolve
+  cleanly per-bug now that specs self-seed required state; convergence
+  detector serves as defense-in-depth for any environmental walls.

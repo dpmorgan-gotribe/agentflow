@@ -144,6 +144,128 @@ cases (e.g. "Save preferences" — a setting toggle that persists — vs.
 "Save to favourites" — a UI bookmark) lean **mutation** to be safe; the
 serial-execution overhead is minor and avoids flaky parallel runs.
 
+#### A.5. Infer `requiredState` per flow (feat-050)
+
+`seedingTier` says "this flow mutates state"; `requiredState` says
+"this flow needs the DB in a specific shape BEFORE its first
+interaction runs." They're independent concerns — a `read-only` flow
+can still need fixtures (read what's there); a `mutation` flow that
+starts from empty needs cleanup before mutating.
+
+**This is a CRITICAL field for Strategy C (real-DB) projects.** Without
+it, the synthesizer falls back to a commented-out TODO, the spec runs
+against whatever baseline `db/seed.{ts,py}` produces, and any
+selector-vs-data mismatch silently times out at the 30s Playwright
+budget — manifesting as auto-filed flow-failure bugs that the
+/fix-bugs loop can't resolve per-bug because the structural fix is
+upstream (here, in the manifest authoring).
+
+**Empirical motivator** (2026-05-08, reading-log-02): 5 of 6
+flow-failure bugs marked unresolvable after 3 attempts each because
+their first interaction (`role=link[name=/The Overstory/i]`,
+`role=link[name=/Project Hail Mary/i]`, etc.) targeted books absent
+from the project's baseline seed. The synthesizer + schema were ready
+to handle this since 2026-05-03, but no manifest in any shipped
+project ever populated `requiredState`. (See feat-050 +
+`bug-073-fix-bugs-loop-cant-fix-flow-bugs-without-feat-050.md`.)
+
+**Three `kind` variants:**
+
+1. **`baseline`** (default; can be omitted) — flow uses whatever the
+   project's `/test/seed-baseline` produces. Fine when:
+   - The flow's interactions only reference data the baseline seeder
+     creates (no narrative-specific titles like "The Overstory" if
+     the baseline only seeds "Dune"), OR
+   - The flow is read-only and the baseline contents satisfy its
+     selectors.
+
+   ```json
+   "requiredState": { "kind": "baseline" }
+   ```
+
+   (Omitting the field entirely is equivalent.)
+
+2. **`empty`** — flow expects a clean library / blank-slate state.
+   Detect by name/description signals: `"first-time"`, `"onboarding"`,
+   `"empty state"`, `"welcome"`, `"new account"`, `"first ..."`.
+
+   ```json
+   "requiredState": {
+     "kind": "empty",
+     "tablesToCleanup": ["BookTag", "Book"]
+   }
+   ```
+
+   `tablesToCleanup` lists every table the flow's interactions touch
+   PLUS every table whose presence would break the empty assertion.
+   FK-dependent tables come FIRST (e.g. `BookTag` before `Book`) — the
+   `/test/cleanup` endpoint deletes them in array order.
+
+3. **`custom`** — flow needs specific fixtures. Use when the
+   interactions reference data by name/title/identifier that the
+   baseline doesn't produce, or when the flow needs a deliberately-
+   contrived state (stale timestamps, archived rows, etc.).
+
+   ```json
+   "requiredState": {
+     "kind": "custom",
+     "tablesToCleanup": ["BookTag", "Book"],
+     "fixtures": {
+       "Book": [
+         {
+           "id": "flow-2-overstory",
+           "title": "The Overstory",
+           "author": "Richard Powers",
+           "status": "reading"
+         }
+       ]
+     }
+   }
+   ```
+
+   Each fixture row is a Prisma / SQLAlchemy `createMany` input —
+   primary keys explicit (deterministic IDs make per-flow seed
+   debuggable + survive cleanup races), required fields populated,
+   FK references valid (or omitted if the table is unrelated).
+
+**Authoring algorithm — for each flow, walk its `interactions[]`:**
+
+1. **Identify domain references in selectors.** Selectors like
+   `role=link[name=/The Overstory/i]`, `text=Project Hail Mary`,
+   `[aria-label="USD Cash"]`, `input[value="fiction"]` reference
+   specific data the test needs to find.
+2. **Decide kind:**
+   - If ANY selector references narrative-specific data NOT in
+     baseline `db/seed.{ts,py}` → `kind: "custom"` with explicit fixtures
+   - If the flow's first selector targets an empty-state element
+     (`text="Add your first book"`, `text="No accounts yet"`) →
+     `kind: "empty"` with full table-cleanup
+   - Otherwise → omit `requiredState` (defaults to baseline)
+3. **For `custom`**, reverse-engineer the minimum fixture set: what's
+   the smallest row set that makes EVERY selector resolve? Don't
+   over-seed (extra data noise makes the test less deterministic);
+   don't under-seed (missing data → 30s timeout).
+4. **Cross-check the project's Prisma schema** (`apps/api/prisma/schema.prisma`)
+   or equivalent for required fields + FK constraints. The
+   `/test/seed` endpoint validates the table is whitelisted (typically
+   the same set as the Prisma `model` blocks) — unknown tables throw 400.
+5. **Cleanup ordering matters.** FK-dependent tables FIRST in
+   `tablesToCleanup`. For book-list-style apps: `["BookTag", "Book"]`,
+   not `["Book", "BookTag"]`.
+
+**Read-only flow with `kind: "custom"` is valid + sometimes needed.**
+A "search and filter" flow doesn't mutate but DOES need specific
+books to find. Set `seedingTier: "read-only"` (no
+`describe.serial`) AND `requiredState.kind: "custom"` (with the
+search-target fixtures). The synthesizer handles the combination
+correctly.
+
+**Operator review surface:** populate `requiredState` based on what
+the flow's selectors imply. If you're unsure, lean toward `custom`
+with explicit fixtures — over-specification is reviewable; under-
+specification produces silent 30s timeouts at /build-to-spec-verify
+that are expensive to triage.
+
 #### B. Infer `interactions[]`
 
 For each flow, walk its `steps[]` (the screen breadcrumbs already attached
@@ -559,7 +681,11 @@ Aggregate everything into one manifest:
           "selector": "[data-screen-id=\"discover-home\"]"
         }
       ],
-      "seedingTier": "mutation"
+      "seedingTier": "mutation",
+      "requiredState": {
+        "kind": "empty",
+        "tablesToCleanup": ["UserSession", "User"]
+      }
     }
   ],
   "personas": [

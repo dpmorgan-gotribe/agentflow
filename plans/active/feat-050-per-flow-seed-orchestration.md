@@ -166,6 +166,23 @@ This is project-side recovery work. Track separately as `bug-Xxx` in finance-tra
   evidence captured 2026-05-08 mid /fix-bugs run b0e1281c) — confirms the
   defect class generalises beyond finance-track-01
 
+## Phase status (post-shipping audit 2026-05-08)
+
+| Phase | Status                      | Evidence                                                                                                                                                                                                |
+| ----- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A     | ✅ shipped 2026-05-03       | `schemas/user-flows-manifest.schema.json` lines 390-435 — `requiredState` field with all 3 kind variants                                                                                                |
+| B     | ✅ shipped 2026-05-03       | `scripts/synthesize-flow-e2e.mjs` lines 503-572 — emits `test.beforeAll(/test/cleanup + /test/seed)` + `test.afterAll(/test/seed-baseline)` based on `kind`                                             |
+| C     | (endpoints exist, no audit) | All 3 backend skills already document the 3-endpoint contract per bug-042 Phase A.5; reading-log-02's `apps/api/src/routes/test-seed.ts` implements `Book` / `Tag` / `BookTag` / `Settings` whitelisted |
+| D     | ✅ shipped 2026-05-08       | `.claude/skills/user-flows-generator/SKILL.md` §4b.A.5 — full guidance on inferring `requiredState.kind` per flow + algorithm + Prisma schema cross-check + cleanup-ordering rule                       |
+| E     | ⏳ partial (reading-log-02) | reading-log-02 manifest re-authored 2026-05-08 with `requiredState` per flow — synthesizer re-emitted specs; pending /fix-bugs retry validation                                                         |
+
+**Why the bug class persisted despite A+B shipping**: the mechanism
+went dormant. Phase D was drafted but never executed, so
+`/user-flows-generator` never knew to populate the field. Every
+project authored after 2026-05-03 emitted manifests without
+`requiredState` and silently fell through to the synthesizer's legacy
+TODO-skeleton path. Discovered 2026-05-08 mid /fix-bugs run b0e1281c.
+
 ## Empirical evidence — reading-log-02 (2026-05-08)
 
 Mid-/fix-bugs run b0e1281c, after feat-062 (pure-verify routing) +
