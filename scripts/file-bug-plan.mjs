@@ -91,12 +91,23 @@ function stableSlugFor(violation) {
     // navigate-step-0 failures), slugify(null) → "null" producing bug
     // IDs like `bug-NNN-flow-3-null`. Fall back through fromScreenId
     // → flowName so the slug carries semantic content.
-    const target =
+    // bug-074-followup (2026-05-08) — empirical: synthesizer-emitted
+    // FlowFailures populate flowName with the TEST DESCRIPTION (e.g.
+    // "walks 7 interaction(s) deterministically", 41 chars) rather than
+    // the manifest's flow.name (e.g. "First-time setup", 16 chars).
+    // Slugified that becomes `walks-7-interaction-s-deterministically`
+    // (39 chars). Combined with the rest of the bug-id, the per-bug
+    // worktree dirname `bug-flow-flow-X-walks-N-interaction-s-deterministically`
+    // (~58 chars) + Windows MAX_PATH inside node_modules → "Filename too
+    // long" errors on rmSync. Cap target slug at 20 chars so the bug-id
+    // fits within Windows path budget.
+    const targetRaw =
       violation.expectedScreenId ??
       violation.fromScreenId ??
       violation.flowName ??
       violation.flowId;
-    return `flow-${slugify(violation.flowId)}-${slugify(target)}`;
+    const targetSlug = slugify(targetRaw).slice(0, 20).replace(/-+$/, "");
+    return `flow-${slugify(violation.flowId)}-${targetSlug || "unknown"}`;
   }
   // ── feat-027: runtime-error / dev-server-compile slug suffixes ───────────
   // The bugs.yaml id grammar allows `runtime` / `compile` prefixes per
