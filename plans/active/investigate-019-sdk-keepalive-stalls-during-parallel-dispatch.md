@@ -502,28 +502,69 @@ factory bootstrap (`pnpm install -g @playwright/mcp@VERSION`) so npx
 finds it cached + skips download. Requires factory-side install
 script + per-machine setup. Saves 60-150s per spawn after first run.
 
-**M-F (highest leverage)**: Per-agent MCP scoping. Most agents don't
-need playwright (web-frontend-builder writes code; reviewer reads
-code; security audits source). Add `agentMcpServers` declaration in
-`.claude/agents/{agent}.md` frontmatter; orchestrator filters
-`.mcp.json` per-dispatch so each agent only sees the servers it
-declares. Reduces playwright-mcp invocations from "every agent" to
-"tester + visual-review only". Could reduce keepalive warnings by
-~80% on web-frontend-builder + reviewer dispatches.
+**M-F (highest leverage)** ✅ SHIPPED 2026-05-08: Per-agent MCP scoping.
+Most agents don't need playwright (web-frontend-builder writes code;
+reviewer reads code; security audits source). Added `mcp_servers:`
+declaration in `.claude/agents/{agent}.md` frontmatter (snake_case,
+matching the pre-existing convention in `git-agent.md` +
+`ui-designer.md`). Orchestrator's `buildAgentOptions` reads the
+frontmatter via the new `agent-mcp-config.ts` util + emits
+`Options.mcpServers: <filtered subset>` to the SDK per dispatch, so
+each agent only sees the servers it declares.
+
+**Implementation summary**:
+
+- `orchestrator/src/agent-mcp-config.ts` — pure helpers
+  `loadAgentMcpServers(factoryRoot, agentName)` + `buildAgentMcpServersOption(...)`.
+  YAML-tolerant (silent on parse fail when agent doesn't declare
+  mcp_servers; warns on parse fail when it does). Filters declared
+  list against `<factoryRoot>/.mcp.json::mcpServers` keys.
+- `orchestrator/src/invoke-agent.ts::buildAgentOptions` — calls
+  `buildAgentMcpServersOption(FACTORY_ROOT, agent)` once per
+  dispatch + spreads result into the returned Options object when
+  defined. `undefined` (agent has no `mcp_servers` field) preserves
+  back-compat by NOT setting the SDK option = SDK uses normal
+  `.mcp.json` discovery as before.
+- Frontmatter additions:
+  - `web-frontend-builder` / `backend-builder` /
+    `mobile-frontend-builder` / `reviewer` / `security`:
+    `mcp_servers: []` (no MCPs needed; all 60-300s of cold-start
+    eliminated per dispatch)
+  - `tester`: `mcp_servers: ["playwright"]` (still gets Playwright
+    for E2E suites)
+  - `git-agent`: `mcp_servers: []` (already shipped pre-M-F)
+  - `ui-designer`: existing 5-server design-stage list (filtered
+    against `.mcp.json`, currently resolves to just `playwright`
+    because the design-stage MCPs aren't in factory `.mcp.json`)
+- Tests: `orchestrator/tests/agent-mcp-config.test.ts` (14 tests,
+  all green) covering frontmatter-absent / empty-list / filtered-
+  subset / missing-server / malformed-frontmatter cases.
+
+**Expected impact**: pre-M-F every Mode B dispatch paid the
+@playwright/mcp cold-start (~60-300s). With M-F, only tester
+dispatches pay it. /fix-bugs runs under feat-062 routing dispatch
+ONLY web/backend-builder per bug, so the per-bug MCP cold-start
+should drop to ~0s. Validation is the next reading-log-02 resume.
 
 **M-G**: Bypass `npx` entirely by emitting a direct `node ...` invocation
 once the path is known. Avoids npm/pnpm wrapper overhead but
 sensitive to path layouts.
 
-Recommended order: M-D first (5-min change, immediate win), then M-F
-(architectural change, biggest leverage). M-E is a nice-to-have
-but adds factory-bootstrap complexity.
+Recommended order (HISTORICAL — both shipped): M-D first (5-min
+change, immediate win) ✅, then M-F (architectural change, biggest
+leverage) ✅. M-E is a nice-to-have but adds factory-bootstrap
+complexity (still deferred 2026-05-08 — empirical signal from M-F
+will determine whether M-E is worth the bootstrap cost).
 
 ### Cross-reference for H6
 
-- `.mcp.json` at factory root + per-project — current registration
-- `.claude/agents/web-frontend-builder.md` — frontmatter would gain
-  `agentMcpServers: []` for M-F implementation
-- `orchestrator/src/invoke-agent.ts` `buildAgentOptions` — where the
-  MCP server set is currently determined (probably reads .mcp.json
-  verbatim; M-F adds the per-agent filter step)
+- `.mcp.json` at factory root — source-of-truth registration (M-D pinned)
+- `.claude/agents/{web,backend,mobile}-frontend-builder.md`,
+  `reviewer.md`, `security.md` — `mcp_servers: []` (M-F shipped)
+- `.claude/agents/tester.md` — `mcp_servers: ["playwright"]` (M-F shipped)
+- `orchestrator/src/agent-mcp-config.ts` — pure helpers used by
+  `buildAgentOptions` (M-F new module)
+- `orchestrator/src/invoke-agent.ts::buildAgentOptions` — emits
+  `Options.mcpServers: <filtered>` per dispatch (M-F wiring)
+- `orchestrator/tests/agent-mcp-config.test.ts` — 14 tests covering
+  the resolver's contract (M-F shipped)

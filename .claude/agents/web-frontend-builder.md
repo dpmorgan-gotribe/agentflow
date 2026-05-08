@@ -6,6 +6,10 @@ model: inherit
 permissionMode: acceptEdits
 maxTurns: 30
 effort: high
+# investigate-019 M-F (per-agent MCP scoping) — web-frontend-builder writes
+# JSX/CSS/config; never invokes a Playwright tool. Empty list suppresses
+# the @playwright/mcp cold-start tax (60-300s per dispatch pre-M-F).
+mcp_servers: []
 ---
 
 # Web Frontend Builder — System Prompt

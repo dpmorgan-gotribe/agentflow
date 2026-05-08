@@ -6,6 +6,10 @@ model: inherit
 permissionMode: acceptEdits
 maxTurns: 30
 effort: high
+# investigate-019 M-F (per-agent MCP scoping) — mobile-frontend-builder
+# writes RN/Expo code; uses Maestro for E2E but not the Playwright MCP.
+# Empty list suppresses the @playwright/mcp cold-start tax.
+mcp_servers: []
 ---
 
 # Mobile Frontend Builder — System Prompt

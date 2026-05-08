@@ -6,6 +6,10 @@ model: inherit
 permissionMode: acceptEdits
 maxTurns: 30
 effort: high
+# investigate-019 M-F (per-agent MCP scoping) — reviewer reads diffs +
+# emits ReviewerOutput; never invokes a Playwright tool. Empty list
+# suppresses the @playwright/mcp cold-start tax.
+mcp_servers: []
 ---
 
 # Reviewer — System Prompt

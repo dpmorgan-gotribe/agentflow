@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type {
   Options,
@@ -28,6 +29,7 @@ import {
   BuilderOutputJsonSchema,
   GitAgentOutput as GitAgentOutputSchema,
 } from "@repo/orchestrator-contracts";
+import { buildAgentMcpServersOption } from "./agent-mcp-config.js";
 import { resolveAuthOptions } from "./auth-provider.js";
 import type { BudgetTracker } from "./budget-tracker.js";
 import type {
@@ -1685,6 +1687,15 @@ function buildAgentPrompt(
   return prompt;
 }
 
+// investigate-019 M-F (per-agent MCP scoping). The orchestrator's compiled
+// invoke-agent.js lives at `<factoryRoot>/orchestrator/src/invoke-agent.js`
+// (or `.ts` under tsx). Climbing two parents lands on the factory root,
+// which is the source-of-truth for both `.mcp.json` AND `.claude/agents/`.
+// Computed once at module load — no per-dispatch I/O.
+const FACTORY_ROOT_FOR_MCP = dirname(
+  dirname(dirname(fileURLToPath(import.meta.url))),
+);
+
 function buildAgentOptions(
   agent: AgentSequenceMember,
   args: Parameters<InvokeAgentFn>[0],
@@ -1707,12 +1718,20 @@ function buildAgentOptions(
     env.CLAUDE_GATE_API_BASE = cfg.gateApiBase;
   }
 
+  // investigate-019 M-F — read agent's `mcp_servers` frontmatter and
+  // emit a filtered `mcpServers` Options field. Returns `undefined`
+  // when the agent doesn't declare the field (preserve back-compat).
+  const mcpServers = buildAgentMcpServersOption(FACTORY_ROOT_FOR_MCP, agent);
+
   return {
     model: modelConfig.model,
     effort: modelConfig.effort as NonNullable<Options["effort"]>,
     cwd: args.cwd,
     env,
     maxBudgetUsd: modelConfig.budgetUsd,
+    ...(mcpServers !== undefined
+      ? { mcpServers: mcpServers as NonNullable<Options["mcpServers"]> }
+      : {}),
     // feat-031 — wire SDK's documented "cross-agent cacheable" pattern.
     // Without this option the SDK falls back to the default Claude Code
     // preset with full per-user dynamic injection (cwd / memory / git

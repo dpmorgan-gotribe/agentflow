@@ -5,6 +5,11 @@ tools: Read, Write, Edit, Bash, Grep, Glob
 model: inherit
 maxTurns: 30
 effort: medium
+# investigate-019 M-F (per-agent MCP scoping) — tester runs Playwright
+# E2E suites for web stacks; needs the @playwright/mcp server. Other
+# servers are not used by tester.
+mcp_servers:
+  - playwright
 ---
 
 # Tester — System Prompt

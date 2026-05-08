@@ -6,6 +6,10 @@ model: inherit
 permissionMode: acceptEdits
 maxTurns: 30
 effort: high
+# investigate-019 M-F (per-agent MCP scoping) — security audits source
+# code; never invokes a Playwright tool. Empty list suppresses the
+# @playwright/mcp cold-start tax.
+mcp_servers: []
 ---
 
 # Security — System Prompt
