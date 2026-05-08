@@ -232,10 +232,25 @@ The derivation is deterministic. Document it in `packages/ui-kit/src/tokens/READ
 
 ### 7. Generate `packages/ui-kit/src/styles/`
 
-- **`globals.css`** — CSS reset (modern normalize), focus-visible styles, scrollbar styling, base typography (body font + default leading), color-scheme meta. Imports `tokens.css` at top.
+- **`globals.css`** — CSS reset (modern normalize), focus-visible styles, scrollbar styling, base typography (body font + default leading), color-scheme meta. **MUST start with `@tailwind base; @tailwind components; @tailwind utilities;`** (bug-077 contract — without these directives, production consumers' Tailwind utility classes silently produce zero CSS). Then imports `tokens.css` at top of the rule sets:
+
+  ```css
+  /* @repo/ui-kit globals.css — required header (bug-077) */
+  @tailwind base;
+  @tailwind components;
+  @tailwind utilities;
+
+  @import "./fonts.css";
+  @import "../tokens/tokens.css";
+
+  /* ─────────── Reset + base typography below ─────────── */
+  ```
+
+  Production consumers (`apps/web/`) pair this with their own `apps/web/postcss.config.mjs` that loads the `tailwindcss + autoprefixer` PostCSS plugins. The directives + the postcss config together form the working pipeline; either one missing means utilities don't compile. See `.claude/skills/agents/front-end/react-next/SKILL.md §1b` for the consumer contract.
+
 - **`fonts.css`** — `@font-face` declarations. Prefer variable fonts; declare `font-display: swap`. One family per declaration; don't lump.
 - **`tailwind.config.ts`** — extends theme via `var(--...)` references only; no hex in config.
-- **`preview-bootstrap.html`** (refactor-007 — load-bearing for `/mockups` + `/screens` HTML preview) — a paste-ready fragment that downstream skills inline into every preview HTML's `<head>`. It contains the Tailwind Play CDN script + an inline `<script>tailwind.config = {...}</script>` block whose theme.extend mirrors the kit's `tailwind.config.ts` exactly (with `var(--color-*)` references preserved as string values). Without this fragment in their `<head>`, Tailwind utility classes used by mockups/screens (`bg-accent-500`, `font-display`, `rounded-md`, etc.) resolve to nothing and the page renders unstyled — `globals.css` alone provides only token CSS variables + a base reset, not compiled Tailwind utilities. Production builders consume the kit at JSX-time and run a real Tailwind build, so this fragment is preview-only.
+- **`preview-bootstrap.html`** (refactor-007 — load-bearing for `/mockups` + `/screens` HTML preview) — a paste-ready fragment that downstream skills inline into every preview HTML's `<head>`. It contains the Tailwind Play CDN script + an inline `<script>tailwind.config = {...}</script>` block whose theme.extend mirrors the kit's `tailwind.config.ts` exactly (with `var(--color-*)` references preserved as string values). Required because mockup/screen HTML files don't go through a build step — without the inline CDN, their utility classes (`bg-accent-500`, `font-display`, `rounded-md`, etc.) resolve to nothing and the page renders unstyled. Production consumers (apps/web/) bypass this fragment entirely — they consume `globals.css`'s `@tailwind` directives via their PostCSS pipeline (see bug-077 contract above + `.claude/skills/agents/front-end/react-next/SKILL.md §1b`). This fragment is preview-only.
 
   **Required shape** (emit this verbatim, replacing the `theme.extend` body with values derived from this run's `tailwind.config.ts`):
 

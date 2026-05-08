@@ -44,6 +44,7 @@ apps/web/
 ├── middleware.ts                 # auth + redirects
 ├── next.config.ts                # Turbopack + transpilePackages for workspace packages
 ├── tailwind.config.ts            # extends @repo/ui-kit/tokens
+├── postcss.config.mjs            # Tailwind 3 + autoprefixer pipeline (bug-077)
 ├── tsconfig.json                 # extends @repo/ui-kit/tsconfig.consumer.json
 ├── package.json
 ├── .env.example                  # NEXT_PUBLIC_API_BASE contract (bug-032 Phase C)
@@ -76,6 +77,24 @@ const nextConfig: NextConfig = {
   // ... rest of config
 };
 ```
+
+### 1b. Tailwind pipeline — bug-077
+
+`apps/web/postcss.config.mjs` is **load-bearing** for Tailwind utility classes to resolve at all. Without it, Next compiles CSS as raw passthrough — `@tailwind` directives become invalid CSS that browsers ignore, every utility class (`mx-auto`, `flex`, `text-sm`, etc.) silently produces zero output, and the page renders unstyled. Required content (verbatim):
+
+```js
+// apps/web/postcss.config.mjs — bug-077
+export default { plugins: { tailwindcss: {}, autoprefixer: {} } };
+```
+
+The companion piece is `@tailwind base; @tailwind components; @tailwind utilities;` directives at the top of the consumed CSS entrypoint — emitted into `packages/ui-kit/src/styles/globals.css` by the `/stylesheet` skill (see `.claude/skills/stylesheet/SKILL.md` §7). The kit's `globals.css` is imported once in `app/layout.tsx`:
+
+```ts
+// apps/web/app/layout.tsx — root layout
+import "@repo/ui-kit/styles/globals.css"; // resolves Tailwind utilities + tokens + reset
+```
+
+Bug-077 surfaced 2026-05-08: shipped factory web projects rendered unstyled because BOTH pieces (postcss.config + @tailwind directives) were missing from scaffold. Detection layers were all blind: build/dev-server/E2E-selectors/parity-DOM-diff all pass on a project with no working CSS pipeline, because they compare structure (DOM, class-attribute strings) not computed appearance.
 
 `.env.local` is gitignored AND blocked by the factory's `enforce-boundaries.sh` hook (secrets-pattern guard). The architect skill documents the operator copy step (`cp apps/web/.env.example apps/web/.env.local`) in `docs/credentials-checklist.md` — the builder MUST NOT auto-author `.env.local`.
 
@@ -615,9 +634,9 @@ next                 15.1.0         # App Router stable; Turbopack dev + React 1
 react                19.0.0         # required by Next 15; concurrent features stable
 react-dom            19.0.0
 typescript           5.6.x          # 5.7 has known issues with workspace TS projects
-tailwindcss          4.0.0-beta.7   # v4 stable enough by 2026 Q2; lightning-css engine
-@tailwindcss/postcss 4.0.0-beta.7
-postcss              8.4.x
+tailwindcss          ^3.4.0         # bug-077: shipped projects pin v3.4.x; v4 migration is a separate decision
+autoprefixer         ^10.4.0        # bug-077: PostCSS plugin pair with tailwindcss
+postcss              ^8.4.0         # bug-077: requires apps/web/postcss.config.mjs to wire into Next build
 vitest               2.1.x          # 3.x breaks @testing-library/react 16 path resolution
 @testing-library/react       16.1.x
 @testing-library/user-event  14.5.x
@@ -643,6 +662,7 @@ These files are **scaffold-owned**: configured at scaffold time and intentionall
 - `apps/web/vitest.setup.ts` — global test setup; per-test setup goes in the test file itself
 - `apps/web/next.config.ts` — only architect or kit-change-request flow modifies this
 - `apps/web/tailwind.config.ts` — kit-bump only
+- `apps/web/postcss.config.mjs` — bug-077 scaffold contract; do not edit
 - `apps/web/tsconfig.json` — paths are architect-owned
 
 Empirical motivation: parallel features each touching `vitest.config.ts` cause merge conflicts on close-feature (~3-5 min/conflict via reviewer-mediated resolution). On a high-fan-out 8-feature DAG that's 10-30 min wasted wall-clock per run. Verified via repo-health-dashboard-01 (commits 87e86c7 + ba36d2f resolved two of these conflicts manually).
