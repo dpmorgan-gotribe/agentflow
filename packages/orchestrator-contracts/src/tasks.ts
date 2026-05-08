@@ -49,6 +49,10 @@ export const TaskAgent = z.enum([
   "reviewer",
   "security",
   "devops",
+  // feat-064 (2026-05-08) — narrow-scope patch agent for /fix-bugs loop.
+  // Synthetic Tasks created by dispatchAgentsForBug carry agent: "bug-fixer";
+  // tasks.yaml in Mode B never carries this (PM doesn't recruit it).
+  "bug-fixer",
 ]); // excludes git-agent — lifecycle is orchestrator-owned, never a task agent
 export type TaskAgent = z.infer<typeof TaskAgent>;
 

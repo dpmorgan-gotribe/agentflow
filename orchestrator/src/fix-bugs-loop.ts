@@ -204,7 +204,60 @@ function openFixupWorktree(args: {
   /** bug-058 — project base branch (default "master"). */
   baseBranch?: string;
 }): { ok: true } | { ok: false; reason: string } {
-  if (!existsSync(args.worktreePath)) {
+  // bug-076 (2026-05-08) — `existsSync` returns true for ANY directory at the
+  // path, including:
+  //   1. A live registered git worktree (created by `git worktree add`)
+  //   2. An orphan empty dir left by a prior crash / Windows file-lock
+  //      preventing teardown / partial cleanup
+  // Without `isRegisteredGitWorktree` check, the function silently skips
+  // `git worktree add` for case (2), so the fixup BRANCH is never created;
+  // per-bug worktrees later branch from a missing ref + cascade-fail with
+  // `per-bug-worktree-open-failed`. Empirical motivator: reading-log-02
+  // /fix-bugs run b0e1281c retry 2026-05-08 — Windows held a kernel handle
+  // on the empty `.claude/worktrees/fixup` dir; orchestrator's existsSync
+  // returned true; per-bug worktrees all failed; bug-073 convergence
+  // detector escalated 14 bugs to `failed`. Mirrors bug-061's force-recreate
+  // pattern from openPerBugWorktree.
+  // 3-state detection: registered / orphan / unknown. Only force-recreate
+  // when DEFINITIVELY orphan (git worktree list succeeded + dir not in it);
+  // when unknown (test env without git, or git failure), fall back to the
+  // legacy "skip add when exists" behavior so existing tests continue to
+  // exercise the seedWorktree-on-pre-existing-dir path.
+  const exists = existsSync(args.worktreePath);
+  let listOk = false;
+  let registered = false;
+  try {
+    const out = execSync(`git worktree list --porcelain`, {
+      cwd: args.projectRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    listOk = true;
+    const target = resolve(args.worktreePath);
+    for (const line of out.split("\n")) {
+      if (!line.startsWith("worktree ")) continue;
+      const reg = resolve(line.slice("worktree ".length).trim());
+      if (reg === target) {
+        registered = true;
+        break;
+      }
+    }
+  } catch {
+    listOk = false;
+  }
+  const isOrphan = exists && listOk && !registered;
+  if (!exists || isOrphan) {
+    if (isOrphan) {
+      // Orphan dir — try to remove before `git worktree add`. Tolerate
+      // Windows file lock: an empty locked dir CAN still accept a
+      // `git worktree add` write (verified on reading-log-02 2026-05-08).
+      try {
+        rmSync(args.worktreePath, { recursive: true, force: true });
+      } catch {
+        // Best-effort. Fall through; git worktree add may still succeed
+        // into the empty locked dir.
+      }
+    }
     mkdirSync(dirname(args.worktreePath), { recursive: true });
     try {
       execSync(
@@ -212,10 +265,28 @@ function openFixupWorktree(args: {
         { cwd: args.projectRoot, stdio: ["ignore", "pipe", "pipe"] },
       );
     } catch (err) {
-      return {
-        ok: false,
-        reason: err instanceof Error ? err.message : String(err),
-      };
+      // Common follow-up: branch already exists (from a partial prior
+      // attempt). Retry without `-b` so we re-attach to the existing branch.
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (
+        /already exists|already used by worktree|not a valid object name/i.test(
+          errMsg,
+        )
+      ) {
+        try {
+          execSync(
+            `git worktree add ${shellQuote(args.worktreePath)} ${shellQuote(args.branch)}`,
+            { cwd: args.projectRoot, stdio: ["ignore", "pipe", "pipe"] },
+          );
+        } catch (err2) {
+          return {
+            ok: false,
+            reason: `bug-076 fallback failed: ${err2 instanceof Error ? err2.message : String(err2)} (initial: ${errMsg})`,
+          };
+        }
+      } else {
+        return { ok: false, reason: errMsg };
+      }
     }
   }
 
