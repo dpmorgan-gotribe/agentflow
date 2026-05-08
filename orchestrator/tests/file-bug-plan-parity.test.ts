@@ -250,25 +250,28 @@ describe("fileBugPlan — bug-050 Phase B agent routing by primaryCause", () => 
   });
 });
 
-// ─── feat-058 (2026-05-06): trim agentSequence per cause class ────────────
+// ─── feat-058 + feat-062: trim agentSequence per cause class ────────────
 //
 // Pre-feat-058 every cause class returned a 3-agent sequence
-// [<builder>, tester, reviewer]. Empirical anchor: reading-log-01 single-bug
-// dispatches taking ~30min; tester+reviewer add ~10-20min for cheap classes
-// (dev-server-compile, runtime-error, visual-parity, reachability-orphan)
-// without catching what the loop's re-verify already catches. feat-058 trims:
-//   - dev-server-compile  → [<tier>]                   (re-verify IS the test)
-//   - runtime-error       → [<tier>, reviewer]         (drop tester)
-//   - visual-parity       → [<tier>, reviewer]         (parity-verify is the check)
-//   - reachability-orphan → [<tier>, reviewer]         (re-verify catches wiring)
-//   - flow-execution      → [<tier>, tester, reviewer] (KEEP — feature work)
-//   - build-gap           → [<tier>, tester, reviewer] (KEEP — feature work)
-//   - seed-setup          → [backend-builder, tester, reviewer] (KEEP)
-//   - manifest-author     → []                                  (KEEP — no dispatch)
+// [<builder>, tester, reviewer]. feat-058 (2026-05-06) trimmed cheap classes
+// to [<tier>, reviewer] keeping reviewer for semantic safety.
+// feat-062 (2026-05-08) drops reviewer too — empirical anchor reading-log-02
+// /fix-bugs run showed that for cheap classes (compile, runtime, parity,
+// orphan, flow-execution-failure) the verify→fix→verify loop catches
+// incorrect fixes on the next iteration regardless. tester+reviewer added
+// ~30-50min/bug without unique value. Final post-feat-062 routing:
+//   - dev-server-compile     → [<tier>]                          (cheap class)
+//   - runtime-error          → [<tier>]                          (cheap class)
+//   - visual-parity          → [<tier>]                          (cheap class)
+//   - reachability-orphan    → [<tier>]                          (cheap class)
+//   - flow-execution-failure → [<tier>]                          (cheap class — feat-062)
+//   - build-gap              → [<tier>, tester, reviewer]        (feature work)
+//   - seed-setup             → [backend-builder, tester, reviewer] (feature work)
+//   - manifest-author        → []                                (no dispatch)
 //
-// This block validates the new trimmed paths + that feature-class bugs keep
+// This block validates the trimmed paths + that feature-class bugs keep
 // their full safety net.
-describe("fileBugPlan — feat-058 trimmed agentSequence per cause", () => {
+describe("fileBugPlan — feat-058 + feat-062 trimmed agentSequence per cause", () => {
   const stubFlowFailure = (primaryCause: string) => ({
     kind: "flow-failure" as const,
     flowId: "flow-1",
@@ -297,7 +300,7 @@ describe("fileBugPlan — feat-058 trimmed agentSequence per cause", () => {
     expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
   });
 
-  it("primaryCause=runtime-error → [<tier>, reviewer] (drop tester, keep reviewer)", async () => {
+  it("primaryCause=runtime-error → [<tier>] (feat-062: drop tester+reviewer)", async () => {
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({
       projectDir,
@@ -307,17 +310,13 @@ describe("fileBugPlan — feat-058 trimmed agentSequence per cause", () => {
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual([
-      "web-frontend-builder",
-      "reviewer",
-    ]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
   });
 
-  it("violation.kind=parity-divergence → [<tier>, reviewer] (feat-058-followup)", async () => {
-    // feat-058-followup (2026-05-06): parity-divergence violations don't
-    // carry primaryCause (they come from parity-verify, not the flow runner).
-    // Pre-followup: fell through to default 3-agent. Post-followup: remapped
-    // to visual-parity → [<tier>, reviewer].
+  it("violation.kind=parity-divergence → [<tier>] (feat-062: drop reviewer too)", async () => {
+    // parity-divergence violations don't carry primaryCause (they come from
+    // parity-verify, not the flow runner). feat-058-followup remapped them
+    // through visual-parity routing; feat-062 collapsed that to [<tier>] only.
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({
       projectDir,
@@ -338,13 +337,10 @@ describe("fileBugPlan — feat-058 trimmed agentSequence per cause", () => {
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual([
-      "web-frontend-builder",
-      "reviewer",
-    ]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
   });
 
-  it("primaryCause=visual-parity → [<tier>, reviewer]", async () => {
+  it("primaryCause=visual-parity → [<tier>] (feat-062)", async () => {
     const { fileBugPlan } = await importHelper();
     // visual-parity bugs come via parity-divergence violation, not flow-failure.
     // The cause field still drives the sequence; the violation kind only
@@ -357,13 +353,10 @@ describe("fileBugPlan — feat-058 trimmed agentSequence per cause", () => {
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual([
-      "web-frontend-builder",
-      "reviewer",
-    ]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
   });
 
-  it("orphan-component (no primaryCause) → [<tier>, reviewer] via synthesized routing", async () => {
+  it("orphan-component (no primaryCause) → [<tier>] via synthesized routing (feat-062)", async () => {
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({
       projectDir,
@@ -380,13 +373,14 @@ describe("fileBugPlan — feat-058 trimmed agentSequence per cause", () => {
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual([
-      "web-frontend-builder",
-      "reviewer",
-    ]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
   });
 
-  it("primaryCause=flow-execution-failure → [<tier>, tester, reviewer] KEEP full safety net", async () => {
+  it("primaryCause=flow-execution-failure → [<tier>] (feat-062: cheap class, no tester/reviewer)", async () => {
+    // feat-062 (2026-05-08) reclassified flow-execution-failure as a cheap
+    // class. Empirical: reading-log-02 run showed 6 flow-* bugs each consuming
+    // ~45-60min wall-clock with full 3-agent sequence; verify→fix→verify
+    // loop catches incorrect fixes on next iteration regardless.
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({
       projectDir,
@@ -396,11 +390,7 @@ describe("fileBugPlan — feat-058 trimmed agentSequence per cause", () => {
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual([
-      "web-frontend-builder",
-      "tester",
-      "reviewer",
-    ]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
   });
 });
 
@@ -662,7 +652,7 @@ describe("fileBugPlan — bug-056 tier-routed agentSequence", () => {
     expect(doc.bugs[0]?.agentSequence).toEqual(["backend-builder"]);
   });
 
-  it("orphan-component on apps/api/** → [backend-builder, reviewer]", async () => {
+  it("orphan-component on apps/api/** → [backend-builder] (feat-062: cheap class)", async () => {
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({
       projectDir,
@@ -679,7 +669,7 @@ describe("fileBugPlan — bug-056 tier-routed agentSequence", () => {
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual(["backend-builder", "reviewer"]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["backend-builder"]);
   });
 
   it("dev-server-compile + no tier signal → [web-frontend-builder] (default)", async () => {

@@ -1,22 +1,20 @@
 ---
 id: feat-062-pure-verify-mode-for-cheap-classes
 type: feature
-status: draft
+status: in-progress
 author-agent: human
 created: 2026-05-06
-updated: 2026-05-06
+updated: 2026-05-08
 parent-plan: investigate-020-fix-bugs-loop-architecture-tester-reviewer-economics
 supersedes: null
 superseded-by: null
-branch: feat/pure-verify-mode-for-cheap-classes
+branch: feat/quota-observability
 affected-files:
   - scripts/file-bug-plan.mjs
-  - orchestrator/src/fix-bugs-loop.ts
-  - orchestrator/tests/fix-bugs-loop.test.ts
   - orchestrator/tests/file-bug-plan-parity.test.ts
 feature-area: orchestrator/fix-bugs-loop
 priority: P1
-attempt-count: 0
+attempt-count: 1
 max-attempts: 5
 ---
 
@@ -188,6 +186,55 @@ if (status === "clean" && !ctx.skipLoopExitValidation) {
 
 ## Attempt Log
 
-(empty — plan filed by human 2026-05-06; ship deferred pending
-investigate-020 Step 4 empirical validation against ≥3 shipped
-projects' tester/reviewer event logs.)
+### Attempt 1 — 2026-05-08 (Phase A only, scope EXTENDED)
+
+**Trigger**: live /fix-bugs reading-log-02 run hit the exact
+bottleneck this plan predicted. Mid-iteration:
+
+- 6 flow-execution-failure bugs each took ~45-60 min wall-clock with
+  full 3-agent sequence; 3 of them (flow-1/2/3) hit attempts:3
+  permanent-failed status from MCP cold-start + keepalive aborts
+  before doing actual work
+- 7 visual-parity bugs queued behind them (~14 hr ETA)
+- Anthropic seven_day API quota at 75% — auto-pause imminent
+
+User flagged that we'd previously agreed bug-fixes don't need
+per-bug tester+reviewer because the verify→fix→verify loop catches
+incorrect fixes on the next iteration regardless. Audit confirmed:
+plan-as-drafted KEPT flow-execution-failure on the 3-agent sequence.
+Reading-log-02 evidence + the user's intent → extend the cheap-class
+list to include flow-execution-failure.
+
+**Shipped**:
+
+1. `scripts/file-bug-plan.mjs::defaultAgentSequence` switch updated:
+   - `dev-server-compile`, `runtime-error`, `visual-parity`,
+     `flow-execution-failure` ALL → `[<tier>]` only
+   - `seed-setup` → `[backend-builder, tester, reviewer]` (kept)
+   - `manifest-author` → `[]` (kept)
+   - `build-gap` + default → `[<tier>, tester, reviewer]` (kept)
+2. `orchestrator/tests/file-bug-plan-parity.test.ts` updated:
+   - cheap-class assertions (runtime-error, visual-parity,
+     flow-execution-failure, parity-divergence, orphan-component)
+     now expect `[<tier>]` only
+   - test block heading updated to "feat-058 + feat-062"
+3. `projects/reading-log-02/docs/bugs.yaml`:
+   - 6 flow-\* bugs reset (status:pending, attempts:0,
+     agentSequence:[web-frontend-builder])
+   - 7 parity bugs trimmed (agentSequence:[web-frontend-builder])
+
+**Tests**: `pnpm --filter orchestrator test -- file-bug-plan-parity.test.ts`
+36/36 pass. `pnpm --filter orchestrator test -- fix-bugs-loop.test.ts`
+54/54 pass.
+
+**Deferred**:
+
+- Phase B (loop-exit `[tester, reviewer]` validation pass) —
+  intentionally skipped per user direction. Trust the iteration
+  loop's natural verify pass; can add later if regressions slip.
+- Phase D rollout doc updates — will revisit after empirical signal
+  from this run.
+
+**Validation pending**: resume reading-log-02 /fix-bugs run with new
+routing; measure wall-clock + completion rate on the 14 bugs vs
+prior 4-bug-in-90min observed pace.

@@ -807,38 +807,45 @@ function tierToBuilder(tier) {
 
 function defaultAgentSequence(violation, tier = "web-frontend-builder") {
   // bug-050 Phase B (2026-05-03) — route by primaryCause when present.
-  // feat-058 (2026-05-06) — trim sequence length per cause class. Empirical
-  //   anchor: reading-log-01 single-bug dispatches taking ~30min with full
-  //   3-agent sequence; for cheap classes (dev-server-compile,
-  //   reachability-orphan, visual-parity, runtime-error) tester+reviewer
-  //   add ~10-20min without catching what the loop's re-verify already
-  //   catches. See investigate-018 + feat-058 for the full reasoning.
+  // feat-058 (2026-05-06) — trim sequence length per cause class.
+  // feat-062 (2026-05-08) — drop tester+reviewer entirely for cheap
+  //   classes. Empirical anchor: reading-log-02 /fix-bugs run 2026-05-08
+  //   showed 6 flow-execution-failure bugs each consuming ~45-60min wall-
+  //   clock with full 3-agent sequence, where the loop's verify→fix→verify
+  //   cycle catches incorrect fixes on the next iteration anyway.
+  //   tester+reviewer for cheap classes added ~30-50min/bug without
+  //   detecting issues the next verify pass wouldn't catch. Loop-exit
+  //   safety net (Phase B of feat-062) is deferred — natural iteration
+  //   loop is the regression net. See feat-062 plan §Goals + the run's
+  //   investigate-019 mid-run discussion for full reasoning.
   //
-  // Routing table (post-feat-058):
+  // Routing table (post-feat-062):
   //
-  //   CHEAP CLASSES (re-verify is the natural test; reviewer adds ~0):
-  //     - dev-server-compile → [<tier>]
+  //   CHEAP CLASSES (re-verify is the natural test, no per-bug review):
+  //     - dev-server-compile     → [<tier>]
   //         Re-verify literally answers "does the dev-server boot now?".
-  //         Reviewer can't add semantic value on plumbing fixes.
-  //     - runtime-error      → [<tier>, reviewer]
-  //         Re-verify catches the runtime failure; reviewer kept for
-  //         semantic check (was the fix correct or a workaround?).
-  //     - visual-parity      → [<tier>, reviewer]
-  //         Parity-verify is the structural check; tester redundant.
-  //     - reachability-orphan→ [<tier>, reviewer]
-  //         Wiring fix verified by re-verify; reviewer for semantic.
+  //     - runtime-error          → [<tier>]
+  //         Re-verify catches the runtime failure on next iteration.
+  //     - visual-parity          → [<tier>]
+  //         Parity-verify is the structural check.
+  //     - reachability-orphan    → [<tier>]
+  //         Wiring fix verified by re-verify.
   //         (Orphan violations have no primaryCause — handled at the
   //         buildBugEntry call-site separately.)
+  //     - flow-execution-failure → [<tier>]
+  //         Synth-E2E re-runs the flow; if the fix is wrong, the same
+  //         flow fails again on next iteration and the bug stays open.
+  //         Per-bug tester+reviewer added latency without unique value
+  //         (verified against reading-log-02 run 2026-05-08).
   //
-  //   FEATURE-CLASS BUGS (real work, full safety net):
-  //     - build-gap          → [<tier>, tester, reviewer]
-  //     - seed-setup         → [backend-builder, tester, reviewer]
+  //   FEATURE-CLASS BUGS (real work, full safety net retained):
+  //     - build-gap              → [<tier>, tester, reviewer]
+  //     - seed-setup             → [backend-builder, tester, reviewer]
   //         (Strategy C `/test/seed-baseline` endpoint missing/broken —
   //         backend's lane regardless of <tier>.)
-  //     - flow-execution-failure → [<tier>, tester, reviewer]
   //
   //   OPERATOR-ONLY (no dispatch):
-  //     - manifest-author    → []
+  //     - manifest-author        → []
   //         Flow author hallucinated; fix is /user-flows-generator regen
   //         in design-stage skill, not Mode B builders.
   //
@@ -847,17 +854,18 @@ function defaultAgentSequence(violation, tier = "web-frontend-builder") {
   //
   // The `tier` parameter (default web-frontend-builder for backward
   // compat with pre-bug-056 callers) lets bug-056 layer tier inference
-  // on top of feat-058's sequence trim. Cause-specific overrides
+  // on top of feat-062's sequence trim. Cause-specific overrides
   // (e.g. seed-setup → backend-builder) take precedence over `tier`.
   const cause = violation && violation.primaryCause;
   switch (cause) {
-    // Cheap classes: re-verify is the test; reviewer adds 0 on plumbing.
+    // Cheap classes: re-verify is the test; tester+reviewer add 0
+    // unique value because the verify→fix→verify loop catches
+    // incorrect fixes on the next iteration regardless.
     case "dev-server-compile":
-      return [tier];
-    // Cheap classes with semantic risk: drop tester, keep reviewer.
     case "runtime-error":
     case "visual-parity":
-      return [tier, "reviewer"];
+    case "flow-execution-failure":
+      return [tier];
     // Real backend work: full safety net (overrides `tier`).
     case "seed-setup":
       return ["backend-builder", "tester", "reviewer"];
@@ -866,7 +874,6 @@ function defaultAgentSequence(violation, tier = "web-frontend-builder") {
       return [];
     // Real feature work: full safety net.
     case "build-gap":
-    case "flow-execution-failure":
     default:
       return [tier, "tester", "reviewer"];
   }
@@ -947,18 +954,19 @@ function buildBugEntry({
     // helper the affectsFiles WE just derived so apps/api orphans route
     // to backend-builder.
     agentSequence: (() => {
-      // feat-058-followup (2026-05-06) — `parity-divergence` violations
-      // come from parity-verify (not flow-runner), so they don't carry
-      // `primaryCause`. Without this remap they fell through to the 3-
-      // agent default in defaultAgentSequence's switch; empirical
-      // reading-log-01 today: 6 visual-parity bugs all got 3 agents
-      // despite feat-058's intent of 2. Synthesizing primaryCause here
-      // routes them through the trimmed `[<tier>, reviewer]` sequence.
+      // feat-058-followup (2026-05-06) — `parity-divergence` + orphan
+      // violations come from parity-verify / reachability-verify (not
+      // flow-runner), so they don't carry `primaryCause`. Without this
+      // remap they fell through to the 3-agent default in
+      // defaultAgentSequence's switch. Synthesizing primaryCause here
+      // routes them through the trimmed cheap-class sequence.
+      // feat-062 (2026-05-08) — cheap classes now collapse to `[<tier>]`
+      // only, so orphans + parity bugs both end up as 1-agent dispatches.
       const violationForRouting =
         violation.kind === "orphan-component" ||
         violation.kind === "orphan-route" ||
         violation.kind === "parity-divergence"
-          ? { primaryCause: "visual-parity" } // shares the [<tier>, reviewer] sequence
+          ? { primaryCause: "visual-parity" } // shares the [<tier>] sequence
           : violation;
       // Pass the derived affectsFiles into the tier inference for orphan
       // violations (their original violation object lacks the field).
