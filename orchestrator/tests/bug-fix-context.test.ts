@@ -114,7 +114,7 @@ describe("buildBugContextEnvelope — flow-execution-failure", () => {
 });
 
 describe("buildBugContextEnvelope — visual-parity", () => {
-  it("pre-loads the mockup HTML + likely page JSX", () => {
+  it("pre-loads the mockup HTML + 3-path fix-site fallback (route + index + component)", () => {
     writeProjectFile(
       "docs/screens/webapp/book-create.html",
       "<html><body><h1>Mockup</h1></body></html>",
@@ -122,6 +122,10 @@ describe("buildBugContextEnvelope — visual-parity", () => {
     writeProjectFile(
       "apps/web/app/book-create/page.tsx",
       "export default function Page() { return <div>page</div>; }",
+    );
+    writeProjectFile(
+      "apps/web/app/page.tsx",
+      "export default function Index() { return <main>index</main>; }",
     );
     const bug = makeBug({
       id: "bug-parity-book-create-layout-regrouping",
@@ -139,8 +143,60 @@ describe("buildBugContextEnvelope — visual-parity", () => {
     });
     const envelope = buildBugContextEnvelope({ bug, projectRoot });
     expect(envelope.text).toMatch(/Mockup.*book-create\.html/);
-    expect(envelope.text).toMatch(/Likely fix-site.*book-create\/page\.tsx/);
+    expect(envelope.text).toMatch(
+      /Likely fix-site #1 \(route-named page\).*book-create\/page\.tsx/,
+    );
+    expect(envelope.text).toMatch(
+      /Likely fix-site #2 \(index page.*\).*apps\/web\/app\/page\.tsx/,
+    );
     expect(envelope.text).toMatch(/<h1>Mockup<\/h1>/);
+    // 3 of 3 candidates resolved (mockup + 2 page files; component file
+    // not created in this test → goes to missingFiles)
+    expect(envelope.resolvedFiles).toHaveLength(3);
+    expect(envelope.missingFiles).toContainEqual({
+      path: "apps/web/components/books/book-create.tsx",
+      reason: "Likely fix-site #3 (component named after screen)",
+    });
+  });
+
+  it("feat-063-followup: pre-loads index page when route-named page is missing", () => {
+    // Empirical reading-log-02 case: book-detail screen-id has no
+    // apps/web/app/book-detail/page.tsx (the actual route is
+    // apps/web/app/books/[id]/page.tsx). Pre-followup: bug-fixer received
+    // a "file missing" diagnostic for the wrong path. Post-followup:
+    // index page.tsx fills in as fallback.
+    writeProjectFile(
+      "docs/screens/webapp/book-detail.html",
+      "<html><body>detail mockup</body></html>",
+    );
+    writeProjectFile(
+      "apps/web/app/page.tsx",
+      "export default function Index() { return <main>index</main>; }",
+    );
+    // NO apps/web/app/book-detail/page.tsx — the legacy heuristic
+    // would have left bug-fixer empty-handed.
+    const bug = makeBug({
+      source: "visual-parity",
+      parity: {
+        screen: "book-detail",
+        pattern: "layout-regrouping",
+        detail: {
+          missing: [],
+          extra: [],
+          variantDrift: [],
+          styleDrift: [],
+        },
+      },
+    });
+    const envelope = buildBugContextEnvelope({ bug, projectRoot });
+    expect(envelope.text).toMatch(
+      /Likely fix-site #2 \(index page.*\).*apps\/web\/app\/page\.tsx/,
+    );
+    expect(envelope.missingFiles).toContainEqual({
+      path: "apps/web/app/book-detail/page.tsx",
+      reason: "Likely fix-site #1 (route-named page)",
+    });
+    // Mockup + index page resolved; route-named page + component missing.
     expect(envelope.resolvedFiles).toHaveLength(2);
   });
 });

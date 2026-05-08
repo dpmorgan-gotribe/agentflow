@@ -155,13 +155,35 @@ function resolveFilesForBug(
       relPath: `docs/screens/webapp/${bug.parity.screen}.html`,
       reason: "Mockup (structural ground truth)",
     });
-    // Pre-load the rendered page JSX — the most-likely fix site.
-    // Heuristic: `apps/web/app/{screen}/page.tsx` for app-router
-    // projects. The agent can Read further if this isn't the right
-    // file.
+    // feat-063-followup (2026-05-08) — empirical evidence on reading-log-02:
+    // many screen-ids don't map to a `apps/web/app/<screen>/page.tsx` path:
+    //   - book-create → opens as Modal from /page.tsx (no /book-create route)
+    //   - book-detail → at /books/[id]/page.tsx (dynamic route)
+    //   - books-list-empty → empty-state branch in /page.tsx
+    //   - tags-manage → at /tags/page.tsx (different slug)
+    //   - settings → /settings/page.tsx (matches)
+    // Without these fallbacks, bug-fixer received a "file missing"
+    // diagnostic + no real fix-site → ran maxTurns:8 trying to find
+    // the right file → bailed empty-merge.
+    //
+    // Multi-path heuristic: include several likely candidates in
+    // priority order. emitFileSection silently drops missing files +
+    // logs them in the diagnostic block, so over-specifying is cheap.
+    const screen = bug.parity.screen;
     out.push({
-      relPath: `apps/web/app/${bug.parity.screen}/page.tsx`,
-      reason: "Likely fix-site (rendered page)",
+      relPath: `apps/web/app/${screen}/page.tsx`,
+      reason: "Likely fix-site #1 (route-named page)",
+    });
+    out.push({
+      relPath: "apps/web/app/page.tsx",
+      reason: "Likely fix-site #2 (index page — common host for sub-screens / empty-states)",
+    });
+    // Component-named-after-screen: book-list-item, book-create-modal,
+    // tag-rename-modal, etc. Bug-fixer can Read more siblings if the
+    // first guess misses.
+    out.push({
+      relPath: `apps/web/components/books/${screen}.tsx`,
+      reason: "Likely fix-site #3 (component named after screen)",
     });
   }
 

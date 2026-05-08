@@ -151,7 +151,12 @@ const DEFAULT_STALL_TIMEOUT_BY_AGENT: Record<string, number | null> = {
   // maxTurns:8 frontmatter forces convergence; combining the two
   // eliminates the "agent wandered 25 min" failure mode observed in
   // reading-log-02 /fix-bugs run b0e1281c. Per investigate-024 §F8.
-  "bug-fixer": 10 * 60 * 1000,
+  // feat-065-followup-2 (2026-05-08): bumped 10 → 15 min after
+  // empirical evidence that 10 was too tight for parity bugs that
+  // require structural JSX restructuring. flow-5 hit the 10min cap
+  // mid-fix-attempt; 15 gives cushion without losing the fail-fast
+  // discipline (vs the 25min full-builder cap).
+  "bug-fixer": 15 * 60 * 1000,
 };
 
 /**
