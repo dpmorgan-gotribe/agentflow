@@ -17,3 +17,5 @@
 20260505-222041-human-cost-reduction-stack-shipped-and-validation-project-mid-pipeline.md
 20260506-134403-human-reading-log-01-shipped-and-factory-bugs.md
 20260507-004018-human-investigate-018-021-stack-shipped-and-strategy-c-gaps-found.md
+20260508-071801-human-investigate-024-shipped-validation-v5.md
+20260508-225240-human-investigate-025-shipped-v2-epic-filed.md
