@@ -103,6 +103,15 @@ export type InvokeAgentFn = (args: {
   tasks: readonly Task[];
   retryContext?: { taskId: string; errorMessage: string };
   gitOp?: GitOpInput;
+  /**
+   * feat-063 (2026-05-08) — Pre-loaded markdown block for bug-fix
+   * dispatches. When set, the orchestrator's prompt builder injects this
+   * verbatim into the user prompt before the task lines so the agent
+   * doesn't have to discover the synthesized spec / mockup / fix-site
+   * files via Read/Grep. Empty string = no pre-load (back-compat).
+   * Built by `orchestrator/src/bug-fix-context.ts::buildBugContextEnvelope`.
+   */
+  preLoadedContext?: string;
 }) => Promise<InvokeAgentResult>;
 
 export type GitOpInput =
@@ -1818,17 +1827,19 @@ export async function runFeatureGraph(
         ...(ctx.maxConcurrentFeatures && ctx.maxConcurrentFeatures >= 2
           ? { maxConcurrent: ctx.maxConcurrentFeatures }
           : {}),
-        // feat-061 (2026-05-06) — class-batched-fix-dispatch ON by
-        // default. feat-053 already implements grouping (N parity bugs
-        // sharing a pattern → 1 dispatch); we just flip the default.
-        // Empirical motivator (investigate-020): per-bug dispatch is
-        // ~15-25min × 100 bugs = 25-40h on mature projects; class-
-        // batching collapses N → 1 for shell-stripping / layout-
-        // regrouping / token-drift / variant-drift parity classes.
-        // Operators can opt OUT via FIX_BUGS_DISABLE_CLASS_BATCHING
-        // env var.
+        // feat-061 (2026-05-06) — class-batched-fix-dispatch.
+        // bug-075 (2026-05-08) FLIPPED DEFAULT to OFF. Empirical
+        // evidence on reading-log-02 /fix-bugs run b0e1281c:
+        // pattern-layout-regrouping-batch-of-6 hit wall-clock-1500000ms
+        // (25-min cap) on attempt 1 AND attempt 2 — per-screen work
+        // for layout-regrouping is non-mechanical (5-10min/screen);
+        // 6-bug batches over-pack the budget. Per-bug dispatch fits
+        // cleanly. Mechanical pattern classes (shell-stripping with
+        // uniform AppShell-wrap) may still benefit; operators can
+        // opt-in per-run via FIX_BUGS_ENABLE_CLASS_BATCHING=1.
+        // See investigate-024 §F4 for the full reasoning.
         enableClassBatchedDispatch:
-          process.env.FIX_BUGS_DISABLE_CLASS_BATCHING !== "1",
+          process.env.FIX_BUGS_ENABLE_CLASS_BATCHING === "1",
       };
       bugLoopResult = await fixRunner(loopCtx);
       totalCostUsd += bugLoopResult.totalCostUsd;

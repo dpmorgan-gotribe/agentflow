@@ -271,7 +271,7 @@ describe("fileBugPlan — bug-050 Phase B agent routing by primaryCause", () => 
 //
 // This block validates the trimmed paths + that feature-class bugs keep
 // their full safety net.
-describe("fileBugPlan — feat-058 + feat-062 trimmed agentSequence per cause", () => {
+describe("fileBugPlan — feat-058 + feat-062 + feat-064 trimmed agentSequence per cause", () => {
   const stubFlowFailure = (primaryCause: string) => ({
     kind: "flow-failure" as const,
     flowId: "flow-1",
@@ -287,7 +287,10 @@ describe("fileBugPlan — feat-058 + feat-062 trimmed agentSequence per cause", 
     primaryCause,
   });
 
-  it("primaryCause=dev-server-compile → [<tier>] only (no tester, no reviewer)", async () => {
+  // feat-064 (2026-05-08) — cheap classes now route to the bug-fixer
+  // agent (was [<tier>] / web-frontend-builder pre-feat-064). All 4
+  // cheap classes + orphan + parity-divergence remap end up on bug-fixer.
+  it("primaryCause=dev-server-compile → [bug-fixer] (feat-064)", async () => {
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({
       projectDir,
@@ -297,10 +300,10 @@ describe("fileBugPlan — feat-058 + feat-062 trimmed agentSequence per cause", 
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
   });
 
-  it("primaryCause=runtime-error → [<tier>] (feat-062: drop tester+reviewer)", async () => {
+  it("primaryCause=runtime-error → [bug-fixer] (feat-064)", async () => {
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({
       projectDir,
@@ -310,13 +313,12 @@ describe("fileBugPlan — feat-058 + feat-062 trimmed agentSequence per cause", 
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
   });
 
-  it("violation.kind=parity-divergence → [<tier>] (feat-062: drop reviewer too)", async () => {
-    // parity-divergence violations don't carry primaryCause (they come from
-    // parity-verify, not the flow runner). feat-058-followup remapped them
-    // through visual-parity routing; feat-062 collapsed that to [<tier>] only.
+  it("violation.kind=parity-divergence → [bug-fixer] (feat-064 via visual-parity remap)", async () => {
+    // parity-divergence violations don't carry primaryCause; the call-site
+    // remaps them to visual-parity which (feat-064) routes to bug-fixer.
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({
       projectDir,
@@ -337,14 +339,11 @@ describe("fileBugPlan — feat-058 + feat-062 trimmed agentSequence per cause", 
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
   });
 
-  it("primaryCause=visual-parity → [<tier>] (feat-062)", async () => {
+  it("primaryCause=visual-parity → [bug-fixer] (feat-064)", async () => {
     const { fileBugPlan } = await importHelper();
-    // visual-parity bugs come via parity-divergence violation, not flow-failure.
-    // The cause field still drives the sequence; the violation kind only
-    // affects WHICH summary template is used.
     await fileBugPlan({
       projectDir,
       violation: stubFlowFailure("visual-parity"),
@@ -353,10 +352,10 @@ describe("fileBugPlan — feat-058 + feat-062 trimmed agentSequence per cause", 
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
   });
 
-  it("orphan-component (no primaryCause) → [<tier>] via synthesized routing (feat-062)", async () => {
+  it("orphan-component (no primaryCause) → [bug-fixer] via synthesized routing (feat-064)", async () => {
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({
       projectDir,
@@ -373,14 +372,10 @@ describe("fileBugPlan — feat-058 + feat-062 trimmed agentSequence per cause", 
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
   });
 
-  it("primaryCause=flow-execution-failure → [<tier>] (feat-062: cheap class, no tester/reviewer)", async () => {
-    // feat-062 (2026-05-08) reclassified flow-execution-failure as a cheap
-    // class. Empirical: reading-log-02 run showed 6 flow-* bugs each consuming
-    // ~45-60min wall-clock with full 3-agent sequence; verify→fix→verify
-    // loop catches incorrect fixes on next iteration regardless.
+  it("primaryCause=flow-execution-failure → [bug-fixer] (feat-064)", async () => {
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({
       projectDir,
@@ -390,7 +385,98 @@ describe("fileBugPlan — feat-058 + feat-062 trimmed agentSequence per cause", 
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
+  });
+});
+
+// ─── bug-074 (2026-05-08): null-safe flow-failure body + bug-id slug ────────
+//
+// Pre-fix: when FlowFailure violations had `fromScreenId: null` AND
+// `expectedScreenId: null` (manifest pre-feat-050 Phase D, navigate-step-0
+// failures), the body interpolated literal "null" 6+ times AND the bug ID
+// slug ended in "-null" (e.g. `bug-006-flow-flow-4-null`). Builders ignored
+// the misleading body + worked from the synthesized spec; the fix routes
+// them there explicitly.
+describe("fileBugPlan — bug-074 null-safe FlowFailure body", () => {
+  const stubNullFlowFailure = () => ({
+    kind: "flow-failure" as const,
+    flowId: "flow-3",
+    flowName: "Edit notes",
+    step: 0,
+    fromScreenId: null,
+    expectedScreenId: null,
+    actualScreenId: null,
+    selector: null,
+    screenshotPath: null,
+    htmlDumpPath: null,
+    message: "Test timeout of 30000ms exceeded",
+  });
+
+  it("body does NOT contain literal 'null' interpolation when screen-ids unresolved", async () => {
+    const { fileBugPlan } = await importHelper();
+    const result = await fileBugPlan({
+      projectDir,
+      violation: stubNullFlowFailure(),
+      iteration: 1,
+    });
+    const body = readFileSync(result.planPath, "utf8");
+    // The pre-bug-074 pattern: data-screen-id="null"
+    expect(body).not.toMatch(/data-screen-id="null"/);
+    // The pre-bug-074 pattern: docs/screens/webapp/null.html
+    expect(body).not.toMatch(/docs\/screens\/webapp\/null\.html/);
+    // The pre-bug-074 pattern: "Add the missing nav element on null"
+    expect(body).not.toMatch(/element on `null`/);
+    expect(body).not.toMatch(/routes to `null`/);
+  });
+
+  it("body points at the synthesized spec when screen-ids unresolved", async () => {
+    const { fileBugPlan } = await importHelper();
+    const result = await fileBugPlan({
+      projectDir,
+      violation: stubNullFlowFailure(),
+      iteration: 1,
+    });
+    const body = readFileSync(result.planPath, "utf8");
+    expect(body).toMatch(/apps\/web\/e2e\/synthesized\/flow-3\.spec\.ts/);
+    // Fix-approach section explicitly tells the builder to read the spec.
+    expect(body).toMatch(/Read the synthesized spec at/);
+    // Likely-cause section flags the unresolved screen-ids honestly.
+    expect(body).toMatch(/couldn't resolve start\/expected screen-ids/);
+  });
+
+  it("bug ID slug uses flowName fallback (not 'null') when screen-ids absent", async () => {
+    const { fileBugPlan } = await importHelper();
+    const result = await fileBugPlan({
+      projectDir,
+      violation: stubNullFlowFailure(),
+      iteration: 1,
+    });
+    // Pre-fix: bug-NNN-flow-flow-3-null
+    // Post-fix: bug-NNN-flow-flow-3-edit-notes (slugified flowName)
+    expect(result.planId).toMatch(/^bug-\d+-flow-flow-3-edit-notes$/);
+    expect(result.planId).not.toMatch(/-null$/);
+  });
+
+  it("body still uses screen-id labels when present (back-compat)", async () => {
+    const { fileBugPlan } = await importHelper();
+    const result = await fileBugPlan({
+      projectDir,
+      violation: {
+        ...stubNullFlowFailure(),
+        fromScreenId: "books-list",
+        expectedScreenId: "book-detail",
+      },
+      iteration: 1,
+    });
+    const body = readFileSync(result.planPath, "utf8");
+    expect(body).toMatch(/data-screen-id="books-list"/);
+    expect(body).toMatch(/data-screen-id="book-detail"/);
+    // Bug ID uses expectedScreenId — slug includes book-detail
+    expect(result.planId).toMatch(/^bug-\d+-flow-flow-3-book-detail$/);
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ id: string }> };
+    expect(doc.bugs[0]!.id).toBe("bug-flow-flow-3-book-detail");
   });
 });
 
@@ -649,10 +735,14 @@ describe("fileBugPlan — bug-056 tier-routed agentSequence", () => {
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual(["backend-builder"]);
+    // feat-064 (2026-05-08) — cheap classes route to bug-fixer
+    // regardless of tier signal. Tier inference still useful for
+    // operator inspection of bug.affectsFiles, but no longer drives
+    // dispatch routing for compile / runtime / parity / flow.
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
   });
 
-  it("orphan-component on apps/api/** → [backend-builder] (feat-062: cheap class)", async () => {
+  it("orphan-component on apps/api/** → [bug-fixer] (feat-064; tier-agnostic)", async () => {
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({
       projectDir,
@@ -669,10 +759,10 @@ describe("fileBugPlan — bug-056 tier-routed agentSequence", () => {
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual(["backend-builder"]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
   });
 
-  it("dev-server-compile + no tier signal → [web-frontend-builder] (default)", async () => {
+  it("dev-server-compile + no tier signal → [bug-fixer] (feat-064)", async () => {
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({
       projectDir,
@@ -695,7 +785,7 @@ describe("fileBugPlan — bug-056 tier-routed agentSequence", () => {
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual(["web-frontend-builder"]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
   });
 });
 

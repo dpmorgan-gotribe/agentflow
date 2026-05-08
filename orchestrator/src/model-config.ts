@@ -112,6 +112,12 @@ const DEFAULT_STALL_TIMEOUT_BY_AGENT: Record<string, number | null> = {
   reviewer: 15 * 60 * 1000,
   security: 15 * 60 * 1000,
   "git-agent": null,
+  // feat-065 (2026-05-08) — narrow-scope patch agent for /fix-bugs loop.
+  // Tighter cap than tier-specific builders because bug-fixer's
+  // maxTurns:8 frontmatter forces convergence; combining the two
+  // eliminates the "agent wandered 25 min" failure mode observed in
+  // reading-log-02 /fix-bugs run b0e1281c. Per investigate-024 §F8.
+  "bug-fixer": 10 * 60 * 1000,
 };
 
 /**

@@ -15,6 +15,7 @@ import {
   type BugsYaml,
   type BuildToSpecVerifyOutput,
 } from "@repo/orchestrator-contracts";
+import { buildBugContextEnvelope } from "./bug-fix-context.js";
 import type { BudgetTracker } from "./budget-tracker.js";
 import type { BuildToSpecVerifyContext } from "./build-to-spec-verify.js";
 import type { InvokeAgentFn } from "./feature-graph.js";
@@ -1204,6 +1205,16 @@ async function dispatchAgentsForBug(args: {
     summary: bug.summary,
   };
 
+  // feat-063 (2026-05-08) — pre-load fix-site / spec / mockup files
+  // ONCE per bug + thread through every agent in the sequence. Same
+  // envelope across the (typically) single web/backend-frontend-builder
+  // dispatch; if the agent sequence has multiple agents (legacy paths),
+  // they all benefit from the same pre-load. See investigate-024 §F1+F3.
+  const preLoadEnvelope = buildBugContextEnvelope({
+    bug,
+    projectRoot: worktreeCwd,
+  });
+
   for (const agent of bug.agentSequence) {
     if (agent === "git-agent") continue; // worktree lifecycle is loop-owned
     const syntheticTask = {
@@ -1220,6 +1231,9 @@ async function dispatchAgentsForBug(args: {
         taskId: syntheticTask.id,
         errorMessage: buildRetryContextMessage(bug),
       },
+      ...(preLoadEnvelope.text.length > 0
+        ? { preLoadedContext: preLoadEnvelope.text }
+        : {}),
     });
     costUsd += result.costUsd;
     const taskOutcome = result.taskStatus[syntheticTask.id];
@@ -1303,6 +1317,88 @@ function applyFlappingDetection(args: {
     }
   }
   return { reappeared, flapEscalated };
+}
+
+/**
+ * bug-073 Phase B (2026-05-08) — convergence detector.
+ *
+ * Detects when consecutive failed attempts produce identical (or
+ * near-identical) errorLog entries, signalling that the orchestrator is
+ * hitting the same wall with no forward progress. Escalates the bug to
+ * `failed` early, before exhausting its maxAttempts cap.
+ *
+ * Empirical motivator: reading-log-02 /fix-bugs run b0e1281c showed 5 of
+ * 6 flow-failure bugs producing byte-identical errorLog entries across
+ * attempts (e.g. `[per-bug-merge-cascade-failed] merge fix/... failed: ...`
+ * repeating verbatim). Each consumed its full 3-attempt cap = ~30min wall-
+ * clock per bug = ~2.5hr per /fix-bugs run on this class. This detector
+ * saves the marginal ~10min/bug spent on a known-dead-end retry.
+ *
+ * Heuristic: 2 consecutive identical (or first-200-chars-identical)
+ * errorLog entries = converged. False-positive risk is low — even when
+ * the underlying root cause is environmental (port collision, EBUSY,
+ * merge conflict) rather than algorithmic, more retries don't help and
+ * an operator escalation is the right next step.
+ *
+ * Cross-references:
+ *   - plans/active/bug-073-fix-bugs-loop-cant-fix-flow-bugs-without-feat-050.md §Phase B
+ *   - feat-050 (the structural fix this complements; ships in parallel)
+ */
+function detectConvergedFailure(bug: BugEntry): {
+  converged: boolean;
+  reason: string;
+} {
+  const entries = bug.errorLog;
+  if (entries.length < 2) return { converged: false, reason: "" };
+  const a = entries[entries.length - 1] ?? "";
+  const b = entries[entries.length - 2] ?? "";
+  if (a === b && a.length > 0) {
+    return {
+      converged: true,
+      reason: `last 2 errorLog entries byte-identical: ${a.slice(0, 80).replace(/\n/g, " ")}${a.length > 80 ? "..." : ""}`,
+    };
+  }
+  // Permissive: first 200 chars match. Catches messages with trailing
+  // pid / timestamp / counter variation but identical failure shape.
+  const NEAR_PREFIX = 200;
+  if (
+    a.length >= NEAR_PREFIX &&
+    b.length >= NEAR_PREFIX &&
+    a.slice(0, NEAR_PREFIX) === b.slice(0, NEAR_PREFIX)
+  ) {
+    return {
+      converged: true,
+      reason: `last 2 errorLog entries near-identical (first ${NEAR_PREFIX} chars match): ${a.slice(0, 80).replace(/\n/g, " ")}...`,
+    };
+  }
+  return { converged: false, reason: "" };
+}
+
+/**
+ * Transition a bug after a failed dispatch attempt. Mutates `bug.status`
+ * (and possibly `bug.errorLog`) and returns the resulting status so the
+ * caller can update its `failedCount` tally.
+ *
+ * Order of escalation:
+ *   1. Convergence detected (bug-073) → `failed` (saves a retry slot)
+ *   2. attempts >= maxAttempts → `failed` (existing cap)
+ *   3. Otherwise → `pending` (next iteration will retry)
+ */
+function transitionFailedDispatch(bug: BugEntry): "failed" | "pending" {
+  const conv = detectConvergedFailure(bug);
+  if (conv.converged) {
+    bug.errorLog.push(
+      `[bug-073-convergence-detector] ${conv.reason} — escalating to failed without exhausting maxAttempts cap (saved ${bug.maxAttempts - bug.attempts} retry slot${bug.maxAttempts - bug.attempts === 1 ? "" : "s"})`,
+    );
+    bug.status = "failed";
+    return "failed";
+  }
+  if (bug.attempts >= bug.maxAttempts) {
+    bug.status = "failed";
+    return "failed";
+  }
+  bug.status = "pending";
+  return "pending";
 }
 
 /**
@@ -1481,13 +1577,12 @@ export async function runFixBugsLoop(
           completedCount += 1;
         } else {
           for (const entry of dispatch.errorLog) bug.errorLog.push(entry);
-          if (bug.attempts >= bug.maxAttempts) {
-            bug.status = "failed";
-            failedCount += 1;
-          } else {
-            // Leave pending for a subsequent iteration's retry pool.
-            bug.status = "pending";
-          }
+          // bug-073 Phase B — convergence detector escalates early when
+          // consecutive attempts produce identical errorLog entries.
+          // Falls back to the maxAttempts cap when no convergence
+          // signal is present. Leaves the bug `pending` for a
+          // subsequent iteration's retry pool when neither fires.
+          if (transitionFailedDispatch(bug) === "failed") failedCount += 1;
         }
         // Persist after each bug so a crash mid-iteration leaves a usable
         // checkpoint for resume.
@@ -1712,12 +1807,10 @@ export async function runFixBugsLoop(
               bug.errorLog.push(
                 `[per-bug-worktree-open-failed] ${result.openError}`,
               );
-              if (bug.attempts >= bug.maxAttempts) {
-                bug.status = "failed";
-                failedCount += 1;
-              } else {
-                bug.status = "pending";
-              }
+              // bug-073 Phase B — convergence detector escalates early
+              // on identical consecutive failures (e.g. recurring EBUSY
+              // worktree teardown across attempts).
+              if (transitionFailedDispatch(bug) === "failed") failedCount += 1;
             }
             continue;
           }
@@ -1725,12 +1818,8 @@ export async function runFixBugsLoop(
           if (!result.success) {
             for (const bug of result.unit.bugs) {
               for (const entry of result.errorLog) bug.errorLog.push(entry);
-              if (bug.attempts >= bug.maxAttempts) {
-                bug.status = "failed";
-                failedCount += 1;
-              } else {
-                bug.status = "pending";
-              }
+              // bug-073 Phase B — convergence detector.
+              if (transitionFailedDispatch(bug) === "failed") failedCount += 1;
             }
             continue;
           }
@@ -1781,12 +1870,11 @@ export async function runFixBugsLoop(
             }
           } else {
             for (const bug of result.unit.bugs) {
-              if (bug.attempts >= bug.maxAttempts) {
-                bug.status = "failed";
-                failedCount += 1;
-              } else {
-                bug.status = "pending";
-              }
+              // bug-073 Phase B — convergence detector escalates early
+              // on identical consecutive merge-cascade failures (the
+              // empirical reading-log-02 pattern: same merge-conflict
+              // signature across 2+ attempts).
+              if (transitionFailedDispatch(bug) === "failed") failedCount += 1;
             }
           }
         }

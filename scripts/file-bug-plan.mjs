@@ -86,7 +86,17 @@ function slugify(s) {
 // (~9× duplication across 9 verifier reruns) before this dedup landed.
 function stableSlugFor(violation) {
   if (violation.kind === "flow-failure") {
-    return `flow-${slugify(violation.flowId)}-${slugify(violation.expectedScreenId)}`;
+    // bug-074 (2026-05-08) — when expectedScreenId is null (manifest's
+    // steps[*] lacks screen-id chain; common pre-feat-050 Phase D + for
+    // navigate-step-0 failures), slugify(null) → "null" producing bug
+    // IDs like `bug-NNN-flow-3-null`. Fall back through fromScreenId
+    // → flowName so the slug carries semantic content.
+    const target =
+      violation.expectedScreenId ??
+      violation.fromScreenId ??
+      violation.flowName ??
+      violation.flowId;
+    return `flow-${slugify(violation.flowId)}-${slugify(target)}`;
   }
   // ── feat-027: runtime-error / dev-server-compile slug suffixes ───────────
   // The bugs.yaml id grammar allows `runtime` / `compile` prefixes per
@@ -147,10 +157,21 @@ function flowFailureBody(v, opts) {
   const screenshotPath = v.screenshot ?? v.screenshotPath ?? null;
   const htmlPath = v.html ?? v.htmlDumpPath ?? null;
   const TRANSITION_TIMEOUT_MS = 2000;
+  // bug-074 (2026-05-08) — null-safe interpolation. Pre-fix the body
+  // emitted literal `[data-screen-id="null"]` + `docs/screens/webapp/null.html`
+  // when the manifest lacked screen-id chains (every flow-failure bug
+  // in reading-log-02 carried this shape). Builders ignored the
+  // misleading body + worked from the synthesized spec; routing them
+  // there explicitly when screen-ids unresolved is the structural fix.
+  const screenIdsUnresolved =
+    v.fromScreenId === null && v.expectedScreenId === null;
+  const fromLabel = v.fromScreenId ?? "(unresolved — see spec)";
+  const toLabel = v.expectedScreenId ?? "(unresolved — see spec)";
+  const specPath = `apps/web/e2e/synthesized/${v.flowId.replace(/^flow-/, "flow-")}.spec.ts`;
   const lines = [
     "## Description",
     "",
-    `Synthesized flow \`${v.flowName}\` (${v.flowId}) failed at step ${v.step}: clicked \`${v.selector ?? "(no selector matched)"}\` on \`[data-screen-id="${v.fromScreenId}"]\`, expected to land on \`[data-screen-id="${v.expectedScreenId}"]\` within ${TRANSITION_TIMEOUT_MS}ms; landed on \`${v.actualScreenId ?? "(no screen-id present)"}\`.`,
+    `Synthesized flow \`${v.flowName}\` (${v.flowId}) failed at step ${v.step}: clicked \`${v.selector ?? "(no selector matched)"}\` on \`[data-screen-id="${fromLabel}"]\`, expected to land on \`[data-screen-id="${toLabel}"]\` within ${TRANSITION_TIMEOUT_MS}ms; landed on \`${v.actualScreenId ?? "(no screen-id present)"}\`.`,
     "",
     `**Synthesizer message:** ${v.message}`,
     "",
@@ -184,9 +205,17 @@ function flowFailureBody(v, opts) {
       lines.push("- **Suggested integration points:**");
       for (const i of importers) lines.push(`  - \`${i}\``);
     }
+  } else if (screenIdsUnresolved) {
+    // bug-074 — when both screen-ids are null, the synthesizer didn't
+    // resolve the failure to a known transition. Route the builder
+    // straight at the spec — that's the canonical signal.
+    lines.push(
+      `- The synthesizer detected a flow-execution failure but couldn't resolve start/expected screen-ids from the manifest. The synthesized spec at \`${specPath}\` has the canonical selector + interaction sequence — read it for the failing-element detail.`,
+    );
+    lines.push(`- **Owning feature:** \`${owner}\``);
   } else {
     lines.push(
-      `- The trigger element on \`${v.fromScreenId}\` either does not exist OR navigates to a different screen than \`${v.expectedScreenId}\`.`,
+      `- The trigger element on \`${fromLabel}\` either does not exist OR navigates to a different screen than \`${toLabel}\`.`,
     );
     lines.push(`- **Owning feature:** \`${owner}\``);
   }
@@ -208,12 +237,22 @@ function flowFailureBody(v, opts) {
         opts.relatedOrphan.path,
         path.extname(opts.relatedOrphan.path),
       );
+    // bug-074 — null-defended mockup path. Pre-fix:
+    // `docs/screens/webapp/null.html` for unresolved cases.
+    const mockupPathPrefix = v.fromScreenId?.startsWith("/") ? "" : "webapp/";
+    const mockupTarget = v.expectedScreenId ?? "<screen-id>";
     lines.push(
-      `Wire \`${orphanName}\` into \`${importers[0]}\`; pass the expected props from parent state. See screen mockup at \`docs/screens/${v.fromScreenId.startsWith("/") ? "" : "webapp/"}${v.expectedScreenId}.html\` for layout reference.`,
+      `Wire \`${orphanName}\` into \`${importers[0]}\`; pass the expected props from parent state. See screen mockup at \`docs/screens/${mockupPathPrefix}${mockupTarget}.html\` for layout reference.`,
+    );
+  } else if (screenIdsUnresolved) {
+    // bug-074 — when screen-ids unresolved, point at the spec instead of
+    // a non-existent docs/screens/webapp/null.html.
+    lines.push(
+      `Read the synthesized spec at \`${specPath}\`. The failing locator + flow narrative there describe what the build needs to expose. Likely fixes: (a) add the data-testid / role attribute the spec selects on, (b) wire the navigation route the spec expects, (c) seed the data the spec assumes (see flow.requiredState in docs/user-flows-manifest.json).`,
     );
   } else {
     lines.push(
-      `Add the missing nav element on \`${v.fromScreenId}\` so it routes to \`${v.expectedScreenId}\` when clicked. Reference the mockup at \`docs/screens/webapp/${v.expectedScreenId}.html\`.`,
+      `Add the missing nav element on \`${fromLabel}\` so it routes to \`${toLabel}\` when clicked. Reference the mockup at \`docs/screens/webapp/${toLabel}.html\`.`,
     );
   }
   lines.push("");
@@ -861,11 +900,16 @@ function defaultAgentSequence(violation, tier = "web-frontend-builder") {
     // Cheap classes: re-verify is the test; tester+reviewer add 0
     // unique value because the verify→fix→verify loop catches
     // incorrect fixes on the next iteration regardless.
+    // feat-064 (2026-05-08) — route cheap classes to the bug-fixer
+    // agent (narrow-scope patch agent w/ pre-loaded context per
+    // feat-063). The `tier` parameter is intentionally unused here
+    // (preserved for the seed-setup branch's backend-builder override
+    // + future tier-aware routing).
     case "dev-server-compile":
     case "runtime-error":
     case "visual-parity":
     case "flow-execution-failure":
-      return [tier];
+      return ["bug-fixer"];
     // Real backend work: full safety net (overrides `tier`).
     case "seed-setup":
       return ["backend-builder", "tester", "reviewer"];

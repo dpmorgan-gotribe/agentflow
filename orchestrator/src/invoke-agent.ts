@@ -1624,7 +1624,7 @@ function buildAgentPrompt(
   agent: AgentSequenceMember,
   args: Parameters<InvokeAgentFn>[0],
 ): string {
-  const { featureContext, tasks, retryContext } = args;
+  const { featureContext, tasks, retryContext, preLoadedContext } = args;
   // bug-035: include task.notes verbatim under each task line so PM-emitted
   // requirements (state coverage, idempotency, edge-case constraints) reach
   // the agent. Reviewer reads tasks.yaml directly and was the only agent
@@ -1649,6 +1649,17 @@ function buildAgentPrompt(
     `You are the ${agent} agent for feature ${featureContext.id} ` +
     `(branch ${featureContext.branch}, priority ${featureContext.priority}).\n` +
     `Tasks assigned to you on this feature:\n${taskLines}\n`;
+
+  // feat-063 (2026-05-08) — pre-loaded bug context. When the bug-fix
+  // loop dispatches a per-bug builder, it pre-resolves the failing
+  // spec / mockup / fix-site files based on bug.source + injects them
+  // here so the agent doesn't burn 5-10 exploratory Read turns
+  // (15-25min wall-clock each). See `orchestrator/src/bug-fix-context.ts`
+  // for the per-class file resolution + investigate-024 §F1+F3 for the
+  // empirical anchor.
+  if (preLoadedContext && preLoadedContext.trim().length > 0) {
+    prompt += `\n${preLoadedContext}\n`;
+  }
 
   if (retryContext) {
     prompt +=

@@ -33,6 +33,11 @@ export const AgentSequenceMember = z.enum([
   "git-agent",
   "security",
   "devops",
+  // feat-064 (2026-05-08) — narrow-scope patch agent for /fix-bugs
+  // loop dispatches. Replaces tier-specific builders for cheap bug
+  // classes (compile / runtime / parity / orphan / flow-execution).
+  // Mode B feature builds keep web/backend/mobile-frontend-builder.
+  "bug-fixer",
 ]);
 export type AgentSequenceMember = z.infer<typeof AgentSequenceMember>;
 

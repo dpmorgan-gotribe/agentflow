@@ -180,16 +180,26 @@ describe("runFixBugsLoop — happy path: clean exit on first iteration", () => {
 });
 
 describe("runFixBugsLoop — per-bug attempt cap", () => {
-  it("marks a bug failed after maxAttempts dispatch failures", async () => {
+  it("marks a bug failed after maxAttempts dispatch failures (non-converging error shapes)", async () => {
     let calls = 0;
     const invoke: InvokeAgentFn = async (args) => {
       calls += 1;
+      // bug-073 Phase B: vary the error message per call so the
+      // convergence detector doesn't escalate early. This test asserts
+      // the ORIGINAL maxAttempts cap path; the convergence detector
+      // has its own dedicated test below.
       return {
         taskStatus: Object.fromEntries(
           args.tasks.map((t) => [t.id, "failed"] as const),
         ),
         errors: Object.fromEntries(
-          args.tasks.map((t) => [t.id, "synthetic failure"] as const),
+          args.tasks.map(
+            (t) =>
+              [
+                t.id,
+                `synthetic failure variant ${calls} (id=${Math.random().toString(36).slice(2, 10)})`,
+              ] as const,
+          ),
         ),
         costUsd: 0.05,
       };
@@ -207,6 +217,80 @@ describe("runFixBugsLoop — per-bug attempt cap", () => {
     expect(doc.bugs[0]!.errorLog.length).toBeGreaterThanOrEqual(3);
   });
 
+  it("bug-073 Phase B: convergence detector escalates on identical consecutive errorLog entries", async () => {
+    // The empirical reading-log-02 pattern: the SAME failure shape
+    // repeats verbatim across attempts (e.g. `[per-bug-merge-cascade-failed]
+    // merge fix/X into Y failed: ...`). The convergence detector
+    // should escalate to `failed` on attempt 2 (not 3) because retry
+    // 3 has zero new information.
+    let calls = 0;
+    const invoke: InvokeAgentFn = async (args) => {
+      calls += 1;
+      // BYTE-IDENTICAL error message each call → triggers convergence.
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "failed"] as const),
+        ),
+        errors: Object.fromEntries(
+          args.tasks.map(
+            (t) =>
+              [
+                t.id,
+                "deterministic identical failure: same wall hit each retry",
+              ] as const,
+          ),
+        ),
+        costUsd: 0.05,
+      };
+    };
+    writeBugsYamlDoc([makeBug({ id: "bug-orphan-converged", maxAttempts: 3 })]);
+    const result = await runFixBugsLoop(makeCtx(invoke, cleanVerify));
+    expect(result.status).toBe("all-bugs-failed");
+    expect(result.bugsFailed).toEqual(["bug-orphan-converged"]);
+    // Convergence detector fires on attempt 2 — saved 1 retry slot.
+    expect(calls).toBe(2);
+    const doc = readBugsYamlDoc();
+    expect(doc.bugs[0]!.attempts).toBe(2);
+    expect(doc.bugs[0]!.status).toBe("failed");
+    // Last errorLog entry is the convergence detector's marker.
+    const lastEntry = doc.bugs[0]!.errorLog.at(-1) ?? "";
+    expect(lastEntry).toMatch(/bug-073-convergence-detector/);
+    expect(lastEntry).toMatch(/byte-identical/);
+  });
+
+  it("bug-073 Phase B: convergence detector matches near-identical entries (first-200-char prefix)", async () => {
+    // When a consistent failure shape has a varying timestamp / pid /
+    // counter suffix, byte-identical doesn't match but first-200-char
+    // prefix does. The detector should still escalate.
+    const longPrefix = "x".repeat(220) + " — variant suffix ";
+    let calls = 0;
+    const invoke: InvokeAgentFn = async (args) => {
+      calls += 1;
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "failed"] as const),
+        ),
+        errors: Object.fromEntries(
+          args.tasks.map(
+            (t) => [t.id, `${longPrefix}${calls}-${Date.now()}`] as const,
+          ),
+        ),
+        costUsd: 0.05,
+      };
+    };
+    writeBugsYamlDoc([
+      makeBug({ id: "bug-orphan-near-converged", maxAttempts: 5 }),
+    ]);
+    const result = await runFixBugsLoop(makeCtx(invoke, cleanVerify));
+    expect(result.bugsFailed).toEqual(["bug-orphan-near-converged"]);
+    expect(calls).toBe(2);
+    const doc = readBugsYamlDoc();
+    expect(doc.bugs[0]!.attempts).toBe(2);
+    const lastEntry = doc.bugs[0]!.errorLog.at(-1) ?? "";
+    expect(lastEntry).toMatch(/bug-073-convergence-detector/);
+    expect(lastEntry).toMatch(/near-identical/);
+  });
+
   it("succeeds when a bug passes within its attempt cap", async () => {
     let attempt = 0;
     const invoke: InvokeAgentFn = async (args) => {
@@ -221,7 +305,14 @@ describe("runFixBugsLoop — per-bug attempt cap", () => {
         errors: completed
           ? {}
           : Object.fromEntries(
-              args.tasks.map((t) => [t.id, "first-agent flap"] as const),
+              // bug-073 Phase B: vary error message per attempt so the
+              // convergence detector doesn't escalate early. The flake
+              // semantics this test asserts (recover by attempt 3)
+              // require attempts 1-2 to look like genuine progress
+              // attempts, not byte-identical retries.
+              args.tasks.map(
+                (t) => [t.id, `first-agent flap variant ${attempt}`] as const,
+              ),
             ),
         costUsd: 0.05,
       };

@@ -19,7 +19,16 @@ extends: ~/.claude/models.yaml
 #   agents:
 #     backend-builder: { tier: planning, effort: max }
 #     ui-designer:     { tier: mechanical, effort: medium }
-agents: {}
+agents:
+  # feat-065 (2026-05-08) — bug-fixer is a NEW factory agent (feat-064)
+  # that doesn't exist in `~/.claude/models.yaml` system defaults yet.
+  # Pin it here so factory dispatches resolve a model. tier:building +
+  # effort:medium reflects "narrow-scope patch with pre-loaded context"
+  # — bug-fixer doesn't need exploration depth (the orchestrator's
+  # buildBugContextEnvelope already supplied it). See investigate-024 §F8.
+  # NOTE: when ~/.claude/models.yaml gains bug-fixer system-wide, this
+  # entry can be removed (factory will inherit).
+  bug-fixer: { tier: building, effort: medium }
 
 # Budget overrides. Leave empty to inherit.
 # budget:
