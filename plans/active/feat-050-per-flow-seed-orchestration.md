@@ -4,7 +4,7 @@ type: feature
 status: draft
 author-agent: claude-opus-4-7
 created: 2026-05-03
-updated: 2026-05-03
+updated: 2026-05-08
 parent-plan: bug-042-global-setup-baseline-only-seeds-fx-cache
 supersedes: null
 superseded-by: null
@@ -21,7 +21,7 @@ affected-files:
   - .claude/rules/testing-policy.md
   - orchestrator/tests/synthesize-flow-e2e.test.ts
 feature-area: orchestration
-priority: P1
+priority: P0
 attempt-count: 0
 max-attempts: 5
 ---
@@ -156,5 +156,57 @@ This is project-side recovery work. Track separately as `bug-Xxx` in finance-tra
 - Parent: `plans/archive/bug-042-global-setup-baseline-only-seeds-fx-cache.md` — the baseline contract this builds on
 - Sister: `bug-050` — closes the `seed-mismatch` primaryCause class with this plan's primitive
 - Sister: `feat-049` — discriminator that fires bug-050's `seed-mismatch` classification
+- Sister: `bug-073` (filed 2026-05-08) — reading-log-02 empirical instance of the
+  same class; project-side recovery work tracks separately, factory fix is here
 - `.claude/rules/testing-policy.md §Strategy-C-test-seed-contract` — the 3-endpoint contract this exercises
-- Empirical: 3/9 finance-track-01 flow failures (flow-1, flow-8, flow-9) — the canonical motivating cases
+- Empirical: 3/9 finance-track-01 flow failures (flow-1, flow-8, flow-9) — the
+  original motivating cases (2026-05-03)
+- Empirical: 5/6 reading-log-02 flow failures (flow-2/3/4/5/6 fail; flow-1
+  passes only because it CREATES the baseline state via add-book interaction;
+  evidence captured 2026-05-08 mid /fix-bugs run b0e1281c) — confirms the
+  defect class generalises beyond finance-track-01
+
+## Empirical evidence — reading-log-02 (2026-05-08)
+
+Mid-/fix-bugs run b0e1281c, after feat-062 (pure-verify routing) +
+investigate-019 M-F (per-agent MCP scoping) shipped, /fix-bugs auto-filed
+6 flow-failure bugs (bug-flow-flow-1..6). Builders dispatched per
+feat-062's `[web-frontend-builder]` 1-agent sequence. Outcome at
+attempts:1-2:
+
+| Bug                  | Status      | Why                                                                                                                                                                              |
+| -------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| bug-flow-flow-1-null | ✅ resolved | flow-1 ("First-time setup") creates "The Overstory" via the add-book form; doesn't depend on baseline seed                                                                       |
+| bug-flow-flow-2-null | ❌ pending  | spec opens `role=link[name=/The Overstory/i]` — book missing from baseline `apps/api/db/seed.ts`; only flow-1 creates it; cross-spec data residue is non-deterministic           |
+| bug-flow-flow-3-null | 🔄 att 3    | builder added "Project Hail Mary" to baseline seed for the "Edit notes" flow (commit 6bc7528 fix(seed): add Project Hail Mary to baseline seed for flow-3 E2E) — right direction |
+| bug-flow-flow-4-null | ❌ pending  | spec navigates to `/?q=overstory` — same book absence as flow-2                                                                                                                  |
+| bug-flow-flow-5-null | 🔄 att 1    | "Delete book" — needs a deletable book; same shape                                                                                                                               |
+| bug-flow-flow-6-null | 🔄 att 1    | "Settings and tag management" — needs a tag to rename                                                                                                                            |
+
+Empirical signature confirms feat-050's hypothesis: the synthesizer
+emits specs assuming baseline contains the books/tags they reference,
+but the manifest has no `requiredState` field, so the
+user-flows-generator never declared what state each flow needs, and
+the seeder operates blind. Each builder is independently
+re-discovering this and adding 1 book to baseline `seed.ts` — but
+those changes converge on a single fixup branch with merge ordering
+that loses some additions.
+
+**Failure-mode taxonomy** observed in reading-log-02 confirms the
+3-kind variant set is sufficient:
+
+- `kind: "empty"` — flow-1 ("First-time setup") wants empty library
+- `kind: "baseline"` — flow-3 ("Edit notes") would work if baseline
+  had a book to edit — needs the seeder to know which book
+- `kind: "custom"` — flow-9-style ("Offline resilience") not present
+  in reading-log-02 but the schema variant covers it
+
+**Quantitative impact**: at /fix-bugs convergence-time, 5 of 6
+flow-failure bugs were unresolvable per-bug because the structural
+fix is upstream (manifest authoring + synthesizer emission). Each
+unresolvable bug costs ~3× attempts × ~10min = 30 min/bug =
+**~2.5 hr wasted per /fix-bugs run on this class**.
+
+Attempt-3 spend on these bugs is pure-loss compute; until feat-050
+ships, the orchestrator retry ladder cannot make forward progress
+on this defect class.
