@@ -232,7 +232,10 @@ describe("fileBugPlan — bug-050 Phase B agent routing by primaryCause", () => 
     ]);
   });
 
-  it("primaryCause=step-transition (legacy) → default web-frontend-builder", async () => {
+  it("primaryCause=step-transition → [bug-fixer] (feat-064-followup-2)", async () => {
+    // Pre-feat-064-followup-2: routed to default [tier, tester, reviewer].
+    // Post-followup-2: step-transition is the verifier's default for
+    // flow-failure transition timeouts — counts as cheap class.
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({
       projectDir,
@@ -242,11 +245,7 @@ describe("fileBugPlan — bug-050 Phase B agent routing by primaryCause", () => 
     const doc = yaml.load(
       readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
     ) as { bugs: Array<{ agentSequence: string[] }> };
-    expect(doc.bugs[0]?.agentSequence).toEqual([
-      "web-frontend-builder",
-      "tester",
-      "reviewer",
-    ]);
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
   });
 });
 
@@ -380,6 +379,36 @@ describe("fileBugPlan — feat-058 + feat-062 + feat-064 trimmed agentSequence p
     await fileBugPlan({
       projectDir,
       violation: stubFlowFailure("flow-execution-failure"),
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
+  });
+
+  it("primaryCause=step-transition → [bug-fixer] (feat-064-followup-2)", async () => {
+    // Empirical: reading-log-02 validation 2026-05-08 — verifier's runner
+    // emits primaryCause:'step-transition' for flow-failure where the
+    // expected screen-id never appeared. Pre-followup: fell through to
+    // default 3-agent route. Post-followup: cheap-class.
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: stubFlowFailure("step-transition"),
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
+  });
+
+  it("primaryCause=timeout-no-evidence → [bug-fixer] (feat-064-followup-2)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: stubFlowFailure("timeout-no-evidence"),
       iteration: 1,
     });
     const doc = yaml.load(

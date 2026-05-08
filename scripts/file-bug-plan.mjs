@@ -916,10 +916,20 @@ function defaultAgentSequence(violation, tier = "web-frontend-builder") {
     // feat-063). The `tier` parameter is intentionally unused here
     // (preserved for the seed-setup branch's backend-builder override
     // + future tier-aware routing).
+    // feat-064-followup-2 (2026-05-08) — added step-transition +
+    // timeout-no-evidence per FlowPrimaryCause enum in build-to-spec-
+    // verify.ts. The verifier's runner emits these for transition
+    // timeouts + tool failures with no further classification — both
+    // are flow-execution-failure shapes from the user's perspective.
+    // Empirical: reading-log-02 validation 2026-05-08 — without these
+    // case entries, 6/14 fresh flow-failure bugs routed to default
+    // [<tier>, tester, reviewer] (3-agent) defeating bug-fixer routing.
     case "dev-server-compile":
     case "runtime-error":
     case "visual-parity":
     case "flow-execution-failure":
+    case "step-transition":
+    case "timeout-no-evidence":
       return ["bug-fixer"];
     // Real backend work: full safety net (overrides `tier`).
     case "seed-setup":
@@ -1032,10 +1042,7 @@ function buildBugEntry({
         violation.kind === "parity-divergence"
       ) {
         violationForRouting = { primaryCause: "visual-parity" };
-      } else if (
-        violation.kind === "flow-failure" &&
-        !violation.primaryCause
-      ) {
+      } else if (violation.kind === "flow-failure" && !violation.primaryCause) {
         // Flow-failure with no upstream classification — default to the
         // flow-execution-failure cause class so bug-fixer routing fires.
         violationForRouting = { primaryCause: "flow-execution-failure" };
