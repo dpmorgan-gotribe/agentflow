@@ -387,6 +387,39 @@ describe("fileBugPlan — feat-058 + feat-062 + feat-064 trimmed agentSequence p
     ) as { bugs: Array<{ agentSequence: string[] }> };
     expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
   });
+
+  it("flow-failure with NO primaryCause (synthesizer catch) → [bug-fixer] (feat-064-followup)", async () => {
+    // Empirical motivator (reading-log-02 validation 2026-05-08): the
+    // synthesizer's catch-path emits FlowFailures without primaryCause set.
+    // Without the file-bug-plan fallback, those route to the legacy 3-agent
+    // [<tier>, tester, reviewer] default — defeating feat-064's bug-fixer
+    // routing. The fallback synthesizes primaryCause:"flow-execution-failure"
+    // so all flow-failures route to bug-fixer regardless of upstream
+    // classification.
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "flow-failure",
+        flowId: "flow-1",
+        flowName: "Walks 7 interactions deterministically",
+        step: 0,
+        fromScreenId: null,
+        expectedScreenId: null,
+        actualScreenId: null,
+        selector: null,
+        screenshotPath: null,
+        htmlDumpPath: null,
+        message: "Test timeout 30000ms exceeded",
+        // primaryCause: NOT set — synthesizer catch-path shape
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
+  });
 });
 
 // ─── bug-074 (2026-05-08): null-safe flow-failure body + bug-id slug ────────

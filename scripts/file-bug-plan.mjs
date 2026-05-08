@@ -1006,12 +1006,31 @@ function buildBugEntry({
       // routes them through the trimmed cheap-class sequence.
       // feat-062 (2026-05-08) — cheap classes now collapse to `[<tier>]`
       // only, so orphans + parity bugs both end up as 1-agent dispatches.
-      const violationForRouting =
+      // feat-064-followup (2026-05-08) — flow-failure violations from the
+      // synthesizer's catch path may not always have primaryCause set
+      // (the runner's classifier doesn't classify EVERY failure mode).
+      // Without this synthesis they fall through to default
+      // `[<tier>, tester, reviewer]` — defeating feat-064's bug-fixer
+      // routing. Empirical: reading-log-02 validation 2026-05-08 had
+      // 6/6 fresh flow-failure bugs route to web-frontend-builder
+      // instead of bug-fixer because primaryCause was unset.
+      let violationForRouting;
+      if (
         violation.kind === "orphan-component" ||
         violation.kind === "orphan-route" ||
         violation.kind === "parity-divergence"
-          ? { primaryCause: "visual-parity" } // shares the [<tier>] sequence
-          : violation;
+      ) {
+        violationForRouting = { primaryCause: "visual-parity" };
+      } else if (
+        violation.kind === "flow-failure" &&
+        !violation.primaryCause
+      ) {
+        // Flow-failure with no upstream classification — default to the
+        // flow-execution-failure cause class so bug-fixer routing fires.
+        violationForRouting = { primaryCause: "flow-execution-failure" };
+      } else {
+        violationForRouting = violation;
+      }
       // Pass the derived affectsFiles into the tier inference for orphan
       // violations (their original violation object lacks the field).
       const violationForTier =
