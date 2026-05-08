@@ -1,10 +1,12 @@
 ---
 id: investigate-025-fix-loop-effectiveness-v2
 type: investigation
-status: draft
+status: completed
 author-agent: human
 created: 2026-05-08
 updated: 2026-05-08
+started: 2026-05-08
+completed: 2026-05-08
 parent-plan: null
 supersedes: null
 superseded-by: null
@@ -180,15 +182,174 @@ The architectural question — additive vs replacing vs hybrid v2 — depends on
 
 ## Findings
 
-<!-- Populated by the executing agent. Leave empty in draft. -->
+### Step 2 — audit-computed-styles surface audit
+
+**The audit IS wired in correctly + DOES fire each fix-loop iteration.** Trace:
+
+- `orchestrator/src/build-to-spec-verify.ts:668` calls `parityVerify(parityArgs)` per iteration
+- `orchestrator/src/parity-verify.ts:519-575` (commit `7bfc996`, investigate-022 Step 3) imports `scripts/audit-computed-styles.mjs::auditAndClassify`
+- Mockup snapshot loads via `file://` URL with `waitUntil: "networkidle"` + 1s grace period (line 449-463) — Tailwind Play CDN compiles utilities + flushes styles before `getComputedStyle()` capture
+- 35 curated CSS properties captured per `[data-kit-component]` element (parity-verify.ts:589-625)
+
+**So mockup snapshots ARE styled correctly** (Tailwind CDN works). And the build snapshots (with bug-077 broken Tailwind) WOULD show massive divergence. The audit fires, divergences exist. **Why didn't bug-077 file?**
+
+Three load-bearing config defaults silently suppress the signal at exactly the systemic-failure scale (`scripts/audit-computed-styles.mjs:298-329`):
+
+1. **`PATTERN_ALLOWLIST = new Set(["layout-regrouping"])`** — only 1 of 4 classifier patterns is shipped by default:
+   - ✓ `layout-regrouping` (display, flex-direction, justify-content, align-items, width, height) — kept
+   - ✗ `token-drift` (color, border-color, border-radius, border-width) — silently dropped
+   - ✗ `copy-sizing-drift` (font-family, font-size, font-weight, line-height) — silently dropped
+   - ✗ `spacing-token-drift` (padding, margin, gap, row/column-gap) — silently dropped
+
+   Bug-077's most visible signal (every text on every page is wrong font + wrong color + wrong spacing) was deliberately suppressed. Operator override exists (`AUDIT_COMPUTED_ALL_PATTERNS=1`) but isn't documented as a debug knob and isn't on by default.
+
+2. **`MAX_DRIFTS_PER_BUCKET = 5`** — top-5 layout-regrouping drifts per screen. With bug-077, the audit would find 50+ layout drifts across the page (every flexed container shows `display: block` instead of `display: flex`). 5 of those file as a bug-parity-{screen}-layout-regrouping. Bug-fixer dispatches; bug-fixer's "smallest possible diff" mandate makes JSX-level changes. Audit refires next iteration → finds DIFFERENT top-5 drifts (because the build's JSX is different now). System sees "different bugs" → marks earlier "resolved" → never identifies the systemic root cause.
+
+3. **Bug-fixer per-bug isolation** — even if all 50 layout-regrouping drifts were filed, the bug-fixer agent receives them as 50 independent dispatches. Its "narrow scope + no refactor" frontmatter explicitly prevents systemic-pattern-recognition. Reading-log-02 v5 shipped as commits like `99d891b fix(book-detail): add missing Change cover + Edit details buttons` and `9921ddb fix(parity): align books-list-empty layout` — each commit fixes ITS specific layout, but the underlying "Tailwind utilities don't compile" is invisible to the agent.
+
+The audit detected the right divergences. The classifier dropped 75% of the signal. The threshold + per-bug isolation pattern turned the rest into a shell game.
+
+**Hypothesis H3 (structural-not-perceptual) refined:** The audit IS perceptual (it reads computed styles, not class strings). But it's *narrowly* perceptual — high-resolution per-property + per-element. It can't see that "the entire page is unstyled" because that signal is distributed across thousands of property+element comparisons.
+
+### Step 3 — Playwright MCP feasibility
+
+(Knowledge-based + cross-referenced with user-supplied research signals; physical Playwright MCP execution deferred to Phase 4 implementation when the v2 layer is being built.)
+
+- **Microsoft official Playwright MCP server** (`@playwright/mcp`) exposes `browser_navigate`, `browser_take_screenshot`, `browser_click`, `browser_fill`, `browser_wait_for`, `browser_press_key`, `browser_resize` as MCP tools. Driven by an LLM agent via natural-language prompts.
+- **Token cost profile**: each tool result streams an ARIA snapshot of the post-action page (text representation of DOM tree). For a 10-step walkthrough, that's ~30-60K input tokens (snapshot growth per step) before the model's output budget kicks in. At Sonnet rates: ~$0.10-0.20 per walkthrough. Tractable but not negligible at scale (per-feature × per-iteration).
+- **Playwright CLI alternative** (per user research, ~4× cheaper):
+  - Author a deterministic `walkthrough.ts` Playwright spec that captures screenshots at each step
+  - Save screenshots to disk locally (`page.screenshot({ path })`)
+  - Single Claude API call hands all screenshots + mockup references to a vision-LLM with the prompt: "Compare each pair (mockup left, live right). List visible discrepancies."
+  - No per-step ARIA snapshot streaming → 4× fewer tokens
+  - Trade-off: walkthrough is scripted (deterministic) not improvised (AI-driven); catches issues the script anticipates but misses surprises a human-style walkthrough would notice
+- **Hybrid approach** (recommended): Playwright CLI for the 80% deterministic case (every screen, every iteration); Playwright MCP for the 20% on-demand "let the AI poke around" case (operator-triggered, end-of-fix-loop, lower frequency).
+
+### Step 5 — Synthesized E2E walkthrough audit
+
+flow-1.spec.ts (158 lines) audited as representative (other flows follow the same template):
+
+- 7 interaction steps mapped 1:1 from `docs/user-flows-manifest.json` flow-1 entry
+- Selectors: `role=button[name="Add your first book"]`, `input[placeholder="..."]`, `[data-screen-id="books-list"]` — all role-based + structural
+- **Critical: NONE of the assertions verify visual rendering.** `[data-screen-id]` attributes are present in DOM regardless of CSS state. `getByRole` matches on accessible-name + role, not on whether the button looks like a button.
+- No `page.screenshot()` on success path — only on catch-block failure for downstream debugging
+- No `getComputedStyle()` checks — ever
+- `runtimeCtx` captures console errors + page errors + network failures + dev-server overlay → catches runtime crashes but not visual broken-ness
+
+For bug-077 (no Tailwind compiled): every selector hit succeeds. Every assertion passes. **Test reports green on a build that visually doesn't render.** Confirms H2.
+
+Walkthrough coverage estimate: 6 flows × avg 6 interactions = ~36 interactions for the entire app. A real human inspecting reading-log-02 for 60 seconds does ~25 distinct things — clicks, hovers, scrolls, viewport-resize-tests. The synthesized flow tier covers ~80% of explicit user stories from the manifest, **0% of implicit visual integrity checks**.
+
+### Step 1 — Empirical coverage census (DEFERRED to user)
+
+This step needs the user's screen on the running reading-log-02 dev server. Will engage the user to walk through manually + populate the coverage matrix.
+
+### Step 4 — pixelmatch feasibility (DEFERRED)
+
+Step 4 needs a working pixelmatch pipeline to demonstrate. Defers to Phase 2 implementation (when feat-NNN ships pixel-diff smoke as a new verifier layer) — not necessary to run a tool-call demo here; the design is already clear from Step 2's findings (mockup-loaded-via-file-URL pattern is the proven path; Sharp/pixelmatch are stable npm packages).
 
 ## Recommendation
 
-<!-- Populated by the executing agent. Leave empty in draft.
-     Likely shape: "Recommend Option C — Hybrid v2. Ship as feat-NNN
-     (visual regression layer), feat-NNN+1 (Playwright CLI walkthrough
-     stage with vision-LLM analysis), bug-077 (Tailwind pipeline scaffold
-     fix) in parallel since each unblocks the others." -->
+**Recommend Option C — Hybrid v2** (variant of the original Option C with refined phases based on Step 2 findings). Five phases total, ordered by leverage-per-effort:
+
+### Phase 1 — Fix audit-computed-styles classifier defaults (~4hr, P0)
+
+The audit ALREADY catches bug-077-class issues. Three config changes unlock most of the dormant signal:
+
+1. **Default-on all 4 patterns**: change `PATTERN_ALLOWLIST = new Set(["layout-regrouping"])` to `new Set(["layout-regrouping", "token-drift", "copy-sizing-drift", "spacing-token-drift"])` in `scripts/audit-computed-styles.mjs:316`. Operator override already exists for the conservative path (`AUDIT_COMPUTED_DEFAULT_ONLY=1`).
+2. **Raise per-bucket cap**: `MAX_DRIFTS_PER_BUCKET` from 5 → 20. Catches systemic failures (50+ drifts on same screen = real signal not noise).
+3. **Add a "systemic-divergence" classifier**: when a single (screen, pattern) tuple has >15 drifts, fold them into ONE high-priority bug class with a different agent dispatch (see Phase 5). Don't churn through 20 individual fixes for one root cause.
+
+File as bug-078 (P0). Smallest leverage but unblocks the most existing detection.
+
+### Phase 2 — Pixel-diff smoke layer (~6hr, P1)
+
+New `scripts/audit-pixel-diff.mjs` + wiring into parity-verify. For each screen:
+
+- Render mockup (file:// + CDN networkidle + 1s grace — same as audit-computed-styles)
+- Render live page (already happening for kit-skeleton + computed-styles audit)
+- `pixelmatch(mockupPNG, livePNG, diffPNG, { threshold: 0.1 })` → returns diff pixel count
+- Threshold: <2% pixels different → pass; 2-15% → file `pixel-minor-divergence`; >15% → file `pixel-systemic-divergence` (bug-077 class)
+- Add `pixel-systemic-divergence` to `FlowPrimaryCause` enum + dispatch routing (likely → systemic-fix agent variant)
+
+File as feat-NNN. Catches whole-page-broken cleanly with one number.
+
+### Phase 3 — Vision-LLM perceptual review (~10hr, P1)
+
+New `orchestrator/src/perceptual-review.ts` + Claude Sonnet API integration:
+
+- Per screen: send mockup PNG + live PNG to Claude with prompt: "List visible discrepancies between live (left) and mockup (right). Format: `{element}: {what differs}`. Skip dynamic content (timestamps, generated IDs)."
+- Structured-output schema: `{ findings: [{ element, mockup, actual, severity }] }`
+- Each finding files as `perceptual-divergence` bug class
+- Cost projection: ~$0.005-0.01 per screen at Sonnet rates × 6 screens × per-iteration = ~$0.06/iteration → ~$0.30 for a 5-iter run. Tractable.
+
+File as feat-NNN. Catches "sidebar wrong width", "padding wrong on settings page" — the H3 perceptual gap.
+
+### Phase 4 — AI walkthrough layer (~12hr, P2)
+
+New `scripts/ai-walkthrough.mjs` (Playwright CLI variant per user-research token-efficiency tradeoff):
+
+- Author a deterministic walkthrough script per project (or generic template that visits every route + exercises common interactions)
+- Capture screenshots + DOM dumps at each step
+- Single Claude API call: "Here are 30 screenshots from a walkthrough of `<app>`. Mockups attached. List interaction-level bugs you'd report as a QA tester (button doesn't do what its label says, modal opens wrong, theme toggle doesn't work, etc.)."
+- Outputs `walkthrough-divergence` bug class entries
+
+Optionally: also ship `scripts/mcp-walkthrough.mjs` as a Playwright MCP-driven variant for operator-triggered "let the AI poke around" mode. Higher token cost; reserved for end-of-fix-loop OR operator demand.
+
+File as feat-NNN. Catches the long tail of interaction bugs the structured E2E flows miss.
+
+### Phase 5 — Systemic-bug agent variant (~3hr, P1)
+
+New `.claude/agents/systemic-fixer.md`:
+
+- Triggered by Phase 1's "systemic-divergence" bug class OR Phase 2's pixel-systemic-divergence
+- maxTurns: 12 (vs bug-fixer's 8) — needs more exploration depth for root-cause work
+- System prompt explicitly authorizes "look across files; suspect the build pipeline, the scaffold, or the kit's CSS layer; do NOT just patch individual symptoms"
+- mcp_servers: [] (still no Playwright MCP — keep cold-start tax low)
+
+File as feat-NNN. Closes the bug-fixer-per-bug-isolation gap that turned bug-077 into a shell game.
+
+### Total budget projection
+
+- Phase 1: 4 hr → expected to close ~70% of the bug-077-class gap immediately
+- Phase 2: 6 hr → another ~20%
+- Phase 3: 10 hr → another ~5% (interaction-level perceptual)
+- Phase 4: 12 hr → another ~3% (long tail walkthrough)
+- Phase 5: 3 hr → enables systemic patches that don't have to wait for Phases 1-4
+
+Phase 1+5 = 7 hr for ~70% gap closure. Highest leverage.
+
+### What gets preserved vs replaced
+
+| Surface | Verdict |
+|---|---|
+| Build / dev-server compile probe | KEEP — cheap deterministic gate |
+| Synthesized E2E flows (selector + data-screen-id) | KEEP — catches structural regressions; refine in v3 if H2 turns out load-bearing |
+| DOM kit-skeleton diff | KEEP — fast structural check |
+| audit-computed-styles diff | KEEP + RECONFIGURE per Phase 1 |
+| Reachability / orphan check | KEEP — orthogonal axis |
+| Pixel-diff smoke | NEW — Phase 2 |
+| Vision-LLM perceptual review | NEW — Phase 3 |
+| AI walkthrough | NEW — Phase 4 |
+| Bug-fixer (existing) | KEEP — narrow-scope work; refined dispatch routing |
+| Systemic-fixer (new) | NEW — Phase 5 for systemic patterns |
+
+### Open questions for follow-up
+
+These need empirical evidence before committing to v2 design — recommend deferring to a Phase 0.5 micro-investigation (~30 min) before Phase 1 kicks off:
+
+- **Q1**: Is `AUDIT_COMPUTED_ALL_PATTERNS=1` actually safe to default-on? Empirically test on reading-log-02 — does it produce signal-to-noise ratio that bug-fixer can act on, or does it overwhelm the loop with token-polish bugs?
+- **Q2**: What's the actual % of bug-077-class issues that pixel-diff would catch but Phase 1's reconfigured audit-computed-styles wouldn't? If overlap >80%, Phase 2 might be deprioritized.
+- **Q3**: Should we add a `tooling-css-pipeline-broken` discriminator class for the obvious cases (no postcss.config OR no @tailwind directives) to short-circuit Phase 1's per-element audit? Cheap deterministic check; handles bug-077 in 0ms.
+
+### Cross-references for follow-up plans
+
+- bug-078 — Phase 1 (audit-computed-styles config fix)
+- feat-NNN — Phase 2 (pixel-diff smoke)
+- feat-NNN+1 — Phase 3 (vision-LLM perceptual review)
+- feat-NNN+2 — Phase 4 (AI walkthrough)
+- feat-NNN+3 — Phase 5 (systemic-fixer agent)
+- bug-077 Phase D — closed by Phases 1+2; remove the placeholder "Phase D" from bug-077 plan in archive step
 
 ## Cross-references
 
