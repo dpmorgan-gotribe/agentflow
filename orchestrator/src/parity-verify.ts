@@ -1,5 +1,11 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { resolve, join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, resolve, join } from "node:path";
 import {
   ParityVerifyOutputSchema,
   type ParityVerifyOutput,
@@ -419,6 +425,15 @@ async function defaultCompareScreen({
   let builtHtml: string;
   let builtSnapshot: Record<string, Record<string, string>> = {};
   let mockupSnapshot: Record<string, Record<string, string>> = {};
+  // feat-067 Phase B (2026-05-11) — capture PNG screenshots alongside the
+  // existing HTML + computed-style snapshots so audit-pixel-diff can run
+  // a viewport-scope pixel comparison. Viewport-only (fullPage: false) to
+  // keep capture cost ~100ms per page; full-page screenshots are 5-10×
+  // larger + don't help v1 (whole-screen mismatches show at viewport
+  // scope). Behind-the-fold pixel-diff is deferred to a future Phase if
+  // specific bugs surface that require it.
+  let builtPng: Buffer | undefined;
+  let mockupPng: Buffer | undefined;
   let computedStyleWarnings: string[] = [];
   try {
     browser = await chromium.launch({ headless: true });
@@ -436,6 +451,14 @@ async function defaultCompareScreen({
     } catch (err) {
       computedStyleWarnings.push(
         `built computed-style capture failed: ${(err as Error).message}`,
+      );
+    }
+    // feat-067 — PNG capture on built page.
+    try {
+      builtPng = await builtPage.screenshot({ type: "png", fullPage: false });
+    } catch (err) {
+      computedStyleWarnings.push(
+        `built screenshot capture failed: ${(err as Error).message}`,
       );
     }
     // Capture mockup snapshot — open a SECOND page, navigate to the
@@ -462,6 +485,20 @@ async function defaultCompareScreen({
       // bump to 3s if false-positives surface on slow machines.
       await new Promise((r) => setTimeout(r, 1000));
       mockupSnapshot = await captureComputedStyleSnapshot(mockupPage);
+      // feat-067 — PNG capture on mockup page. Done inside the same try
+      // so the mockupPage handle is still in scope; the screenshot lands
+      // AFTER the 1s Tailwind-CDN grace + computed-style capture so we
+      // get the same fully-styled DOM both auditors see.
+      try {
+        mockupPng = await mockupPage.screenshot({
+          type: "png",
+          fullPage: false,
+        });
+      } catch (err) {
+        computedStyleWarnings.push(
+          `mockup screenshot capture failed: ${(err as Error).message}`,
+        );
+      }
     } catch (err) {
       computedStyleWarnings.push(
         `mockup computed-style capture failed: ${(err as Error).message}`,
@@ -569,8 +606,80 @@ async function defaultCompareScreen({
     // pushed at capture time. Don't double-warn.
   }
 
+  // ── feat-067 Phase B (2026-05-11) — wire audit-pixel-diff ───────────────
+  // Runs in parallel with audit-computed-styles. Each catches what the
+  // other misses: computed-styles needs `[data-kit-component]`-tagged
+  // selectors to compare; pixel-diff catches missing/extra decorative
+  // elements + whole-screen visual breakage regardless of structural tags.
+  // Both audits' outputs are merged into the same divergences array; the
+  // pattern-name (pixel-{minor,systemic}-divergence vs token/copy/spacing/
+  // layout-regrouping) drives downstream dispatch routing per feat-070's
+  // systemic-fixer SYSTEMIC_PARITY_PATTERNS set.
+  //
+  // feat-067 Phase C (2026-05-11) — when a pixel-* divergence fires, persist
+  // the diff-overlay PNG to `<projectDir>/docs/build-to-spec/pixel-diffs/
+  // <screenId>.diff.png` + populate `detail.diffPngPath` so the bug-fix-
+  // context envelope can pre-load it for systemic-fixer dispatches.
+  let pixelDivergences: ParityDivergence[] = [];
+  if (builtPng && mockupPng) {
+    try {
+      const { auditAndClassifyPixels } = await import("./audit-pixel-diff.js");
+      const pixelResult = auditAndClassifyPixels({
+        screenId: screen.id,
+        mockupPng,
+        builtPng,
+      });
+      if (pixelResult.stats.error) {
+        computedStyleWarnings.push(
+          `audit-pixel-diff: ${pixelResult.stats.error}`,
+        );
+      }
+      // Persist the diff PNG when a divergence is firing (i.e., the
+      // overlay is meaningful — for sub-threshold diffs we have stats
+      // but no bug, no point writing). Best-effort: a failed write
+      // surfaces as a warning, the divergence still files.
+      const persistedDivergences = pixelResult.divergences.map((d) => {
+        if (!pixelResult.stats.diffPng) return d as unknown as ParityDivergence;
+        const relPath = join(
+          "docs",
+          "build-to-spec",
+          "pixel-diffs",
+          `${screen.id}.diff.png`,
+        );
+        const absPath = join(projectDir, relPath);
+        try {
+          mkdirSync(dirname(absPath), { recursive: true });
+          writeFileSync(absPath, pixelResult.stats.diffPng);
+          return {
+            ...d,
+            detail: {
+              ...d.detail,
+              diffPngPath: relPath.replace(/\\/g, "/"),
+            },
+          } as unknown as ParityDivergence;
+        } catch (err) {
+          computedStyleWarnings.push(
+            `pixel-diff PNG persist failed for ${screen.id}: ${
+              (err as Error).message
+            }`,
+          );
+          return d as unknown as ParityDivergence;
+        }
+      });
+      pixelDivergences = persistedDivergences;
+    } catch (err) {
+      computedStyleWarnings.push(
+        `audit-pixel-diff threw: ${(err as Error).message}`,
+      );
+    }
+  }
+
   return {
-    divergences: [...(result.divergences ?? []), ...styleDivergences],
+    divergences: [
+      ...(result.divergences ?? []),
+      ...styleDivergences,
+      ...pixelDivergences,
+    ],
     warnings: computedStyleWarnings,
   };
 }
@@ -807,9 +916,15 @@ export function mergeByScreenPattern(
     const key = `${div.screen}::${div.pattern}`;
     const existing = byKey.get(key);
     if (!existing) {
+      // feat-067 Phase C — preserve any extra detail fields the schema
+      // declares (currently diffPngPath + pixelStats for pixel-* patterns).
+      // Pre-fix: this destructured only the 4 well-known arrays, silently
+      // stripping the pixel-diff pass-through fields the Zod parse would
+      // otherwise keep.
       byKey.set(key, {
         ...div,
         detail: {
+          ...div.detail,
           missing: [...div.detail.missing],
           extra: [...div.detail.extra],
           variantDrift: [...div.detail.variantDrift],
@@ -822,6 +937,16 @@ export function mergeByScreenPattern(
     existing.detail.extra.push(...div.detail.extra);
     existing.detail.variantDrift.push(...div.detail.variantDrift);
     existing.detail.styleDrift.push(...div.detail.styleDrift);
+    // Pixel-diff fields don't merge meaningfully (same screen/pattern would
+    // have the same diff PNG); last-write wins.
+    const divDetail = div.detail as Record<string, unknown>;
+    const existingDetail = existing.detail as Record<string, unknown>;
+    if (typeof divDetail.diffPngPath === "string") {
+      existingDetail.diffPngPath = divDetail.diffPngPath;
+    }
+    if (divDetail.pixelStats !== undefined) {
+      existingDetail.pixelStats = divDetail.pixelStats;
+    }
     if (sevRank(div.severity) < sevRank(existing.severity)) {
       existing.severity = div.severity;
     }

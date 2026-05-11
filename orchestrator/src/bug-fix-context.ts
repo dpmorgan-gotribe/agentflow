@@ -147,6 +147,23 @@ function resolveFilesForBug(
   }
 
   if (bug.source === "visual-parity" && bug.parity) {
+    // feat-067 Phase C (2026-05-11) — for pixel-* divergences, the
+    // diff-overlay PNG is the LOAD-BEARING fix-site signal. Mockup HTML
+    // doesn't tell the agent what's visually broken; the overlay
+    // (red-marked diff pixels on the built page) does. Pre-load it
+    // FIRST so the dispatched bug-fixer / systemic-fixer reads it as
+    // their first action. Path is project-relative; emitFileSection
+    // streams the file via Read tool which handles PNG as inline image.
+    if (
+      typeof (bug.parity.detail as Record<string, unknown> | undefined)
+        ?.diffPngPath === "string"
+    ) {
+      out.push({
+        relPath: (bug.parity.detail as Record<string, unknown>)
+          .diffPngPath as string,
+        reason: "Pixel-diff overlay (load-bearing for pixel-* bugs)",
+      });
+    }
     // Pre-load the mockup — the structural ground truth for the parity
     // comparison. Per the testing-policy, mockups live at
     // `docs/screens/{platform}/{screen}.html`. Default platform is

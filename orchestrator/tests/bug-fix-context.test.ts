@@ -199,6 +199,78 @@ describe("buildBugContextEnvelope — visual-parity", () => {
     // Mockup + index page resolved; route-named page + component missing.
     expect(envelope.resolvedFiles).toHaveLength(2);
   });
+
+  // ─── feat-067 Phase C — diffPngPath envelope pre-load ─────────────────
+  it("pre-loads the pixel-diff overlay PNG when bug.parity.detail.diffPngPath is set (load-bearing for pixel-* bugs)", () => {
+    // Mockup HTML at the canonical location.
+    writeProjectFile(
+      "docs/screens/webapp/home.html",
+      "<html><body><h1>Mockup</h1></body></html>",
+    );
+    // Empty PNG byte sequence (just the 8-byte PNG header) — emitFileSection
+    // streams the file via Read tool, which handles PNGs as inline images.
+    // We just need the file to exist for the resolver to count it.
+    writeProjectFile(
+      "docs/build-to-spec/pixel-diffs/home.diff.png",
+      // PNG magic-bytes header — enough to be treated as a PNG file by
+      // anything that sniffs the first 8 bytes.
+      "\x89PNG\r\n\x1a\n",
+    );
+    const bug = makeBug({
+      source: "visual-parity",
+      parity: {
+        screen: "home",
+        pattern: "pixel-systemic-divergence",
+        detail: {
+          missing: [],
+          extra: [],
+          variantDrift: [],
+          styleDrift: [],
+          // Phase C signal: the parity-verify pipeline persists the diff
+          // PNG + populates this path. Schema lives in
+          // packages/orchestrator-contracts/src/parity-verify.ts.
+          diffPngPath: "docs/build-to-spec/pixel-diffs/home.diff.png",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      },
+    });
+    const envelope = buildBugContextEnvelope({ bug, projectRoot });
+    const resolvedPaths = envelope.resolvedFiles.map((r) => r.path);
+    expect(resolvedPaths).toContain(
+      "docs/build-to-spec/pixel-diffs/home.diff.png",
+    );
+    // The diff PNG entry's reason names its load-bearing role so dispatched
+    // agents know why it's first in the envelope.
+    const diffEntry = envelope.resolvedFiles.find((r) =>
+      r.path.endsWith(".diff.png"),
+    );
+    expect(diffEntry?.reason).toMatch(/Pixel-diff overlay/);
+  });
+
+  it("does NOT add a pixel-diff entry when bug.parity.detail.diffPngPath is unset (non-pixel patterns)", () => {
+    writeProjectFile(
+      "docs/screens/webapp/settings.html",
+      "<html><body>settings</body></html>",
+    );
+    const bug = makeBug({
+      source: "visual-parity",
+      parity: {
+        screen: "settings",
+        pattern: "token-drift",
+        detail: {
+          missing: [],
+          extra: [],
+          variantDrift: [],
+          styleDrift: [],
+          // No diffPngPath — token-drift comes from audit-computed-styles,
+          // not from audit-pixel-diff.
+        },
+      },
+    });
+    const envelope = buildBugContextEnvelope({ bug, projectRoot });
+    const resolvedPaths = envelope.resolvedFiles.map((r) => r.path);
+    expect(resolvedPaths.find((p) => p.endsWith(".diff.png"))).toBeUndefined();
+  });
 });
 
 describe("buildBugContextEnvelope — reachability-orphan", () => {

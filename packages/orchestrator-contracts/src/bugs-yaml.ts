@@ -122,6 +122,18 @@ export const BugParityContextSchema = z.object({
       extra: z.array(z.string()).default([]),
       variantDrift: z.array(z.unknown()).default([]),
       styleDrift: z.array(z.unknown()).default([]),
+      // feat-067 Phase C (2026-05-11) — pixel-diff overlay path + stats.
+      // Mirror of ParityDivergenceDetailSchema in parity-verify.ts so the
+      // values survive the bugs.yaml round-trip (Zod's default .object()
+      // strips unknown fields; declaring them keeps them).
+      diffPngPath: z.string(),
+      pixelStats: z.object({
+        diffPixels: z.number().int().nonnegative(),
+        totalPixels: z.number().int().nonnegative(),
+        diffRatio: z.number().min(0).max(1),
+        width: z.number().int().nonnegative(),
+        height: z.number().int().nonnegative(),
+      }),
     })
     .partial(),
 });

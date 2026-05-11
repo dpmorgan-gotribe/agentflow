@@ -91,6 +91,29 @@ export const ParityDivergenceDetailSchema = z.object({
   variantDrift: z.array(ParityVariantDriftSchema).default([]),
   /** computed-style mismatches on the curated selector list */
   styleDrift: z.array(ParityStyleDriftSchema).default([]),
+  /**
+   * feat-067 Phase C (2026-05-11) — relative path under `<projectDir>` to
+   * the diff-overlay PNG produced by audit-pixel-diff when the pattern is
+   * `pixel-{minor,systemic}-divergence`. Empty / undefined for all other
+   * pattern types (structural / computed-style audits don't produce
+   * images). The bug-fix-context envelope reads this path so dispatched
+   * agents see the diff via the Read tool's image support.
+   */
+  diffPngPath: z.string().optional(),
+  /**
+   * feat-067 Phase C — pixel-diff statistics. Free-form pass-through used
+   * by the bug-author body template for diagnostic ("18% pixel diff;
+   * 65,232 of 362,400 pixels differ"). Only set for pixel-* patterns.
+   */
+  pixelStats: z
+    .object({
+      diffPixels: z.number().int().nonnegative(),
+      totalPixels: z.number().int().nonnegative(),
+      diffRatio: z.number().min(0).max(1),
+      width: z.number().int().nonnegative(),
+      height: z.number().int().nonnegative(),
+    })
+    .optional(),
 });
 export type ParityDivergenceDetail = z.infer<
   typeof ParityDivergenceDetailSchema
