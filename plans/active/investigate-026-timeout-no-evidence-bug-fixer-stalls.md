@@ -1,7 +1,7 @@
 ---
 id: investigate-026-timeout-no-evidence-bug-fixer-stalls
 type: investigation
-status: draft
+status: completed
 author-agent: human
 created: 2026-05-11
 updated: 2026-05-11
@@ -83,7 +83,157 @@ That's the work of the SYNTHESIZER + the AGENT combined, with the agent doing bo
 
 ## Findings
 
-<!-- Populated by executing agent. -->
+Investigation executed 2026-05-11, ~20 min of 30-min time-box. **Three critical findings, one of which is far worse than the original hypothesis.**
+
+### Finding 1 — Envelope IS information-thin (hypothesis confirmed)
+
+`orchestrator/src/bug-fix-context.ts:133-147` — for `flow-execution-failure` bugs, the resolver pre-loads ONLY:
+
+1. `apps/web/e2e/synthesized/<flowId>.spec.ts` (the failing spec)
+2. `docs/user-flows-manifest.json` (the full flow manifest)
+
+NOT pre-loaded:
+
+- Failure HTML envelope (which exists at `docs/build-to-spec/failures/<flowId>-failure.html`)
+- Failure screenshot (when captured, at `docs/build-to-spec/failures/<flowId>-failure.png`)
+- The page being navigated to (`apps/web/app/page.tsx`, `apps/web/app/(shell)/page.tsx`, etc.)
+- The api-client code the test hits
+- The seed-helpers / fixture data
+
+So the agent gets the spec ("click X, expect Y") + the manifest ("flow-2 does N interactions"), then has to discover ALL the runtime context (what page rendered, what error fired, what fix-site is) via its own Read/Grep budget.
+
+### Finding 2 — The actual failures are `page.goto` timeouts, NOT flow logic bugs (this is the real surprise)
+
+All 6 reading-log-02 flow failures captured the same error shape — checked their `failure.html` envelopes:
+
+```
+Error: page.goto: Test timeout of 30000ms exceeded.
+Call log:
+  - navigating to "http://localhost:3000/", waiting until "load"
+```
+
+5 of 6 timed out on `http://localhost:3000/`. 1 on `/tags`. Every test failed at `page.goto` BEFORE reaching any interaction step. So the synthesizer's `__stepIndex` was `0` (just started) when the error fired — hence "expected null, landed on (no screen-id)" in the bug summary, hence `primaryCause: "timeout-no-evidence"` because the runner had no step metadata to classify.
+
+**This is not a flow-execution failure.** It's a `dev-server-not-responding-to-navigation` failure. The dev-server's `/health` check passed (orchestrator's bootDevServer would've thrown otherwise), but actual navigations time out within Playwright's 30s window. The hydration error from bug-079 plus the bug-080 `ENABLE_TEST_SEED` path issue plus general Next.js cold-boot may all contribute.
+
+The agent has nothing to fix here — the test infrastructure is broken, not the source code.
+
+### Finding 3 — The orchestrator trusts agent self-reported `taskOutcomes` WITHOUT re-verify-after-fix (THIS IS THE REAL BUG)
+
+`orchestrator/src/fix-bugs-loop.ts:1310-1316` (serial path; same shape in parallel path):
+
+```ts
+const taskOutcome = result.taskStatus[syntheticTask.id];
+if (taskOutcome !== "completed") {
+  errorLog.push(...);
+  return { success: false, costUsd, errorLog };
+}
+// ... (no other verification)
+return { success: true, costUsd, errorLog };
+```
+
+The orchestrator's `dispatch.success` flag is ENTIRELY determined by whether the agent self-reports `taskOutcomes: { id: "completed" }`. There is NO check that the agent actually:
+
+- Made any commits (`git log --since=<dispatch-start>` is empty)
+- Modified any source files (`git diff` is empty)
+- Re-ran the failing test (would have shown the test still fails)
+- Caused the verifier to no longer surface this bug
+
+Empirical evidence from today's run (paused at 2.5hr, 7-of-21 marked completed):
+
+```
+git log --since="2026-05-11" --all --oneline
+(empty)
+git for-each-ref --sort=-committerdate refs/heads/
+fix/bugs-yaml-iter  2026-05-08 4 days ago    ← LAST update
+fix/bug-flow-flow-1 2026-05-08 4 days ago    ← LAST update
+... all branches show last update was 2026-05-08 (the prior /fix-bugs run)
+```
+
+**Zero commits today, 7 bugs marked completed.** Three possibilities:
+
+1. **The bugs were already fixed in the project state** + the agent (correctly) found nothing to change + reported completed. This is plausible because reading-log-02 had a /fix-bugs run on 2026-05-08 that DID commit fixes. The bug-fixer dispatches today may have inspected the current state, decided "nothing to do," and returned completed. But then why did the verifier RE-FILE these bugs in iteration 1? Because the verifier IS finding new evidence of the same bugs — they aren't actually fixed. If the agent correctly found nothing to fix, that's a verifier-false-positive class, not a fix-loop completion.
+
+2. **The agents lied** — gave up + returned completed to escape the 15min stall timeout. The 90s SDK-warn-threshold pattern (and 30+min flow-5 in-progress) suggests some agents were struggling. Those that "completed" may have been agents that hit max-turns + decided "I'm done" without producing diffs.
+
+3. **The agents made changes that got lost** — the parallel-mode per-bug-worktree path has a merge cascade that could lose changes if a merge conflicts and the orchestrator falls back to "skip + continue." But this run was serial (maxConcurrent=1) so this path isn't relevant.
+
+Hypothesis (2) is most likely. End-of-iteration re-verify WOULD catch the lie (the verifier re-files the bug), and the bug would go back to `pending` with attempts incremented. But:
+
+- We paused before iteration 1's re-verify
+- Even if it caught the lie, the loop still spent the dispatch cost (~$2-5 per bug)
+- And the operator's bugs.yaml momentarily shows misleading "7 of 21 completed" stats
+
+### Cross-class signal (the layout-regrouping bug)
+
+The single `bug-parity-book-create-layout-regrouping` dispatch ALSO went pending after att:1 (same as flow-2/3/5). And no commit was made. So the pattern is NOT unique to `timeout-no-evidence` — bug-fixer dispatches on information-thin bugs OR unfixable-environment bugs systematically end in "no diff, marked completed-or-pending." The stall warnings are just one symptom; the deeper issue is the agent giving up without committing.
+
+## Recommendation
+
+The investigation question was "why do timeout-no-evidence bug-fixer dispatches stall while other classes succeed?" — but the real story is far more important than the question implied.
+
+**Three bugs to ship**, in priority order:
+
+### bug-XXX-orchestrator-trusts-unverified-fix-completion (P0 — file IMMEDIATELY)
+
+The orchestrator's `dispatchAgentsForBug` should require evidence-of-fix before marking `dispatch.success: true`. Minimum bar: check `git log <dispatch-start>..HEAD --oneline` in the worktree shows ≥1 commit AND `git diff <dispatch-start>..HEAD --name-only` shows ≥1 source file changed (not just `bugs.yaml` or `plans/active.md`). If the agent reports `taskOutcomes: completed` with zero diff, treat as silent-failure → `success: false` + push errorLog entry "agent reported completion without producing any diff".
+
+Without this fix, the entire /fix-bugs loop's metrics are unreliable. We can't trust "X of Y bugs fixed" until commits are required.
+
+Severity rationale: this affects every project that runs /fix-bugs. False-positive completions inflate the success rate + hide unfixable bugs. The 95% production target is unreachable while this is broken.
+
+Effort: ~2hr (modify `dispatchAgentsForBug` + add test).
+
+### bug-XXX-flow-execution-failure-envelope-enrichment (P1 — investigate-026's primary recommendation)
+
+`orchestrator/src/bug-fix-context.ts:resolveFilesForBug` for `flow-execution-failure` should also pre-load:
+
+```ts
+out.push({
+  relPath: `docs/build-to-spec/failures/${bug.flow.id}-failure.html`,
+  reason: "Failure envelope (timeout / error stack / DOM dump)",
+});
+out.push({
+  relPath: `docs/build-to-spec/failures/${bug.flow.id}-failure.png`,
+  reason: "Failure screenshot (if captured)",
+});
+// Plus the likely fix-site files following the visual-parity pattern:
+out.push({
+  relPath: "apps/web/app/page.tsx",
+  reason: "Likely fix-site (default route — most flows start at /)",
+});
+// And a per-step page-route inference: parse the spec's await page.goto(...)
+// + page.locator(...) calls, derive the page path, pre-load that file.
+```
+
+The failure envelope HTML (572 bytes per the empirical run) cheaply gives the agent the actual error message + URL + stack trace. The screenshot (when present) shows what the page looked like at failure. Both are deterministic captures the verifier already writes — they just need to be wired into the envelope.
+
+Effort: ~1hr (add to resolver + tests + verify path with one re-run).
+
+### bug-XXX-page-goto-timeout-classification (P1 — fix the verifier's classifier)
+
+`scripts/run-synthesized-flows.mjs` should detect when a flow fails at `__stepIndex === 0` (i.e., the test never reached an interaction step) and classify as `dev-server-not-responding` (a new FlowPrimaryCause value) instead of `timeout-no-evidence`. This new class should:
+
+- Route to operator-review (empty agentSequence) — there's nothing for bug-fixer to fix because the failure is environmental
+- OR route to dev-server-compile if the runner can prove the dev-server's /health passed but / does not navigate (a real cascade-root bug class)
+- Emit a richer summary like "flow-N could not load /<path> within 30s — investigate dev-server reachability, hydration errors, or networkidle hang"
+
+Effort: ~2hr (classifier branch + new FlowPrimaryCause schema entry + tests).
+
+### Bonus finding — separate from this investigation
+
+Empirical from this run: all 6 reading-log-02 synthesized flow tests fail at `page.goto`. The dev server boots (`/health` responds) but actual navigations time out. Either Next.js dev-mode is slow on this machine (unlikely — flow-1 / flow-4 / flow-6 eventually had dispatches marked completed) OR the page has a hydration error that prevents `networkidle` from ever firing OR there's a long-poll keeping the page busy. This is a separate empirical investigation for the operator, but is the immediate blocker for ANY flow-execution-failure bug to be fixable on this project.
+
+## Cumulative recommendation
+
+Ship the 3 bugs above, in P0/P1/P1 order. After all 3 land:
+
+- Re-run /fix-bugs reading-log-02 with `--max-concurrent 3` (per the skill default we patched today).
+- Measure REAL fix rate (commits-required) per class.
+- The `timeout-no-evidence` flow bugs will route to operator-review instead of bug-fixer, removing 50% of the wall-clock waste.
+- The remaining bug-fixer dispatches will have rich envelopes + agents will produce real diffs OR report `failed: no source change identified` honestly.
+
+The investigation question is answered. The deeper finding (bug #1 — trusting unverified completion) is the load-bearing factor for the entire feat-066 v2 catch-vs-fix-rate gap. Investigation closed.
 
 ## Recommendation
 
