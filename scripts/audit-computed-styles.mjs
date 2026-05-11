@@ -295,28 +295,73 @@ export function classifyStyleDivergence(screenId, diff) {
     }
   }
 
-  // investigate-022 Step 3 (2026-05-07) — bound noise via TWO gates:
+  // bug-078 (feat-066 v2 Phase 1, 2026-05-11) — INVERTED the original
+  // investigate-022 Step 3 conservatism. Empirical evidence from the
+  // investigate-025 reading-log-02 census (2026-05-08): only ~1/30 user-
+  // visible bugs caught by the verifier. Step 2 root cause was that
+  // PATTERN_ALLOWLIST drops 3 of 4 patterns + MAX_DRIFTS_PER_BUCKET=5
+  // caps detection. With those defaults flipped, the audit reaches ~17%
+  // catch rate (the 5 token/color/spacing drifts surfaced).
   //
-  // (1) Per-bucket cap: limit each (screen, pattern) tuple to top
-  //     MAX_DRIFTS_PER_BUCKET entries. Without this the bug-fix loop
-  //     drowns in token-polish + can't reach behavior fixes.
+  // Defaults:
+  //  - All 4 patterns ship (was: layout-regrouping only)
+  //  - MAX_DRIFTS_PER_BUCKET = 20 (was: 5)
+  //  - Systemic-divergence fold: when a single (screen, pattern) tuple
+  //    has > SYSTEMIC_THRESHOLD drifts, emit ONE high-priority bug with
+  //    pattern: "systemic-divergence" instead of N individual ones.
+  //    Routes to systemic-fixer (Phase 5 / feat-070).
   //
-  // (2) Pattern allowlist: token-drift / copy-sizing-drift /
-  //     spacing-token-drift catch tier-2 polish (token-binding tweaks).
-  //     reading-log-01 review-bugs #3 (sidebar height) + #7 (header
-  //     alignment) are layout-regrouping patterns — those use display /
-  //     flex / width / height / min-height props. Ship layout-regrouping
-  //     only for now; re-enable the other 3 patterns when an operator
-  //     opts into a polish pass via env flag.
-  //
-  // Operator override: set AUDIT_COMPUTED_ALL_PATTERNS=1 to ship all 4
-  // patterns (gives full audit coverage at the cost of more bug-plans).
-  const MAX_DRIFTS_PER_BUCKET = 5;
-  const allPatterns = process.env.AUDIT_COMPUTED_ALL_PATTERNS === "1";
-  const PATTERN_ALLOWLIST = new Set(["layout-regrouping"]);
-  return [...buckets.entries()]
-    .filter(([pattern]) => allPatterns || PATTERN_ALLOWLIST.has(pattern))
-    .map(([pattern, b]) => ({
+  // Operator overrides:
+  //  - AUDIT_COMPUTED_LAYOUT_ONLY=1 → revert to old conservative default
+  //    (layout-regrouping only). Use when token-polish noise overwhelms
+  //    the bug-fix budget on a polish-pass.
+  //  - AUDIT_COMPUTED_DRIFT_CAP=<N> → override the per-bucket cap.
+  //  - AUDIT_COMPUTED_SYSTEMIC_THRESHOLD=<N> → override the
+  //    systemic-divergence fold threshold (default 15).
+  const MAX_DRIFTS_PER_BUCKET = Number.parseInt(
+    process.env.AUDIT_COMPUTED_DRIFT_CAP ?? "20",
+    10,
+  );
+  const SYSTEMIC_THRESHOLD = Number.parseInt(
+    process.env.AUDIT_COMPUTED_SYSTEMIC_THRESHOLD ?? "15",
+    10,
+  );
+  const layoutOnly = process.env.AUDIT_COMPUTED_LAYOUT_ONLY === "1";
+  const PATTERN_ALLOWLIST_DEFAULT = new Set([
+    "layout-regrouping",
+    "token-drift",
+    "copy-sizing-drift",
+    "spacing-token-drift",
+  ]);
+  const PATTERN_ALLOWLIST_LAYOUT_ONLY = new Set(["layout-regrouping"]);
+  const allowed = layoutOnly
+    ? PATTERN_ALLOWLIST_LAYOUT_ONLY
+    : PATTERN_ALLOWLIST_DEFAULT;
+
+  /** @type {Array<{ screen: string, pattern: string, detail: { missing: string[], extra: string[], variantDrift: unknown[], styleDrift: typeof diff.styleDrift }, severity: "P0"|"P1"|"P2" }>} */
+  const out = [];
+  for (const [pattern, b] of buckets.entries()) {
+    if (!allowed.has(pattern)) continue;
+    if (b.styleDrift.length > SYSTEMIC_THRESHOLD) {
+      // bug-078 systemic-fold: collapse the bucket to one bug. Preserve
+      // all drifts (not capped) so systemic-fixer has full context. The
+      // pattern name "systemic-divergence" routes to feat-070 in the
+      // bug-fix loop. Severity bumps to P0 — these are the "shell-game"
+      // failures that swamp the per-bug fixer.
+      out.push({
+        screen: screenId,
+        pattern: "systemic-divergence",
+        detail: {
+          missing: [],
+          extra: [],
+          variantDrift: [],
+          styleDrift: b.styleDrift,
+        },
+        severity: "P0",
+      });
+      continue;
+    }
+    out.push({
       screen: screenId,
       pattern,
       detail: {
@@ -326,7 +371,9 @@ export function classifyStyleDivergence(screenId, diff) {
         styleDrift: b.styleDrift.slice(0, MAX_DRIFTS_PER_BUCKET),
       },
       severity: b.severity,
-    }));
+    });
+  }
+  return out;
 }
 
 /**

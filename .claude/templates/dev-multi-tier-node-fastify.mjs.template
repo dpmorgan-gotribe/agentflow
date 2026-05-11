@@ -156,10 +156,19 @@ function spawnBackend() {
     // the verifier (synth-e2e specs need /test/seed-baseline). Operator can
     // override by setting ENABLE_TEST_SEED=0 in their shell before running
     // dev.mjs (rare; only if explicitly testing seed-route gating).
+    //
+    // bug-080 (2026-05-11) — read process.env.ENABLE_TEST_SEED directly, NOT
+    // MERGED_ENV. Empirical case: reading-log-02 + 3 sister projects shipped
+    // with ENABLE_TEST_SEED=0 in .env (architect/.env.example was generated
+    // with `=0` instead of `=1`); MERGED_ENV picks that up, the nullish-
+    // coalescing keeps "0", and dev sessions silently 404 on /test/cleanup.
+    // Reading only process.env limits "operator override" to the shell-level
+    // (the documented escape hatch), not file-state — which protects against
+    // stale / mis-scaffolded .env files.
     env: {
       ...MERGED_ENV,
       PORT: String(BACKEND_PORT),
-      ENABLE_TEST_SEED: MERGED_ENV.ENABLE_TEST_SEED ?? "1",
+      ENABLE_TEST_SEED: process.env.ENABLE_TEST_SEED ?? "1",
     },
   });
   if (!IS_WIN && typeof child.unref === "function") child.unref();

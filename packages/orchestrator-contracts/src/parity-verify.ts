@@ -42,6 +42,13 @@ export const ParityPatternSchema = z.enum([
   "spacing-token-drift", // Pattern E — padding / margin / gap drifts off-token
   "identity-contract-broken", // Pattern F — logo / brand mark / illustration missing or swapped
   "uncategorized",
+  // feat-066 v2 (2026-05-11) — systemic patterns. The audit-computed-styles
+  // classifier folds buckets over a threshold into ONE
+  // `systemic-divergence` bug instead of N individual drifts (bug-078).
+  // Phase 2 + Phase 6 add the other two when those ship.
+  "systemic-divergence", // bug-078 — single (screen, pattern) tuple over fold threshold
+  "pixel-systemic-divergence", // feat-067 (Phase 2) — pixel-diff whole-screen mismatch
+  "clustered-systemic-divergence", // feat-071 (Phase 6) — clusterer-fold across bugs
 ]);
 export type ParityPattern = z.infer<typeof ParityPatternSchema>;
 

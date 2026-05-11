@@ -108,6 +108,12 @@ export const BugParityContextSchema = z.object({
     "spacing-token-drift",
     "identity-contract-broken",
     "uncategorized",
+    // feat-066 v2 (2026-05-11) — systemic patterns; mirror ParityPatternSchema
+    // in parity-verify.ts. The bugs.yaml entry persisted across iterations
+    // must accept the same pattern values the verifier emits.
+    "systemic-divergence",
+    "pixel-systemic-divergence",
+    "clustered-systemic-divergence",
   ]),
   /** Free-form detail counts/lists — pass-through for the bug-plan body. */
   detail: z

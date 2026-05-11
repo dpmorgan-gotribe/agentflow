@@ -176,7 +176,8 @@ function resolveFilesForBug(
     });
     out.push({
       relPath: "apps/web/app/page.tsx",
-      reason: "Likely fix-site #2 (index page — common host for sub-screens / empty-states)",
+      reason:
+        "Likely fix-site #2 (index page — common host for sub-screens / empty-states)",
     });
     // Component-named-after-screen: book-list-item, book-create-modal,
     // tag-rename-modal, etc. Bug-fixer can Read more siblings if the
@@ -201,6 +202,47 @@ function resolveFilesForBug(
         reason: "Suggested importer",
       });
     }
+  }
+
+  // feat-070 (2026-05-11) — systemic-fixer envelope. Dispatches to
+  // systemic-fixer (per file-bug-plan.mjs:agentSequence routing) need a
+  // cross-file view of the build pipeline up-front: tailwind.config.ts,
+  // next.config.ts, postcss.config.{mjs,js,cjs} (or "FILE MISSING" markers
+  // emitted by emitFileSection), and the kit's globals.css. The agent's
+  // diagnostic recipes (per agent frontmatter §Per-class diagnostic
+  // recipes) call these out as the first-place-to-look for each class.
+  if (
+    Array.isArray(bug.agentSequence) &&
+    bug.agentSequence.includes("systemic-fixer")
+  ) {
+    out.push({
+      relPath: "apps/web/tailwind.config.ts",
+      reason: "Systemic pipeline check — Tailwind config",
+    });
+    out.push({
+      relPath: "apps/web/next.config.ts",
+      reason: "Systemic pipeline check — Next config (output flag etc.)",
+    });
+    // postcss is critical for the bug-077 / css-pipeline-broken class. Try
+    // every common extension; emitFileSection silently drops missing files
+    // + logs them in the diagnostic block so over-specifying is cheap.
+    out.push({
+      relPath: "apps/web/postcss.config.mjs",
+      reason: "Systemic pipeline check — PostCSS config (Tailwind plugin)",
+    });
+    out.push({
+      relPath: "apps/web/postcss.config.js",
+      reason: "Systemic pipeline check — PostCSS config alt extension",
+    });
+    out.push({
+      relPath: "packages/ui-kit/src/styles/globals.css",
+      reason:
+        "Systemic pipeline check — kit globals.css (@tailwind directives)",
+    });
+    out.push({
+      relPath: "apps/api/.env.example",
+      reason: "Systemic pipeline check — backend env contract",
+    });
   }
 
   // dev-server-compile + runtime-error + build-gap: no deterministic

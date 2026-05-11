@@ -587,6 +587,21 @@ Builder self-verify gate: `pnpm --filter @repo/web lint && pnpm --filter @repo/w
 - **Middleware runtime.** Runs on the Edge runtime by default — no Node APIs, no Prisma client. If you need DB access in middleware, switch to Node runtime explicitly (`export const config = { runtime: 'nodejs' }` — Next 15+).
 - **Server actions (`"use server"`) leak fn names in the bundle as route paths.** Fine for internal use; don't expose to untrusted callers without auth guards.
 - **Tailwind `@apply` inside kit CSS** — kit styles compile at kit-build time, not at consumer build time. Don't add new `@apply` rules in `apps/web/` — extend the kit instead or use className directly.
+- **NEVER set `output: "export"` in `next.config.ts`** unless ALL three conditions hold: (1) no `apps/api/` backend in the project, (2) no dynamic route segments (`[id]`, `[...slug]`, `[[...catchall]]`) in the App Router tree, AND (3) no `app/api/*` route handlers. **bug-081 empirical (2026-05-08)**: brief.md phrasing like "SPA static-export" or "no server rendering needed" is NOT a license to set this flag. Next.js produces a fully-functional SPA WITHOUT `output: "export"` — the flag is specifically for fully-static-pre-rendered deployments (no runtime server, no dynamic params, no API routes). With it set, every dynamic route hits `Page "/foo/[id]/page" is missing exported function "generateStaticParams()"` at build/dev time. The canonical `next.config.ts` for a factory-shipped full-stack React+Next project is:
+
+```ts
+import type { NextConfig } from "next";
+
+const config: NextConfig = {
+  transpilePackages: ["@repo/ui-kit", "@repo/types", "@repo/api-client"],
+  // NEVER add `output: "export"` here — see Gotchas in this skill. The
+  // brief may use "SPA" / "static-export" phrasing; that's *deployment*
+  // intent ("no SSR server runtime"), NOT a Next config flag. Next App
+  // Router defaults already produce SPA-style client-side routing.
+};
+
+export default config;
+```
 
 ## Review
 
@@ -677,6 +692,7 @@ If your worktree's `git status --porcelain` shows any of the files above as modi
 - **Never import from `@repo/ui-kit/src/...`.** Deep imports bypass the barrel. Only `@repo/ui-kit` (root) is a valid import path — consumer tsconfig enforces this.
 - **Never redeclare a Zod schema in a component.** Import from `@repo/types` — single source of truth.
 - **Never call `router.push()` in a server component.** Use `redirect()` from `next/navigation`.
+- **Never set `output: "export"` in `next.config.ts`** for projects with dynamic routes, API routes, or a backend (bug-081). See §5 Gotchas for the full rule + canonical `next.config.ts` template.
 
 ## Self-verify (RUN BEFORE REPORTING TASK COMPLETE)
 
@@ -694,6 +710,15 @@ pnpm --filter @repo/web test
 
 # 4. Kit consumer contract: catches @repo/ui-kit deep-imports, hex colors, arbitrary Tailwind values
 pnpm ui-kit:validate-consumer
+
+# 5. bug-081 guard: confirm next.config.ts does NOT have `output: "export"`
+#    when dynamic routes exist. If this grep hits, the build will fail on
+#    any `/foo/[id]/page` because static export requires generateStaticParams.
+if grep -q 'output:\s*"export"' apps/web/next.config.ts && \
+   find apps/web/app -type d -name '\[*\]' | grep -q .; then
+  echo "FAIL: output:export is incompatible with dynamic routes — remove it (bug-081)"
+  exit 1
+fi
 ```
 
 If you skip ANY of these commands, your task will fail downstream when feat-018's commit-discipline gate evaluates. The orchestrator will mark the feature failed via `feature-no-commits`. Save yourself the round-trip: run the four commands.

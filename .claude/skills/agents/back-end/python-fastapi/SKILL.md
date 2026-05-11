@@ -224,7 +224,7 @@ Builder responsibilities:
 1. Author `apps/api/src/api/routes/test_seed.py` (the THREE endpoints — `/seed`, `/cleanup`, `/seed-baseline` per bug-042 Phase A.5 — plus Pydantic request models) when the project is DB-backed.
 2. Author the `MODEL_REGISTRY` dict — `{ "users": User, "listings": Listing, ... }` — so the endpoint dispatches table-name → SQLAlchemy model. PM groups this under a single feature labeled `test-seed-endpoint` (idempotent; depends on data-models being live).
 3. Ensure `apps/api/src/api/db/seed.py` exports an `async def seed(session)` function that the `/test/seed-baseline` route can import. The same function MUST be CLI-invokable (typically `uv run python -m api.db.seed`).
-4. Add `ENABLE_TEST_SEED=1` to `apps/api/.env.example` with a comment documenting the prod-default-OFF contract.
+4. Add `ENABLE_TEST_SEED=1` to `apps/api/.env.example` with a comment documenting the prod-default-OFF contract. **The literal value MUST be `1`**, not `0` (bug-080 empirical: all 4 reading-log projects shipped with `=0`, breaking manual operator boots — the line is non-negotiable in dev). The architect skill §7b also emits this line; this is a defense-in-depth restatement.
 5. NEVER expose `/test/seed`, `/test/cleanup`, or `/test/seed-baseline` in production — runtime guard via the env flag is the canonical defense; CI must ensure the flag is unset on prod deploys.
 
 Tester responsibilities (when authoring E2E specs that consume `seedFixtures`):

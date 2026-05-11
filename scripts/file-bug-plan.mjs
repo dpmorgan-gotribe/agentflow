@@ -1019,6 +1019,33 @@ function buildBugEntry({
     // helper the affectsFiles WE just derived so apps/api orphans route
     // to backend-builder.
     agentSequence: (() => {
+      // feat-070 (2026-05-11) — systemic-fixer routing override. When the
+      // violation is in a SYSTEMIC bug class, route to systemic-fixer
+      // (extended turn budget + cross-file edit authority) instead of
+      // bug-fixer's narrow per-file contract. Detection signals:
+      //   - parity-divergence with pattern: "systemic-divergence"
+      //     (audit-computed-styles bug-078 fold output) or
+      //     "pixel-systemic-divergence" (feat-067) or
+      //     "clustered-systemic-divergence" (feat-071)
+      //   - dev-server-compile with flowId prefix "pre-verify-tooling-"
+      //     (bug-078 pre-verify discriminators: css-pipeline-broken,
+      //     config-mismatch, test-seed-contract-broken)
+      const SYSTEMIC_PARITY_PATTERNS = new Set([
+        "systemic-divergence",
+        "pixel-systemic-divergence",
+        "clustered-systemic-divergence",
+      ]);
+      const isSystemicParity =
+        violation.kind === "parity-divergence" &&
+        typeof violation.pattern === "string" &&
+        SYSTEMIC_PARITY_PATTERNS.has(violation.pattern);
+      const isPreVerifyDiscriminator =
+        violation.kind === "dev-server-compile" &&
+        typeof violation.flowId === "string" &&
+        violation.flowId.startsWith("pre-verify-tooling-");
+      if (isSystemicParity || isPreVerifyDiscriminator) {
+        return ["systemic-fixer"];
+      }
       // feat-058-followup (2026-05-06) — `parity-divergence` + orphan
       // violations come from parity-verify / reachability-verify (not
       // flow-runner), so they don't carry `primaryCause`. Without this

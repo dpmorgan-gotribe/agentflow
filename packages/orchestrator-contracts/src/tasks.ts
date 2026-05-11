@@ -38,6 +38,13 @@ export const AgentSequenceMember = z.enum([
   // classes (compile / runtime / parity / orphan / flow-execution).
   // Mode B feature builds keep web/backend/mobile-frontend-builder.
   "bug-fixer",
+  // feat-070 (2026-05-11) — cross-file root-cause variant of bug-fixer
+  // routed for systemic bug classes (systemic-divergence,
+  // tooling-css-pipeline-broken, tooling-config-mismatch,
+  // tooling-test-seed-contract-broken, pixel-systemic-divergence,
+  // clustered-systemic-divergence). Higher turn budget + multi-file
+  // edit authority. See feat-066 v2 Phase 5.
+  "systemic-fixer",
 ]);
 export type AgentSequenceMember = z.infer<typeof AgentSequenceMember>;
 
@@ -53,6 +60,9 @@ export const TaskAgent = z.enum([
   // Synthetic Tasks created by dispatchAgentsForBug carry agent: "bug-fixer";
   // tasks.yaml in Mode B never carries this (PM doesn't recruit it).
   "bug-fixer",
+  // feat-070 (2026-05-11) — see AgentSequenceMember entry above.
+  // Synthetic Tasks for systemic bug classes carry agent: "systemic-fixer".
+  "systemic-fixer",
 ]); // excludes git-agent — lifecycle is orchestrator-owned, never a task agent
 export type TaskAgent = z.infer<typeof TaskAgent>;
 

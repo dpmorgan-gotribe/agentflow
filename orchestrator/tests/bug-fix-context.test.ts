@@ -342,3 +342,103 @@ describe("buildBugContextEnvelope — file truncation", () => {
     expect(specEntry?.loc).toBe(300);
   });
 });
+
+// ─── feat-070 — systemic-fixer envelope ────────────────────────────────────
+//
+// When a bug's agentSequence routes to systemic-fixer (per file-bug-plan.mjs
+// routing for systemic-divergence / tooling-* bug classes), the envelope
+// pre-loads the cross-file build-pipeline view: tailwind/next/postcss
+// configs + kit globals.css + apps/api/.env.example. Without this, the
+// agent burns its turn budget on Read/Grep for files it always needs.
+
+describe("buildBugContextEnvelope — systemic-fixer envelope (feat-070)", () => {
+  it("pre-loads the pipeline files when agentSequence is [systemic-fixer]", () => {
+    writeProjectFile("apps/web/tailwind.config.ts", "export default {};");
+    writeProjectFile(
+      "apps/web/next.config.ts",
+      `const config = { transpilePackages: [] };\nexport default config;`,
+    );
+    writeProjectFile(
+      "apps/web/postcss.config.mjs",
+      "export default { plugins: { tailwindcss: {}, autoprefixer: {} } };",
+    );
+    writeProjectFile(
+      "packages/ui-kit/src/styles/globals.css",
+      "@tailwind base;\n@tailwind components;\n@tailwind utilities;",
+    );
+    writeProjectFile("apps/api/.env.example", "ENABLE_TEST_SEED=1\n");
+
+    const bug = makeBug({
+      id: "bug-parity-systemic-home",
+      source: "visual-parity",
+      agentSequence: ["systemic-fixer"],
+      parity: {
+        screen: "home",
+        pattern: "systemic-divergence",
+        severity: "P0",
+        styleDriftCount: 18,
+        missingCount: 0,
+        extraCount: 0,
+        variantDriftCount: 0,
+      },
+    });
+
+    const envelope = buildBugContextEnvelope({ bug, projectRoot });
+
+    expect(envelope.text).toMatch(/Pre-loaded bug context/);
+    const paths = envelope.resolvedFiles.map((r) => r.path);
+    expect(paths).toContain("apps/web/tailwind.config.ts");
+    expect(paths).toContain("apps/web/next.config.ts");
+    expect(paths).toContain("apps/web/postcss.config.mjs");
+    expect(paths).toContain("packages/ui-kit/src/styles/globals.css");
+    expect(paths).toContain("apps/api/.env.example");
+  });
+
+  it("emits FILE MISSING markers for absent pipeline files", () => {
+    // Only tailwind.config exists — postcss + kit globals + next.config + .env.example missing.
+    writeProjectFile("apps/web/tailwind.config.ts", "export default {};");
+
+    const bug = makeBug({
+      id: "bug-compile-pre-verify-css",
+      source: "dev-server-compile",
+      agentSequence: ["systemic-fixer"],
+    });
+
+    const envelope = buildBugContextEnvelope({ bug, projectRoot });
+    const missingPaths = envelope.missingFiles.map((m) => m.path);
+    expect(missingPaths).toContain("apps/web/next.config.ts");
+    expect(missingPaths).toContain("apps/web/postcss.config.mjs");
+    expect(missingPaths).toContain("packages/ui-kit/src/styles/globals.css");
+    // The diagnostic block should call them out as ✗
+    expect(envelope.text).toMatch(/postcss\.config\.mjs.*file missing/);
+  });
+
+  it("does NOT add pipeline files when agentSequence is bug-fixer (negative case)", () => {
+    writeProjectFile("apps/web/tailwind.config.ts", "export default {};");
+    writeProjectFile(
+      "apps/web/e2e/synthesized/flow-1.spec.ts",
+      `import { test } from "@playwright/test";\ntest("noop", () => {});`,
+    );
+
+    const bug = makeBug({
+      id: "bug-flow-flow-1",
+      source: "flow-execution-failure",
+      agentSequence: ["bug-fixer"],
+      flow: {
+        id: "flow-1",
+        name: "test",
+        failedStep: 0,
+        expectedScreenId: null,
+        actualScreenId: null,
+        selector: null,
+        screenshot: null,
+        htmlDump: null,
+      },
+    });
+
+    const envelope = buildBugContextEnvelope({ bug, projectRoot });
+    const paths = envelope.resolvedFiles.map((r) => r.path);
+    // bug-fixer dispatch does NOT pre-load tailwind.config.ts etc.
+    expect(paths).not.toContain("apps/web/tailwind.config.ts");
+  });
+});

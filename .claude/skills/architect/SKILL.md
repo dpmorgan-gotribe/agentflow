@@ -242,6 +242,20 @@ CORS_ORIGIN=http://localhost:<FRONTEND_PORT>
 # for full contract. Backend-side only; never sent to the browser.
 ```
 
+**When `architecture.yaml.tooling.stack.persistence_layer == "real-db"`** (Strategy C — managed DB backend), the architect MUST ALSO add:
+
+```env
+# E2E test-seed gating (per .claude/rules/testing-policy.md Strategy-C-test-seed-contract).
+# DEV DEFAULT: 1 — exposes POST /test/seed, /test/cleanup, /test/seed-baseline
+# under /test/ prefix. The verifier + playwright globalSetup require these.
+# PROD: leave unset OR explicitly =0; the runtime guard in apps/api/src/app.ts
+# checks `process.env.ENABLE_TEST_SEED === "1"`, so prod must NEVER have it set.
+# NEVER ship this file with `=0` — that breaks the dev verifier loop (bug-080).
+ENABLE_TEST_SEED=1
+```
+
+This is non-negotiable: the back-end stack skills (`.claude/skills/agents/back-end/{node-fastify,node-trpc-nest,python-fastapi}/SKILL.md §3 step 4`) all mandate this line with the literal value `1`. Empirical motivator (bug-080, 2026-05-11): all 4 reading-log projects shipped with `=0`, breaking manual operator boots and exposing the verifier to silent runtime-error masking. The line MUST be in the architect-emitted `apps/api/.env.example` template — backend-builder follow-up alone has been unreliable.
+
 **`.env.local` is operator-authored, NOT auto-generated.** The factory's `enforce-boundaries.sh` hook (correctly) blocks writes to `.env.local`-pattern files as a secrets guard. The architect MUST document the operator copy step in `docs/credentials-checklist.md`'s gate-5 section (see step 8 below):
 
 ```

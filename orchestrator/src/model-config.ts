@@ -136,6 +136,13 @@ const FACTORY_DEFAULT_AGENT_TIERS: Record<
   // with pre-loaded context" — bug-fixer doesn't need full exploration
   // depth (the orchestrator's buildBugContextEnvelope supplies it).
   "bug-fixer": { tier: "building", effort: "medium" },
+  // systemic-fixer — cross-file root-cause variant (feat-070, feat-066 v2
+  // Phase 5). Same building tier as bug-fixer; effort stays medium per
+  // investigate-024 evidence that Sonnet handles these tasks without
+  // Opus's 5× cost premium. The agent's frontmatter (maxTurns: 12) plus
+  // the 18-min stall cap below provide the budget for cross-file
+  // exploration; the tier itself doesn't need to differ.
+  "systemic-fixer": { tier: "building", effort: "medium" },
 };
 
 const DEFAULT_STALL_TIMEOUT_BY_AGENT: Record<string, number | null> = {
@@ -157,6 +164,13 @@ const DEFAULT_STALL_TIMEOUT_BY_AGENT: Record<string, number | null> = {
   // mid-fix-attempt; 15 gives cushion without losing the fail-fast
   // discipline (vs the 25min full-builder cap).
   "bug-fixer": 15 * 60 * 1000,
+  // feat-070 (2026-05-11) — systemic-fixer needs more wall-clock than
+  // bug-fixer because cross-file root-cause work involves more Reads +
+  // multiple Edits in one dispatch. 18 min pairs with maxTurns: 12 (vs
+  // bug-fixer's 8) — investigate-025 §H1 estimated 8-12 min median for
+  // bug-077-class work; 18 gives ~50% headroom for the long tail without
+  // letting the agent wander past the bug-fixer's failure-mode budget.
+  "systemic-fixer": 18 * 60 * 1000,
 };
 
 /**

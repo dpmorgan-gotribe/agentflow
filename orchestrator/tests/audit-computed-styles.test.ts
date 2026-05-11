@@ -222,6 +222,159 @@ describe("classifyStyleDivergence", () => {
   });
 });
 
+// ─── bug-078 (feat-066 v2 Phase 1): config + discriminators ───────────────
+//
+// Pre-fix: PATTERN_ALLOWLIST = ["layout-regrouping"] only, MAX_DRIFTS_PER_BUCKET
+// = 5. Empirical investigate-025 census (2026-05-08) showed ~1/30 catch rate;
+// Step 2 root cause was these conservatism defaults suppressing ~75% of signal.
+// Post-fix: all 4 patterns ship; cap raised to 20; systemic-fold at >15.
+
+describe("classifyStyleDivergence — bug-078 default-all-patterns + systemic fold", () => {
+  let savedEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    savedEnv = {
+      AUDIT_COMPUTED_LAYOUT_ONLY: process.env.AUDIT_COMPUTED_LAYOUT_ONLY,
+      AUDIT_COMPUTED_DRIFT_CAP: process.env.AUDIT_COMPUTED_DRIFT_CAP,
+      AUDIT_COMPUTED_SYSTEMIC_THRESHOLD:
+        process.env.AUDIT_COMPUTED_SYSTEMIC_THRESHOLD,
+      AUDIT_COMPUTED_ALL_PATTERNS: process.env.AUDIT_COMPUTED_ALL_PATTERNS,
+    };
+    delete process.env.AUDIT_COMPUTED_LAYOUT_ONLY;
+    delete process.env.AUDIT_COMPUTED_DRIFT_CAP;
+    delete process.env.AUDIT_COMPUTED_SYSTEMIC_THRESHOLD;
+    delete process.env.AUDIT_COMPUTED_ALL_PATTERNS;
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("ships ALL 4 patterns by default (was: layout-regrouping only)", async () => {
+    const { classifyStyleDivergence } = await importAudit();
+    const out = classifyStyleDivergence("home", {
+      styleDrift: [
+        {
+          selector: ".a",
+          property: "color",
+          mockupValue: "red",
+          builtValue: "blue",
+        },
+        {
+          selector: ".b",
+          property: "font-size",
+          mockupValue: "16px",
+          builtValue: "12px",
+        },
+        {
+          selector: ".c",
+          property: "padding",
+          mockupValue: "16px",
+          builtValue: "8px",
+        },
+        {
+          selector: ".d",
+          property: "display",
+          mockupValue: "flex",
+          builtValue: "grid",
+        },
+      ],
+    });
+    const patterns = out.map((d) => d.pattern).sort();
+    expect(patterns).toEqual([
+      "copy-sizing-drift",
+      "layout-regrouping",
+      "spacing-token-drift",
+      "token-drift",
+    ]);
+  });
+
+  it("AUDIT_COMPUTED_LAYOUT_ONLY=1 reverts to layout-only behavior", async () => {
+    process.env.AUDIT_COMPUTED_LAYOUT_ONLY = "1";
+    const { classifyStyleDivergence } = await importAudit();
+    const out = classifyStyleDivergence("home", {
+      styleDrift: [
+        {
+          selector: ".a",
+          property: "color",
+          mockupValue: "red",
+          builtValue: "blue",
+        },
+        {
+          selector: ".b",
+          property: "display",
+          mockupValue: "flex",
+          builtValue: "grid",
+        },
+      ],
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]?.pattern).toBe("layout-regrouping");
+  });
+
+  it("emits ONE systemic-divergence bug when drifts in a single bucket exceed threshold", async () => {
+    const { classifyStyleDivergence } = await importAudit();
+    // 16 color drifts (>15 default threshold) → fold into one P0 systemic bug
+    const drifts = Array.from({ length: 16 }, (_, i) => ({
+      selector: `.x${i}`,
+      property: "color",
+      mockupValue: "red",
+      builtValue: "blue",
+    }));
+    const out = classifyStyleDivergence("home", { styleDrift: drifts });
+    expect(out).toHaveLength(1);
+    expect(out[0]?.pattern).toBe("systemic-divergence");
+    expect(out[0]?.severity).toBe("P0");
+    // Full drift list preserved (NOT capped at MAX_DRIFTS_PER_BUCKET):
+    expect(out[0]?.detail.styleDrift).toHaveLength(16);
+  });
+
+  it("does NOT fold when bucket size is at or below threshold", async () => {
+    const { classifyStyleDivergence } = await importAudit();
+    const drifts = Array.from({ length: 15 }, (_, i) => ({
+      selector: `.x${i}`,
+      property: "color",
+      mockupValue: "red",
+      builtValue: "blue",
+    }));
+    const out = classifyStyleDivergence("home", { styleDrift: drifts });
+    expect(out).toHaveLength(1);
+    expect(out[0]?.pattern).toBe("token-drift"); // unchanged bucket
+    expect(out[0]?.detail.styleDrift).toHaveLength(15); // ≤ default cap of 20
+  });
+
+  it("AUDIT_COMPUTED_DRIFT_CAP env override changes the per-bucket cap", async () => {
+    process.env.AUDIT_COMPUTED_DRIFT_CAP = "3";
+    process.env.AUDIT_COMPUTED_SYSTEMIC_THRESHOLD = "100"; // disable fold
+    const { classifyStyleDivergence } = await importAudit();
+    const drifts = Array.from({ length: 10 }, (_, i) => ({
+      selector: `.x${i}`,
+      property: "color",
+      mockupValue: "red",
+      builtValue: "blue",
+    }));
+    const out = classifyStyleDivergence("home", { styleDrift: drifts });
+    expect(out[0]?.detail.styleDrift).toHaveLength(3);
+  });
+
+  it("AUDIT_COMPUTED_SYSTEMIC_THRESHOLD env override changes the fold threshold", async () => {
+    process.env.AUDIT_COMPUTED_SYSTEMIC_THRESHOLD = "5";
+    const { classifyStyleDivergence } = await importAudit();
+    const drifts = Array.from({ length: 6 }, (_, i) => ({
+      selector: `.x${i}`,
+      property: "color",
+      mockupValue: "red",
+      builtValue: "blue",
+    }));
+    const out = classifyStyleDivergence("home", { styleDrift: drifts });
+    expect(out).toHaveLength(1);
+    expect(out[0]?.pattern).toBe("systemic-divergence");
+  });
+});
+
 // ─── resolveFixturePath (feat-029 Phase 4) ───────────────────────────────
 
 describe("resolveFixturePath", () => {

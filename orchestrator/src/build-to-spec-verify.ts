@@ -18,6 +18,10 @@ import {
   teardownDevServer,
   type DevServerHandle,
 } from "./dev-server.js";
+import {
+  runDiscriminators,
+  type DiscriminatorResult,
+} from "./pre-verify-discriminators.js";
 
 /**
  * feat-022 Phase 4 — orchestrator-side wrapper for the
@@ -261,13 +265,36 @@ export async function runBuildToSpecVerify(
   const runScript = ctx.runScript ?? defaultRunScript;
   const projectDir = resolve(ctx.projectDir);
 
+  const warnings: string[] = [];
+
+  // ── bug-078 / feat-066 v2 Phase 1B: deterministic pre-verify gate ────────
+  // Run the cheap (~10ms) filesystem-only discriminators FIRST. When ANY
+  // P0 discriminator hits, we short-circuit the entire expensive verifier
+  // stage — the systemic bug masks every symptom-bug parity-verify + flow-
+  // execution would otherwise file. Emit ONE root-cause bug per P0 hit;
+  // skip reach + synth + flows + parity. P1/P2 hits are filed too but
+  // don't trigger the short-circuit (they're warnings + reach/parity still
+  // produces useful signal).
+  const discriminatorHits = runDiscriminators(projectDir);
+  const p0Hits = discriminatorHits.filter((h) => h.severity === "P0");
+  for (const h of discriminatorHits) {
+    warnings.push(`pre-verify-discriminator: ${h.pattern} — ${h.label}`);
+  }
+  if (p0Hits.length > 0) {
+    return await emitDiscriminatorShortCircuit({
+      ctx,
+      projectDir,
+      hits: discriminatorHits,
+      warnings,
+      startedAt,
+    });
+  }
+
   const reachScript = resolve(
     factoryRoot,
     "scripts/audit-app-reachability.mjs",
   );
   const synthScript = resolve(factoryRoot, "scripts/synthesize-flow-e2e.mjs");
-
-  const warnings: string[] = [];
 
   // Sanity: scripts must exist
   if (!existsSync(reachScript)) warnings.push(`missing script: ${reachScript}`);
@@ -834,4 +861,90 @@ function correlateFlowFailureToOrphan(
     }
   }
   return undefined;
+}
+
+/**
+ * bug-078 / feat-066 v2 Phase 1B — short-circuit helper.
+ *
+ * When at least one P0 discriminator hits, the verifier emits ONE synthetic
+ * FlowFailure per hit (cascade-root classification via
+ * `primaryCause: "dev-server-compile"`) + skips the expensive reach + synth +
+ * flows + parity passes. The root-cause bug masks all symptom-bugs those
+ * stages would otherwise file. P1/P2 hits ride along on the same return so
+ * the operator still sees the lower-severity warnings.
+ */
+async function emitDiscriminatorShortCircuit(args: {
+  ctx: BuildToSpecVerifyContext;
+  projectDir: string;
+  hits: DiscriminatorResult[];
+  warnings: string[];
+  startedAt: number;
+}): Promise<BuildToSpecVerifyOutputType> {
+  const { ctx, projectDir, hits, warnings, startedAt } = args;
+
+  const synthetic: FlowFailure[] = hits.map((h) =>
+    discriminatorToFlowFailure(h),
+  );
+
+  const bugPlansFiled: string[] = [];
+  if (ctx.autoFileBugPlans !== false) {
+    const fileBugPlan = ctx.fileBugPlan ?? defaultFileBugPlanResolver();
+    for (const failure of synthetic) {
+      try {
+        const callArgs: Parameters<typeof fileBugPlan>[0] = {
+          projectDir,
+          violation: { ...failure, kind: "dev-server-compile" as const },
+        };
+        if (ctx.pipelineRunId !== undefined)
+          callArgs.pipelineRunId = ctx.pipelineRunId;
+        if (ctx.iteration !== undefined) callArgs.iteration = ctx.iteration;
+        const { planId } = await fileBugPlan(callArgs);
+        bugPlansFiled.push(planId);
+      } catch (err) {
+        warnings.push(
+          `file-bug-plan failed for pre-verify-discriminator ${failure.flowId}: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  const output: BuildToSpecVerifyOutputType = {
+    ok: false,
+    reachability: {
+      orphanComponents: [],
+      orphanRoutes: [],
+      scannedFiles: 0,
+      ignoredByAllowComment: [],
+    },
+    flows: { passed: [], failed: synthetic, generated: [] },
+    bugPlansFiled,
+    costUsd: 0,
+    durationMs: Date.now() - startedAt,
+    warnings,
+  };
+  return BuildToSpecVerifyOutput.parse(output);
+}
+
+/**
+ * Map a DiscriminatorResult to a FlowFailure shape so the existing
+ * cascade-root file-bug pipeline ingests it without schema churn. The
+ * `primaryCause: "dev-server-compile"` tag routes it into the priority-
+ * resolved queue (cascade-root bugs file first + dependent bugs defer).
+ */
+function discriminatorToFlowFailure(h: DiscriminatorResult): FlowFailure {
+  return {
+    flowId: `pre-verify-${h.pattern}`,
+    flowName: h.label,
+    step: 0,
+    fromScreenId: null,
+    expectedScreenId: null,
+    actualScreenId: null,
+    selector: null,
+    screenshotPath: null,
+    htmlDumpPath: null,
+    message:
+      `${h.label}\n\n${h.detail}\n\nSuggested fix: ${h.fix}\n\n` +
+      `Affected files: ${h.affectedFiles.join(", ")}`,
+    primaryCause: "dev-server-compile",
+  };
 }

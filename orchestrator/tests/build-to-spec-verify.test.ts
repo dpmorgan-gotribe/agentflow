@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -1095,5 +1095,160 @@ describe("runBuildToSpecVerify — parity-verify integration (feat-028)", () => 
     expect(result.parity?.divergences).toHaveLength(1);
     expect(result.bugPlansFiled).toEqual([]);
     expect(result.ok).toBe(false); // divergences still flip ok:false
+  });
+});
+
+// ─── bug-078 / feat-066 v2 Phase 1B: pre-verify discriminator gate ─────────
+
+describe("runBuildToSpecVerify — bug-078 pre-verify discriminator gate", () => {
+  function writeFile(rel: string, content: string) {
+    const abs = join(projectDir, rel);
+    mkdirSync(join(abs, ".."), { recursive: true });
+    writeFileSync(abs, content, "utf8");
+  }
+
+  it("short-circuits + emits ONE bug when P0 discriminator (css-pipeline) hits", async () => {
+    // Tailwind config exists but postcss config + @tailwind directives don't
+    writeFile("apps/web/tailwind.config.ts", "export default {};");
+
+    let runScriptCalled = false;
+    let fileBugPlanCalled = 0;
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      factoryRoot: "/factory",
+      runScript: async () => {
+        runScriptCalled = true;
+        return { stdout: "{}", stderr: "", exitCode: 0 };
+      },
+      runParity: false,
+      fileBugPlan: async () => {
+        fileBugPlanCalled += 1;
+        return {
+          planId: `bug-pre-${fileBugPlanCalled}`,
+          planPath: "plans/active/bug-pre.md",
+        };
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    // Verifier short-circuited — reach + synth scripts NOT called.
+    expect(runScriptCalled).toBe(false);
+    // One bug plan filed for the css-pipeline discriminator hit.
+    expect(result.bugPlansFiled).toHaveLength(1);
+    expect(result.flows.failed).toHaveLength(1);
+    expect(result.flows.failed[0]?.flowId).toBe(
+      "pre-verify-tooling-css-pipeline-broken",
+    );
+    expect(result.flows.failed[0]?.primaryCause).toBe("dev-server-compile");
+    // warnings include the discriminator trace
+    expect(result.warnings?.join(" ")).toContain("tooling-css-pipeline-broken");
+  });
+
+  it("emits multiple synthetic bugs when several P0 discriminators hit", async () => {
+    // Two problems simultaneously:
+    //  1. Tailwind config present, postcss + @tailwind missing → css-pipeline
+    //  2. next.config has output:export + apps/api/ exists → output-export-mismatch
+    writeFile("apps/web/tailwind.config.ts", "export default {};");
+    writeFile(
+      "apps/web/next.config.ts",
+      `const config = { output: "export" };\nexport default config;`,
+    );
+    writeFile("apps/api/package.json", "{}");
+
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      factoryRoot: "/factory",
+      runScript: async () => ({ stdout: "{}", stderr: "", exitCode: 0 }),
+      runParity: false,
+      fileBugPlan: async () => ({
+        planId: "bug-pre",
+        planPath: "plans/active/bug-pre.md",
+      }),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.flows.failed.length).toBeGreaterThanOrEqual(2);
+    const flowIds = result.flows.failed.map((f) => f.flowId).sort();
+    expect(flowIds).toContain("pre-verify-tooling-css-pipeline-broken");
+    expect(flowIds).toContain("pre-verify-tooling-config-mismatch");
+  });
+
+  it("does NOT short-circuit on a clean project (no discriminator hits)", async () => {
+    // Build a project that passes every discriminator:
+    writeFile("apps/web/tailwind.config.ts", "export default {};");
+    writeFile(
+      "apps/web/postcss.config.mjs",
+      "export default { plugins: { tailwindcss: {}, autoprefixer: {} } };",
+    );
+    writeFile(
+      "packages/ui-kit/src/styles/globals.css",
+      "@tailwind base;\n@tailwind components;\n@tailwind utilities;",
+    );
+    writeFile(
+      "apps/web/next.config.ts",
+      `const config = { transpilePackages: ["@repo/ui-kit"] };\nexport default config;`,
+    );
+    writeFile("apps/api/.env.example", "ENABLE_TEST_SEED=1\n");
+
+    let runScriptCallCount = 0;
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      factoryRoot: "/factory",
+      runScript: async () => {
+        runScriptCallCount += 1;
+        return {
+          stdout: JSON.stringify({
+            ok: true,
+            scannedFiles: 0,
+            orphanComponents: [],
+            orphanRoutes: [],
+            ignoredByAllowComment: [],
+            generatedFiles: [],
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+      executeFlows: false,
+      runParity: false,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(runScriptCallCount).toBe(2); // reach + synth both ran
+  });
+
+  it("does NOT short-circuit on a P1/P2-only hit (test-seed missing line)", async () => {
+    // apps/api/ exists but .env.example doesn't have ENABLE_TEST_SEED line at
+    // all → P2 hit only. Verifier should still proceed.
+    writeFile("apps/api/.env.example", "PORT=3001\n"); // no ENABLE_TEST_SEED line
+
+    let runScriptCallCount = 0;
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      factoryRoot: "/factory",
+      runScript: async () => {
+        runScriptCallCount += 1;
+        return {
+          stdout: JSON.stringify({
+            ok: true,
+            scannedFiles: 0,
+            orphanComponents: [],
+            orphanRoutes: [],
+            ignoredByAllowComment: [],
+            generatedFiles: [],
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+      executeFlows: false,
+      runParity: false,
+    });
+
+    // P2 hit logs a warning but doesn't short-circuit
+    expect(runScriptCallCount).toBe(2);
+    expect(result.warnings?.join(" ")).toContain(
+      "tooling-test-seed-contract-broken",
+    );
   });
 });

@@ -636,6 +636,12 @@ function parseReporterJson(
     for (const top of report.suites) walk(top);
   }
 
+  // bug-079: accumulator for runtime errors seen on PASSING specs. Filled
+  // inside the loop; dedup + emit happens after the loop so a single error
+  // firing across multiple flows collapses to one synthesized FlowFailure.
+  // Shape per entry: { flowId, flowName, runtimeErrors }.
+  const passingSpecRuntimeErrors = [];
+
   for (const spec of allSpecs) {
     const flowId = flowIdFromFile(spec.file);
     const tests = Array.isArray(spec.tests) ? spec.tests : [];
@@ -758,11 +764,83 @@ function parseReporterJson(
       flows.failed.push(failure);
     } else if (anyPassed) {
       flows.passed.push(flowId);
+      // ── bug-079 (2026-05-11): elevate runtime errors on PASSING tests ───
+      // Hydration errors, console errors, page errors, and network failures
+      // don't crash Playwright tests (selectors still hit, page renders
+      // enough to assert) but they ARE real product bugs. Pre-bug-079 the
+      // extractor only ran on failed tests, so passing-spec attachments
+      // were silently shelved in test-results/. Walk every passing result,
+      // extract attachments, accumulate for cross-spec dedup below.
+      for (const r of allResults) {
+        if (r.status !== "passed") continue;
+        const att = Array.isArray(r.attachments) ? r.attachments : [];
+        const rt = extractRuntimeErrors(att, warnings);
+        const hasSignal =
+          rt !== null &&
+          (rt.consoleErrors.length > 0 ||
+            rt.pageErrors.length > 0 ||
+            rt.networkFailures.length > 0 ||
+            rt.devServerOverlay !== undefined);
+        if (!hasSignal) continue;
+        passingSpecRuntimeErrors.push({
+          flowId,
+          flowName: spec.title ?? flowId,
+          runtimeErrors: rt,
+        });
+      }
     } else if (allSkipped) {
       flows.skipped.push(flowId);
     } else {
       // Empty or interrupted — count as skipped for surface visibility.
       flows.skipped.push(flowId);
+    }
+  }
+
+  // ── bug-079 (2026-05-11): emit synthesized FlowFailure(s) for runtime
+  // errors observed on PASSING specs. Dedup by signature so one hydration
+  // error firing on N flows files ONE bug, not N. The primaryCause:
+  // "runtime-error" routes to the cascade-root file-bug path in
+  // build-to-spec-verify.ts (filed FIRST so the bug-fix loop sees them
+  // with priority). The flowId stays in flows.passed too — the test
+  // genuinely passed; the runtime-error is a separate concern.
+  if (passingSpecRuntimeErrors.length > 0) {
+    // Map<signature, { flowId, flowName, flowIds[], runtimeErrors }>.
+    const dedup = new Map();
+    for (const entry of passingSpecRuntimeErrors) {
+      const sig = runtimeErrorSignature(entry.runtimeErrors);
+      const existing = dedup.get(sig);
+      if (!existing) {
+        dedup.set(sig, {
+          flowId: entry.flowId,
+          flowName: entry.flowName,
+          flowIds: [entry.flowId],
+          runtimeErrors: entry.runtimeErrors,
+        });
+      } else if (!existing.flowIds.includes(entry.flowId)) {
+        existing.flowIds.push(entry.flowId);
+      }
+    }
+    for (const { flowId, flowName, flowIds, runtimeErrors } of dedup.values()) {
+      const alsoFiredIn = flowIds.slice(1);
+      const msg =
+        `runtime error observed during passing spec "${flowName}"` +
+        (alsoFiredIn.length > 0
+          ? ` (also fired in: ${alsoFiredIn.join(", ")})`
+          : "");
+      flows.failed.push({
+        flowId,
+        flowName,
+        step: 0,
+        fromScreenId: null,
+        expectedScreenId: null,
+        actualScreenId: null,
+        selector: null,
+        screenshotPath: null,
+        htmlDumpPath: null,
+        message: msg,
+        primaryCause: "runtime-error",
+        runtimeErrors,
+      });
     }
   }
 
@@ -869,6 +947,39 @@ function extractRuntimeErrors(attachments, warnings) {
     );
     return null;
   }
+}
+
+/**
+ * bug-079 — stable fingerprint of a runtime-errors payload, used to dedup
+ * the same error firing across multiple passing specs (e.g. a hydration
+ * error on `page.goto("/")` fires on every flow-N.spec.ts; we want ONE
+ * runtime-error bug, not N).
+ *
+ * Signature order of preference (most-stable first):
+ *   1. first pageError.message  — React throws these with stable strings
+ *   2. dev-server-overlay first rawText line (truncated)
+ *   3. first consoleError text (truncated; URLs / IDs included as-is)
+ *   4. first networkFailure URL + failureText
+ *
+ * Returns "no-signal" when payload is empty (defensive — caller already
+ * checks hasSignal before passing, but keeps the helper total).
+ */
+function runtimeErrorSignature(rt) {
+  if (!rt) return "no-signal";
+  if (Array.isArray(rt.pageErrors) && rt.pageErrors[0]?.message) {
+    return `page:${rt.pageErrors[0].message.slice(0, 200)}`;
+  }
+  if (rt.devServerOverlay?.rawText) {
+    return `overlay:${rt.devServerOverlay.rawText.split("\n")[0].slice(0, 200)}`;
+  }
+  if (Array.isArray(rt.consoleErrors) && rt.consoleErrors[0]) {
+    return `console:${String(rt.consoleErrors[0]).slice(0, 200)}`;
+  }
+  if (Array.isArray(rt.networkFailures) && rt.networkFailures[0]) {
+    const n = rt.networkFailures[0];
+    return `net:${n.method} ${n.url}|${n.failureText}`.slice(0, 200);
+  }
+  return "no-signal";
 }
 
 /**

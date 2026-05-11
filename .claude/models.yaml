@@ -29,6 +29,15 @@ agents:
   # NOTE: when ~/.claude/models.yaml gains bug-fixer system-wide, this
   # entry can be removed (factory will inherit).
   bug-fixer: { tier: building, effort: medium }
+  # feat-070 (2026-05-11) — systemic-fixer is the cross-file variant of
+  # bug-fixer for SYSTEMIC bug classes (tooling-css-pipeline-broken,
+  # tooling-config-mismatch, tooling-test-seed-contract-broken,
+  # systemic-divergence, pixel-systemic-divergence, clustered-systemic-
+  # divergence). Same tier/effort as bug-fixer per investigate-024
+  # evidence that Sonnet handles these tasks without Opus's 5× premium;
+  # exploration budget comes from agent frontmatter (maxTurns: 12) and
+  # the 18-min stall cap in model-config.ts:DEFAULT_STALL_TIMEOUT_BY_AGENT.
+  systemic-fixer: { tier: building, effort: medium }
 
 # Budget overrides. Leave empty to inherit.
 # budget:
