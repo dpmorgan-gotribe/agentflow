@@ -39,15 +39,15 @@ Three load-bearing gaps confirmed:
 
 Phases ordered by leverage-per-effort. Each ships as its own ticket; can land independently.
 
-| Phase | Ticket | Effort | Empirical leverage (vs reading-log-02 30-bug census) |
-|---|---|---|---|
-| 1 — audit-computed-styles config fix + deterministic discriminators | bug-078 | 6 hr | ~17% (5 bugs caught) — was projected 70%; falsified down |
-| 2 — pixel-diff smoke layer | feat-067 | 6 hr | +50% (15 bugs caught: missing elements, color drifts, full-page break) |
-| 3 — vision-LLM perceptual review | feat-068 | 10 hr | +15% (perceptual gaps Phase 2 misses) |
-| 4 — AI walkthrough (Playwright CLI variant) | feat-069 | 12 hr | +15% (interaction-level bugs only this catches) |
-| 5 — systemic-fixer agent variant | feat-070 | 3 hr | enables Phase 1+2's systemic-divergence dispatches |
-| 6 — cluster-bugs-pre-dispatch | feat-071 | 3 hr | reduces total wall-clock at scale (50 → 1 dispatch when warranted) |
-| 7 — re-enable class-batched dispatch (selected) | feat-072 | 1 hr | reduces wall-clock for pixel-minor-divergence batches |
+| Phase                                                               | Ticket   | Effort | Empirical leverage (vs reading-log-02 30-bug census)                   |
+| ------------------------------------------------------------------- | -------- | ------ | ---------------------------------------------------------------------- |
+| 1 — audit-computed-styles config fix + deterministic discriminators | bug-078  | 6 hr   | ~17% (5 bugs caught) — was projected 70%; falsified down               |
+| 2 — pixel-diff smoke layer                                          | feat-067 | 6 hr   | +50% (15 bugs caught: missing elements, color drifts, full-page break) |
+| 3 — vision-LLM perceptual review                                    | feat-068 | 10 hr  | +15% (perceptual gaps Phase 2 misses)                                  |
+| 4 — AI walkthrough (Playwright CLI variant)                         | feat-069 | 12 hr  | +15% (interaction-level bugs only this catches)                        |
+| 5 — systemic-fixer agent variant                                    | feat-070 | 3 hr   | enables Phase 1+2's systemic-divergence dispatches                     |
+| 6 — cluster-bugs-pre-dispatch                                       | feat-071 | 3 hr   | reduces total wall-clock at scale (50 → 1 dispatch when warranted)     |
+| 7 — re-enable class-batched dispatch (selected)                     | feat-072 | 1 hr   | reduces wall-clock for pixel-minor-divergence batches                  |
 
 **Total: ~41 hr engineering effort.** Phase 1+5 = 9 hr for ~17% catch + systemic-bug routing. Phase 1+2+5 = 15 hr for ~67% catch. Full Phase 1-7 = ~95% catch.
 
@@ -100,26 +100,26 @@ Phases ordered by leverage-per-effort. Each ships as its own ticket; can land in
 
 investigate-024's 5-6 min/bug median is preserved through v2. All new bug classes route to either bug-fixer (unchanged dispatch) or the new systemic-fixer (intentionally slower for cross-file work, but only fires for ~10% of bugs).
 
-| Bug class | Routes to | Per-bug wall-clock |
-|---|---|---|
-| parity-divergence (incl. token-drift, copy-sizing-drift, spacing-token-drift, layout-regrouping) | bug-fixer | 5-6 min |
-| pixel-minor-divergence | bug-fixer (or batched per Phase 7) | 5-6 min |
-| pixel-systemic-divergence | systemic-fixer | 8-10 min |
-| perceptual-divergence | bug-fixer with image-rich pre-load | 5-6 min |
-| walkthrough-divergence | bug-fixer | 5-6 min |
-| runtime-error (now elevated for passing tests via bug-079) | bug-fixer | 5-6 min |
-| tooling-css-pipeline-broken | systemic-fixer (or trivial bug-fixer) | 5-6 min |
-| tooling-config-mismatch | systemic-fixer | 8-10 min |
-| clustered-systemic-divergence (Phase 6) | systemic-fixer | 8-10 min once vs N×5-6 |
+| Bug class                                                                                        | Routes to                             | Per-bug wall-clock     |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------- | ---------------------- |
+| parity-divergence (incl. token-drift, copy-sizing-drift, spacing-token-drift, layout-regrouping) | bug-fixer                             | 5-6 min                |
+| pixel-minor-divergence                                                                           | bug-fixer (or batched per Phase 7)    | 5-6 min                |
+| pixel-systemic-divergence                                                                        | systemic-fixer                        | 8-10 min               |
+| perceptual-divergence                                                                            | bug-fixer with image-rich pre-load    | 5-6 min                |
+| walkthrough-divergence                                                                           | bug-fixer                             | 5-6 min                |
+| runtime-error (now elevated for passing tests via bug-079)                                       | bug-fixer                             | 5-6 min                |
+| tooling-css-pipeline-broken                                                                      | systemic-fixer (or trivial bug-fixer) | 5-6 min                |
+| tooling-config-mismatch                                                                          | systemic-fixer                        | 8-10 min               |
+| clustered-systemic-divergence (Phase 6)                                                          | systemic-fixer                        | 8-10 min once vs N×5-6 |
 
 Total fix-loop wall-clock estimate (reading-log-02 30-bug census, with mitigations):
 
-| Pipeline | Total fix-loop time | Bugs caught |
-|---|---|---|
-| Today (current 5-layer + bug-fixer) | 75-90 min | 1/30 |
-| Phase 1+5 only | 100-120 min | ~10/30 |
-| Phase 1-5 | 180-220 min | ~25/30 |
-| Phase 1-7 (with mitigations) | **130-160 min** | ~25-28/30 |
+| Pipeline                            | Total fix-loop time | Bugs caught |
+| ----------------------------------- | ------------------- | ----------- |
+| Today (current 5-layer + bug-fixer) | 75-90 min           | 1/30        |
+| Phase 1+5 only                      | 100-120 min         | ~10/30      |
+| Phase 1-5                           | 180-220 min         | ~25/30      |
+| Phase 1-7 (with mitigations)        | **130-160 min**     | ~25-28/30   |
 
 Net: ~1.6× longer total run; ~25× more bugs caught per run. Per-bug stays at investigate-024's targets.
 
@@ -167,4 +167,31 @@ Before archiving feat-066:
 
 ## Attempt Log
 
-<!-- Populated by executing agents. -->
+### Phase 0+1+2+5 shipped — 2026-05-11
+
+- `1c92a00` Phase 0 (bug-079/080/081) + Phase 1 (bug-078 audit-computed-styles defaults + pre-verify discriminators) + Phase 5 (feat-070 systemic-fixer)
+- `ca8a0fd` Phase 2 (feat-067 pixel-diff smoke layer)
+- `646ea00` feat-067 Phase D follow-up (force light-mode rendering + pixel-minor schema gap)
+
+### Empirical validation — 2026-05-11 (paused mid-run)
+
+`/fix-bugs reading-log-02` invoked at 18:05 UTC, paused at 19:55 UTC (runId `788ab078-973f-4ff0-9627-b919d9c08bf7`). Wall-clock ~2hr, 6 of 21 bugs resolved.
+
+**Class-by-class first-attempt success rate:**
+
+| Class                                                 | Dispatched | Succeeded | Rate        |
+| ----------------------------------------------------- | ---------- | --------- | ----------- |
+| systemic-fixer (pixel-systemic + systemic-divergence) | 3          | 3         | 100%        |
+| bug-fixer on orphan-route                             | 1          | 1         | 100%        |
+| bug-fixer on `timeout-no-evidence` flow-failures      | 5          | 2         | **40%**     |
+| bug-fixer on parity (layout/copy/pixel-minor)         | 0          | n/a       | not reached |
+
+**feat-070 systemic-fixer empirical validation: ✅ confirmed effective.** Single-dispatch cross-file fixes resolved the bug-077-class systemic patterns that bug-fixer's narrow-scope contract couldn't.
+
+**Pause trigger:** the `timeout-no-evidence` bug-fixer dispatches systematically stalled (repeated 90s SDK-message-warn thresholds; 3 of 5 went pending after attempt 1; flow-5 in-progress for 30+min producing only sporadic SDK messages). Rate degraded from 9 min/bug → 20 min/bug. Cost of continuing was disproportionate to additional signal.
+
+### Attempt 3 — Escalated to investigation investigate-026-timeout-no-evidence-bug-fixer-stalls
+
+See `plans/active/investigate-026-timeout-no-evidence-bug-fixer-stalls.md`. 30-min time-box; question: why do `timeout-no-evidence` bug-fixer dispatches systematically stall while other classes succeed? Investigation will produce a recommendation pointing at one of (A) enrich envelope, (B) capture artefacts at synthesizer emit time, (C) reroute to diagnostic-fixer, (D) accept-as-low-confidence operator-review-only.
+
+feat-066 epic remains in-progress pending investigation result + decision on whether to ship Phase 3-7 (feat-068 vision-LLM, feat-069 AI walkthrough, feat-071 cluster-bugs, feat-072 class-batched re-enable) or whether investigate-026's recommendation closes the gap to the ≥95% production target without further phases.
