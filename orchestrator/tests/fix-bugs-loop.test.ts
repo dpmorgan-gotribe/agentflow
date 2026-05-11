@@ -2233,3 +2233,157 @@ describe("bug-058 — ensureFixupTracksMaster", () => {
     }
   });
 });
+
+// ─── bug-082: orchestrator unverified-completion guard ──────────────────────
+//
+// Empirical motivator: reading-log-02 /fix-bugs run 2026-05-11 — 7 of 21 bugs
+// marked status:completed with ZERO commits across all branches. The
+// orchestrator's dispatchAgentsForBug was trusting agent's self-reported
+// `taskOutcomes:completed` without checking actual evidence of fix. These
+// tests verify the guard rejects "completed-but-no-diff" dispatches AND
+// the guard silently disables when the worktree isn't a git repo.
+
+describe("dispatchAgentsForBug — bug-082 unverified-completion guard", () => {
+  /** Initialize projectRoot as a real git repo with an initial commit. */
+  function gitInit() {
+    execSync("git init -b master", { cwd: projectRoot });
+    execSync("git config user.email test@test.local", { cwd: projectRoot });
+    execSync("git config user.name test", { cwd: projectRoot });
+    // Empty initial commit so HEAD has a sha to compare against.
+    writeFileSync(join(projectRoot, "seed.txt"), "seed");
+    execSync("git add seed.txt && git commit -m init", { cwd: projectRoot });
+  }
+
+  /** Make a real commit from inside the test — simulates the agent doing
+   * actual fix work. Returns the new HEAD sha for assertion convenience. */
+  function makeRealCommit(relPath: string, content: string): string {
+    const abs = join(projectRoot, relPath);
+    mkdirSync(join(abs, ".."), { recursive: true });
+    writeFileSync(abs, content);
+    execSync(`git add ${relPath} && git commit -m "test commit"`, {
+      cwd: projectRoot,
+    });
+    return execSync("git rev-parse HEAD", {
+      cwd: projectRoot,
+      encoding: "utf8",
+    }).trim();
+  }
+
+  it("rejects success when agent reports completed but HEAD did not advance", async () => {
+    gitInit();
+    writeBugsYamlDoc([makeBug({ id: "bug-orphan-fake" })]);
+    // Agent returns taskStatus:completed but makes NO commit
+    const invoke: InvokeAgentFn = async (args) => ({
+      taskStatus: Object.fromEntries(
+        args.tasks.map((t) => [t.id, "completed"] as const),
+      ),
+      errors: {},
+      costUsd: 0.1,
+    });
+    // iterationCap:1 isolates this test to a single dispatch attempt so the
+    // assertion that the bug remains `pending` after one guard rejection
+    // doesn't get swamped by the loop retrying until maxAttempts → `failed`.
+    const result = await runFixBugsLoop(
+      makeCtx(invoke, cleanVerify, { iterationCap: 1 }),
+    );
+    // Bug stays pending (attempts:1) with errorLog showing the guard
+    const doc = readBugsYamlDoc();
+    const bug = doc.bugs[0]!;
+    expect(bug.status).toBe("pending");
+    expect(bug.attempts).toBe(1);
+    expect(bug.errorLog.join(" ")).toMatch(/unverified-completion/);
+    expect(bug.errorLog.join(" ")).toMatch(/HEAD did not advance/);
+    expect(result.bugsResolved).toEqual([]);
+  });
+
+  it("rejects success when agent commits only bookkeeping paths (bugs.yaml only)", async () => {
+    gitInit();
+    writeBugsYamlDoc([makeBug({ id: "bug-orphan-bookkeeping" })]);
+    let agentCallNum = 0;
+    const invoke: InvokeAgentFn = async (args) => {
+      // Simulate the agent committing only docs/bugs.yaml — bookkeeping
+      // path that should NOT count as a real source change.
+      agentCallNum++;
+      if (agentCallNum === 1) {
+        writeFileSync(
+          join(projectRoot, "docs", "bugs.yaml"),
+          "# touched\n" + readFileSync(bugsYamlPath, "utf8"),
+        );
+        execSync(
+          'git add docs/bugs.yaml && git commit -m "agent: bookkeeping only"',
+          { cwd: projectRoot },
+        );
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+    const result = await runFixBugsLoop(
+      makeCtx(invoke, cleanVerify, { iterationCap: 1 }),
+    );
+    const doc = readBugsYamlDoc();
+    const bug = doc.bugs[0]!;
+    expect(bug.status).toBe("pending");
+    expect(bug.errorLog.join(" ")).toMatch(/only touched bookkeeping paths/);
+    expect(result.bugsResolved).toEqual([]);
+  });
+
+  it("accepts success when agent commits an actual source file change", async () => {
+    gitInit();
+    writeBugsYamlDoc([
+      makeBug({
+        id: "bug-orphan-real-fix",
+        agentSequence: ["web-frontend-builder"],
+      }),
+    ]);
+    let agentCallNum = 0;
+    const invoke: InvokeAgentFn = async (args) => {
+      agentCallNum++;
+      if (agentCallNum === 1) {
+        // Real fix — commits a source file
+        makeRealCommit(
+          "apps/web/components/Foo.tsx",
+          "export function Foo() { return null; }",
+        );
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+    const result = await runFixBugsLoop(makeCtx(invoke, cleanVerify));
+    const doc = readBugsYamlDoc();
+    const bug = doc.bugs[0]!;
+    expect(bug.status).toBe("completed");
+    expect(result.bugsResolved).toEqual(["bug-orphan-real-fix"]);
+  });
+
+  it("silently disables guard when projectRoot is not a git repo (back-compat)", async () => {
+    // No gitInit() — projectRoot is just a tempdir
+    writeBugsYamlDoc([
+      makeBug({
+        id: "bug-orphan-nogit",
+        agentSequence: ["web-frontend-builder"],
+      }),
+    ]);
+    const invoke: InvokeAgentFn = async (args) => ({
+      taskStatus: Object.fromEntries(
+        args.tasks.map((t) => [t.id, "completed"] as const),
+      ),
+      errors: {},
+      costUsd: 0.1,
+    });
+    const result = await runFixBugsLoop(makeCtx(invoke, cleanVerify));
+    // Without git, readGitHeadSafe returns null → guard skips → agent's
+    // self-report is honored as before (preserves pre-bug-082 behavior
+    // for tests + environments without git state).
+    expect(result.bugsResolved).toEqual(["bug-orphan-nogit"]);
+  });
+});

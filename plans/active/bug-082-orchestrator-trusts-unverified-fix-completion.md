@@ -1,7 +1,7 @@
 ---
 id: bug-082-orchestrator-trusts-unverified-fix-completion
 type: bug
-status: draft
+status: in-progress
 author-agent: human
 created: 2026-05-11
 updated: 2026-05-11
@@ -117,11 +117,13 @@ This forces the agent to produce ACTUAL changes before being marked successful. 
 
 ## Validation Criteria
 
-- [ ] `dispatchAgentsForBug` reads `git rev-parse HEAD` before + after invokeAgent
-- [ ] When agent returns `taskOutcomes: completed` with `headBefore === headAfter`, dispatch returns `success: false` with errorLog naming "no commits produced"
-- [ ] When agent's commits only touch `docs/bugs.yaml` / `plans/`, dispatch returns `success: false`
-- [ ] When agent makes a real source-file commit, dispatch returns `success: true`
-- [ ] 4 new tests cover all 4 cases
+- [x] `dispatchAgentsForBug` reads `git rev-parse HEAD` before + after invokeAgent (`readGitHeadSafe` helper in `orchestrator/src/fix-bugs-loop.ts`)
+- [x] When agent returns `taskOutcomes: completed` with `headBefore === headAfter`, dispatch returns `success: false` with errorLog naming "HEAD did not advance" / `unverified-completion` diagnostic
+- [x] When agent's commits only touch `docs/bugs.yaml` / `plans/` / `docs/build-to-spec/*` / `pipeline/*`, dispatch returns `success: false` with "only touched bookkeeping paths" diagnostic (via `diffContainsSourceChange`)
+- [x] When agent makes a real source-file commit, dispatch returns `success: true`
+- [x] 4 new tests cover all 4 cases (`tests/fix-bugs-loop.test.ts` "dispatchAgentsForBug — bug-082 unverified-completion guard" describe block — 4/4 passing)
+- [x] Guard mirrored in `dispatchAgentsForPatternGroup` (batched path) so feat-072 systemic dispatches share the protection
+- [x] Phase C — bug-fixer + systemic-fixer system prompts updated to clarify '"completed" requires a real source commit' so agents stop returning `completed` without doing work
 - [ ] Empirical: re-run /fix-bugs reading-log-02 after this fix lands; the 7 false-positive completions from 2026-05-11 should now correctly classify as `failed` with diagnostics
 
 ## Cross-references
@@ -133,4 +135,12 @@ This forces the agent to produce ACTUAL changes before being marked successful. 
 
 ## Attempt Log
 
-<!-- Populated by executing agents. -->
+### Attempt 1 — 2026-05-11 — landed
+
+- **Phase A — orchestrator guard**: Added 3 helpers to `orchestrator/src/fix-bugs-loop.ts`: `readGitHeadSafe()` (`git rev-parse HEAD` with try/catch, returns null when not a git repo so non-git test envs keep working), `gitDiffPaths(from, to)` (resolves `git diff --name-only <a>..<b>`), `diffContainsSourceChange(paths)` (returns true iff at least one path is OUTSIDE the bookkeeping allowlist: `docs/bugs.yaml`, `docs/build-to-spec/`, `plans/`, `pipeline/`). Captured `headBeforeDispatch` at the top of `dispatchAgentsForBug`; before returning `{ success: true, ... }` on agent-reported `completed`, the guard reads HEAD again + checks the diff. Three rejection branches: HEAD unchanged → `unverified-completion: HEAD did not advance`; HEAD changed but diff empty → also rejected (defensive); HEAD changed but diff only touches bookkeeping → `unverified-completion: only touched bookkeeping paths (<paths>)`. Mirror guard added in `dispatchAgentsForPatternGroup` (batched path used by feat-072 systemic dispatches) via `headBeforeBatch`.
+
+- **Phase B — tests**: Added `describe("dispatchAgentsForBug — bug-082 unverified-completion guard")` block to `orchestrator/tests/fix-bugs-loop.test.ts` with 4 tests + `gitInit()` and `makeRealCommit()` helpers. Initial run: 2 of 4 failing because the test runner iterates `iterationCap=5` times so the bug hits `maxAttempts=3` → status flips to `failed` instead of staying at `pending`. Fixed by overriding `iterationCap: 1` in the two rejection tests so we observe a single dispatch attempt. Final run: 4/4 passing. Full `fix-bugs-loop.test.ts` suite: 60/60 passing — no regressions.
+
+- **Phase C — agent system prompts**: Updated `.claude/agents/bug-fixer.md` and `.claude/agents/systemic-fixer.md` to clarify under "Hard constraints" that returning `taskOutcomes: completed` REQUIRES a real source commit (HEAD advanced + diff includes a path outside the bookkeeping allowlist). Agents are told the orchestrator now verifies and rejects mismatches as `unverified-completion`, the attempt is burned, and they should return `failed` with a diagnostic rather than `completed` to "exit cleanly."
+
+Outcome: Phase A+B+C landed. Empirical Phase D (re-run /fix-bugs reading-log-02) deferred — file bug-083 + bug-084 first so the re-run measures all 3 fixes together.

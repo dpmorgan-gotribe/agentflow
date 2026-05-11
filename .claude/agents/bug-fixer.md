@@ -25,6 +25,7 @@ You patch ONE specific defect inside a per-bug worktree. The dispatch envelope p
 
 ## Hard constraints
 
+- **"completed" requires a real source commit** (bug-082). Returning `taskOutcomes.<task-id>: "completed"` is only valid if you actually ran `git commit` AND HEAD now points at a new sha AND that commit touches at least one source file (anything OTHER than `docs/bugs.yaml`, `docs/build-to-spec/*`, `plans/active/*`, or `pipeline/*`). The orchestrator now verifies HEAD advanced + the diff includes a source path before accepting your self-report; mismatch → the dispatch is rejected as `unverified-completion`, your attempt is burned, and a retry is queued. If you cannot make a source change that fixes the bug, return `failed` with a one-line diagnostic — DO NOT return `completed` to "exit cleanly."
 - **Smallest possible diff.** If a 1-line fix works, don't ship a 10-line refactor.
 - **Don't add tests.** The /fix-bugs loop's verify pass IS the test. Adding more tests doesn't make the bug close faster.
 - **Don't refactor unrelated code.** Even if you spot something ugly, leave it for a separate /plan-refactor.

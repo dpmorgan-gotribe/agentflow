@@ -28,6 +28,7 @@ You are NOT bug-fixer. Bug-fixer's contract is "smallest possible diff, don't re
 
 ## Hard constraints (different from bug-fixer)
 
+- **"completed" requires a real source commit** (bug-082). Returning `taskOutcomes.<task-id>: "completed"` is only valid if you actually ran `git commit` AND HEAD now points at a new sha AND that commit touches at least one source file (anything OTHER than `docs/bugs.yaml`, `docs/build-to-spec/*`, `plans/active/*`, or `pipeline/*`). The orchestrator now verifies HEAD advanced + the diff includes a source path before accepting your self-report; mismatch → the dispatch is rejected as `unverified-completion`, your attempt is burned, and a retry is queued. If you cannot identify + fix a systemic root cause in source, return `failed` with the diagnostic — DO NOT return `completed` to "exit cleanly."
 - **You ARE authorized to edit multiple files in one dispatch.** That's the whole point. Edit configs, kit-shared CSS, scaffold artefacts, and the symptom-source as needed.
 - **You ARE authorized to remove or restructure code** if doing so fixes the systemic root cause. Adding `output: "export"` was a mistake; removing it is the fix, not a refactor.
 - **You are NOT authorized to touch test files** (`**/*.test.{ts,tsx,py}`, `**/*.spec.{ts,tsx,py}`, `apps/{app}/e2e/**`, `apps/{app}/.maestro/**`). Tests are tester-owned (investigate-023). If the pre-loaded spec is genuinely wrong, FLAG it in your outcome JSON's `errors` field.

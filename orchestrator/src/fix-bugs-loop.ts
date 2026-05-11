@@ -174,6 +174,65 @@ function shellQuote(value: string): string {
 }
 
 /**
+ * bug-082 (2026-05-11) — capture the worktree's current HEAD sha for the
+ * unverified-completion guard. Returns null on any failure (no git repo,
+ * detached state, etc.); the caller treats null as "can't verify, skip
+ * guard" to avoid false negatives.
+ */
+function readGitHeadSafe(cwd: string): string | null {
+  try {
+    const out = execSync(`git rev-parse HEAD`, { cwd, encoding: "utf8" });
+    return out.trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * bug-082 — return the list of paths changed between two refs in the
+ * worktree. Returns null on any failure (caller treats as "can't verify").
+ */
+function gitDiffPaths(
+  cwd: string,
+  fromRef: string,
+  toRef: string,
+): string[] | null {
+  try {
+    const out = execSync(
+      `git diff --name-only ${shellQuote(fromRef)} ${shellQuote(toRef)}`,
+      { cwd, encoding: "utf8" },
+    );
+    return out
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * bug-082 — classify whether a list of changed paths contains a real
+ * source-code change vs only bookkeeping. The orchestrator-managed bugs.yaml
+ * and plan files don't count as "the agent fixed something" — the agent
+ * may have only touched its own tracking artefacts.
+ *
+ * "Source change" = ANY path NOT in this denylist:
+ *   - docs/bugs.yaml (orchestrator-managed; agent shouldn't touch it anyway)
+ *   - plans/** (plan files; agent shouldn't touch them in a fix dispatch)
+ *   - .claude/state/** (per-run state; orchestrator-managed)
+ *
+ * @returns true when at least one path is a non-denylist source change
+ */
+function diffContainsSourceChange(paths: readonly string[]): boolean {
+  const isBookkeepingOnly = (p: string) =>
+    p === "docs/bugs.yaml" ||
+    p.startsWith("plans/") ||
+    p.startsWith(".claude/state/");
+  return paths.some((p) => !isBookkeepingOnly(p));
+}
+
+/**
  * Open the shared fixup worktree on master. Uses the same `git worktree
  * add` pattern as `runCheckoutFeature` in invoke-agent.ts (cross-platform
  * shell quoting via `shellQuote`).
@@ -1167,6 +1226,13 @@ async function dispatchAgentsForPatternGroup(args: {
   };
 
   const agentSequence = bugs[0]!.agentSequence;
+  // bug-082 (2026-05-11) — capture HEAD BEFORE the batched agent sequence;
+  // same unverified-completion guard as dispatchAgentsForBug. Empirical
+  // motivator is the same: reading-log-02 2026-05-11 saw 7 single-bug
+  // dispatches mark completed with zero commits; the batched path has the
+  // same trust-the-agent shape + would exhibit the same false-positive.
+  const headBeforeBatch = readGitHeadSafe(worktreeCwd);
+
   for (const agent of agentSequence) {
     if (agent === "git-agent") continue;
     const syntheticTask = {
@@ -1213,6 +1279,33 @@ async function dispatchAgentsForPatternGroup(args: {
       }
     }
   }
+
+  // bug-082 (2026-05-11) — unverified-completion guard for the batched
+  // path. Mirror of the per-bug path's check (see dispatchAgentsForBug).
+  if (headBeforeBatch !== null) {
+    const headAfterBatch = readGitHeadSafe(worktreeCwd);
+    if (headAfterBatch === null) {
+      // git went away mid-dispatch (unusual). Skip guard.
+    } else if (headAfterBatch === headBeforeBatch) {
+      errorLog.push(
+        `[unverified-completion] batched agent(s) [${agentSequence.join(", ")}] returned taskOutcomes:completed but HEAD did not advance (${headBeforeBatch.slice(0, 8)} === ${headAfterBatch.slice(0, 8)}); no commit produced for pattern-batch ${pattern} (${bugs.length} bugs) — treating as silent-failure (bug-082)`,
+      );
+      return { success: false, costUsd, errorLog };
+    } else {
+      const changedPaths = gitDiffPaths(
+        worktreeCwd,
+        headBeforeBatch,
+        headAfterBatch,
+      );
+      if (changedPaths !== null && !diffContainsSourceChange(changedPaths)) {
+        errorLog.push(
+          `[unverified-completion] batched agent(s) [${agentSequence.join(", ")}] committed but only touched bookkeeping paths (${changedPaths.join(", ")}) for pattern-batch ${pattern}; no source change — treating as silent-failure (bug-082)`,
+        );
+        return { success: false, costUsd, errorLog };
+      }
+    }
+  }
+
   return { success: true, costUsd, errorLog };
 }
 
@@ -1286,6 +1379,14 @@ async function dispatchAgentsForBug(args: {
     projectRoot: worktreeCwd,
   });
 
+  // bug-082 (2026-05-11) — capture HEAD BEFORE dispatching the agent
+  // sequence so we can verify the agent actually produced a commit when
+  // it self-reports taskOutcomes:completed. Empirical reading-log-02
+  // 2026-05-11: 7 of 21 bugs marked completed despite ZERO commits.
+  // The orchestrator was trusting the agent's word; this guard requires
+  // evidence-of-fix before accepting completion.
+  const headBeforeDispatch = readGitHeadSafe(worktreeCwd);
+
   for (const agent of bug.agentSequence) {
     if (agent === "git-agent") continue; // worktree lifecycle is loop-owned
     const syntheticTask = {
@@ -1328,6 +1429,41 @@ async function dispatchAgentsForBug(args: {
             .join(
               ", ",
             )} — see investigate-023; tester should flag genuineProductBugs[] instead of working around the build's bug`,
+        );
+        return { success: false, costUsd, errorLog };
+      }
+    }
+  }
+
+  // bug-082 (2026-05-11) — unverified-completion guard. Every agent in the
+  // sequence reported taskOutcomes:completed (we returned early otherwise
+  // above). Now verify that SOMETHING actually got committed. Without this
+  // check, agents that honestly determine "nothing to fix" OR agents that
+  // give up under wall-clock pressure both look identical to "fixed it".
+  //
+  // The guard is best-effort: if git state can't be read (no repo, detached
+  // HEAD, etc.), the guard silently skips so we don't introduce false
+  // negatives. The orchestrator's end-of-iteration verify still catches
+  // false-positive completions at the cost of one more iteration — this
+  // guard just makes the failure-mode visible at dispatch time instead.
+  if (headBeforeDispatch !== null) {
+    const headAfterDispatch = readGitHeadSafe(worktreeCwd);
+    if (headAfterDispatch === null) {
+      // git went away mid-dispatch (unusual). Skip guard.
+    } else if (headAfterDispatch === headBeforeDispatch) {
+      errorLog.push(
+        `[unverified-completion] agent(s) [${bug.agentSequence.join(", ")}] returned taskOutcomes:completed but HEAD did not advance (${headBeforeDispatch.slice(0, 8)} === ${headAfterDispatch.slice(0, 8)}); no commit produced — treating as silent-failure (bug-082)`,
+      );
+      return { success: false, costUsd, errorLog };
+    } else {
+      const changedPaths = gitDiffPaths(
+        worktreeCwd,
+        headBeforeDispatch,
+        headAfterDispatch,
+      );
+      if (changedPaths !== null && !diffContainsSourceChange(changedPaths)) {
+        errorLog.push(
+          `[unverified-completion] agent(s) [${bug.agentSequence.join(", ")}] committed but only touched bookkeeping paths (${changedPaths.join(", ")}); no source change — treating as silent-failure (bug-082)`,
         );
         return { success: false, costUsd, errorLog };
       }
