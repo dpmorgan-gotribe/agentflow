@@ -437,8 +437,18 @@ async function defaultCompareScreen({
   let computedStyleWarnings: string[] = [];
   try {
     browser = await chromium.launch({ headless: true });
+    // feat-067 Phase D follow-up (2026-05-11) — force colorScheme:'light' on
+    // both built + mockup pages so dark-mode OS settings on the operator's
+    // machine don't pollute the pixel-diff. Empirical: reading-log-02 builds
+    // were rendering in dark mode (kit reads prefers-color-scheme via its
+    // anti-flicker script in layout.tsx) while mockups always render light;
+    // every screen's diff was 94-98% pixel mismatch from mode-difference
+    // alone, not from real visual gaps. Forcing light on both eliminates
+    // mode as a noise source. Mockups don't read the media query so they're
+    // unaffected by this flag; built pages now match.
     const builtPage = await browser.newPage({
       viewport: { width: 1440, height: 900 },
+      colorScheme: "light",
     });
     await builtPage.goto(builtUrl, {
       waitUntil: "networkidle",
@@ -455,6 +465,16 @@ async function defaultCompareScreen({
     }
     // feat-067 — PNG capture on built page.
     try {
+      // feat-067 Phase D follow-up — defense-in-depth: even with
+      // colorScheme:'light' set on the context, the kit's anti-flicker
+      // script in apps/web/app/layout.tsx may have stamped data-theme=dark
+      // before our setting took effect (race against early <head> script).
+      // Forcibly normalize to light just before screenshot. Kit pattern:
+      // darkMode: ["class", '[data-theme="dark"]'] — so we strip both.
+      await builtPage.evaluate(() => {
+        document.documentElement.classList.remove("dark");
+        document.documentElement.setAttribute("data-theme", "light");
+      });
       builtPng = await builtPage.screenshot({ type: "png", fullPage: false });
     } catch (err) {
       computedStyleWarnings.push(
@@ -472,6 +492,9 @@ async function defaultCompareScreen({
     try {
       const mockupPage = await browser.newPage({
         viewport: { width: 1440, height: 900 },
+        // feat-067 Phase D follow-up — force light mode (see built page
+        // for full context).
+        colorScheme: "light",
       });
       const mockupFileUrl = new URL(
         `file://${screen.mockupPath.replace(/\\/g, "/")}`,
@@ -638,6 +661,27 @@ async function defaultCompareScreen({
       // overlay is meaningful — for sub-threshold diffs we have stats
       // but no bug, no point writing). Best-effort: a failed write
       // surfaces as a warning, the divergence still files.
+      //
+      // feat-067 Phase D diagnostic addition (2026-05-11): ALSO persist
+      // the source built.png + mockup.png alongside the diff so operators
+      // can visually triangulate whether a pixel-* divergence is real
+      // signal or rendering noise (font hinting, AA differences). 3-up
+      // viewing (mockup / built / diff) is the load-bearing diagnostic
+      // when calibrating thresholds on a new project.
+      const diffDir = join(projectDir, "docs", "build-to-spec", "pixel-diffs");
+      try {
+        mkdirSync(diffDir, { recursive: true });
+        if (mockupPng)
+          writeFileSync(join(diffDir, `${screen.id}.mockup.png`), mockupPng);
+        if (builtPng)
+          writeFileSync(join(diffDir, `${screen.id}.built.png`), builtPng);
+      } catch (err) {
+        computedStyleWarnings.push(
+          `pixel-diff source PNG persist failed for ${screen.id}: ${
+            (err as Error).message
+          }`,
+        );
+      }
       const persistedDivergences = pixelResult.divergences.map((d) => {
         if (!pixelResult.stats.diffPng) return d as unknown as ParityDivergence;
         const relPath = join(

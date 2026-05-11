@@ -113,6 +113,7 @@ export const BugParityContextSchema = z.object({
     // must accept the same pattern values the verifier emits.
     "systemic-divergence",
     "pixel-systemic-divergence",
+    "pixel-minor-divergence",
     "clustered-systemic-divergence",
   ]),
   /** Free-form detail counts/lists — pass-through for the bug-plan body. */

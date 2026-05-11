@@ -47,7 +47,8 @@ export const ParityPatternSchema = z.enum([
   // `systemic-divergence` bug instead of N individual drifts (bug-078).
   // Phase 2 + Phase 6 add the other two when those ship.
   "systemic-divergence", // bug-078 — single (screen, pattern) tuple over fold threshold
-  "pixel-systemic-divergence", // feat-067 (Phase 2) — pixel-diff whole-screen mismatch
+  "pixel-systemic-divergence", // feat-067 (Phase 2) — pixel-diff whole-screen mismatch (diffRatio > SYSTEMIC threshold)
+  "pixel-minor-divergence", // feat-067 (Phase 2) — pixel-diff sub-systemic mismatch (MINOR < diffRatio ≤ SYSTEMIC)
   "clustered-systemic-divergence", // feat-071 (Phase 6) — clusterer-fold across bugs
 ]);
 export type ParityPattern = z.infer<typeof ParityPatternSchema>;
