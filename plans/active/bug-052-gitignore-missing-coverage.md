@@ -125,7 +125,7 @@ To be filled after root cause is confirmed. Likely shape:
 
 Filed earlier in same session after empirical regression on reading-log-01 feat-tags-manage merge (~50 false coverage AA conflicts during close-feature). Initial fix scoped to coverage entries only.
 
-**Validation phase revealed wider gap:** comparing `.claude/skills/new-project/SKILL.md` base block against `projects/kanban-webapp-09/.gitignore` (the canonical post-bug-014 shipped state) showed kanban-09 had MANY more entries (Playwright reports, .turbo/, .next/, dist/, build/, .swc/, .vite/, *.log, storybook-static/, etc.) — added to that project post-hoc but never propagated factory-side. Same pattern as bug-052 itself.
+**Validation phase revealed wider gap:** comparing `.claude/skills/new-project/SKILL.md` base block against `projects/kanban-webapp-09/.gitignore` (the canonical post-bug-014 shipped state) showed kanban-09 had MANY more entries (Playwright reports, .turbo/, .next/, dist/, build/, .swc/, .vite/, \*.log, storybook-static/, etc.) — added to that project post-hoc but never propagated factory-side. Same pattern as bug-052 itself.
 
 **Operator decision (this session): extend bug-052 scope to mirror the full kanban-09 superset** rather than file a separate bug. Rationale: same problem class (factory template missing entries shipped projects added post-hoc); single comprehensive fix beats two partial ones; preventive — every future project inherits the hardened baseline.
 

@@ -82,6 +82,7 @@ After /start-build completes, the operator can confidently say:
 The resolution chain found port 3001 (correct) but the backend STILL didn't respond — likely because the backend itself is broken (the Prisma import bug). bug-038 Phase A's port-resolution-chain might already cover this, but the recurrence suggests the chain isn't reading `apps/api/.env.local` properly OR the backend's exit-on-error isn't surfaced as a verifier-level failure.
 
 Concretely:
+
 - **Phase A**: reading-log-01 ships with backend on port 3001 (fastify default) — the resolver SHOULD find this. Empirical: it does (`Resolved port: 3001`). But the backend exits on import error → port never opens → verifier waits 60s → warning. Need to capture the spawn-process exit code + treat exit≠0 within wait-window as a HARD failure (not timeout-warning).
 - **Phase B+C+D**: per bug-038 plan — stack-skill canonical-port docs, better diagnostic, empirical re-validation.
 

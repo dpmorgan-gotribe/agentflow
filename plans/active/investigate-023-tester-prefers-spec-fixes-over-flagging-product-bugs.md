@@ -51,12 +51,12 @@ reading-log-01 /fix-bugs run 2026-05-07 (17 resolved / 1 failed / $35.63)
 "resolved" 7 new flow-failure bugs but a manual review surfaced 9+ NEW
 product bugs that directly map to resolved entries:
 
-| Test (resolved) | User-visible bug |
-|---|---|
-| bug-flow-flow-3-null (Edit notes) → "resolved" | Bug #3: DELETE /books/cmovsn7vw...000015 returns 400 |
-| bug-flow-flow-5-null (Delete book) → "resolved" | Same /books/<cuid> issue |
+| Test (resolved)                                  | User-visible bug                                               |
+| ------------------------------------------------ | -------------------------------------------------------------- |
+| bug-flow-flow-3-null (Edit notes) → "resolved"   | Bug #3: DELETE /books/cmovsn7vw...000015 returns 400           |
+| bug-flow-flow-5-null (Delete book) → "resolved"  | Same /books/<cuid> issue                                       |
 | bug-flow-flow-6-null (Settings/tag) → "resolved" | Bug #4: New tag does nothing; Bug #5: Export JSON does nothing |
-| bug-parity-book-create-layout → "resolved" | Bug #9: Add-book modal blank page behind |
+| bug-parity-book-create-layout → "resolved"       | Bug #9: Add-book modal blank page behind                       |
 
 Why does the tester systematically choose to fix specs over flagging
 product bugs, despite testing-policy.md's explicit rule?
@@ -106,6 +106,7 @@ c0326ae fix(e2e): commit flow-6 spec fix and related E2E/source corrections
 ```
 
 For each: classify the change as
+
 - **CATEGORY A — legit spec fix**: timing race / async wait / selector
   ambiguity; no product issue
 - **CATEGORY B — disguised product bug**: tester worked around a real
@@ -217,7 +218,7 @@ reading-log-01 master @ 54a7ee6 (2026-05-07).
 - `.claude/agents/tester.md` lines 35-60 — current genuineProductBugs[]
   guidance (too lenient)
 - `.claude/rules/testing-policy.md §Genuine product bug — CONSTRAINT
-  (bug-024)` — the rule the tester is bending to "interpretive latitude"
+(bug-024)` — the rule the tester is bending to "interpretive latitude"
 - `bug-024` (archived) — the original bug that promoted "tester writes
   test files only" from guidance to constraint. THIS investigation
   surfaces the OPPOSITE failure: the constraint is now over-applied

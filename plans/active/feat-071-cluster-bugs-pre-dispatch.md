@@ -27,11 +27,12 @@ When N>10 bugs of the SAME pattern × screen-tuple file in one iteration, they'r
 ## Approach
 
 1. **NEW `orchestrator/src/cluster-bugs.ts`** — pure function module:
+
    ```ts
    export function clusterBugs(bugs: BugEntry[]): {
-     clusters: ClusteredBug[];     // N>10 same-pattern × tuple bugs folded
-     individuals: BugEntry[];      // bugs that didn't cluster
-   }
+     clusters: ClusteredBug[]; // N>10 same-pattern × tuple bugs folded
+     individuals: BugEntry[]; // bugs that didn't cluster
+   };
    ```
 
 2. **Clustering rules**:

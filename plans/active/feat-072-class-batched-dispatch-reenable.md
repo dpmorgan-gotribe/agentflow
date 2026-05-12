@@ -28,6 +28,7 @@ For pixel-minor-divergence: 5-10 bugs in one bug-fixer dispatch = 8-12 min wall-
 ## Approach
 
 1. **Selective re-enable in `orchestrator/src/feature-graph.ts`** — `enableClassBatchedDispatch` defaults remain DISABLED (per bug-075), but add a per-class allowlist:
+
    ```ts
    const CLASS_BATCH_ALLOWLIST = new Set<string>([
      "pixel-minor-divergence",

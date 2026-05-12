@@ -2,7 +2,7 @@
 name: fix-bugs
 description: Run the orchestrator's automated bug-fix loop standalone against a project's `docs/bugs.yaml`. Iterates verify → fix → verify until clean OR caps hit. MANUAL operator override — the same loop fires automatically from `/start-build` after `/build-to-spec-verify` produces bugs. Use this skill only when you've manually edited `docs/bugs.yaml`, added externally-triaged entries, OR want to retry a previously-paused fix-loop without re-running Mode B.
 when_to_use: when the operator has manually populated or edited `docs/bugs.yaml` and wants to dispatch the fix-loop without re-running Mode B; when a prior `/start-build` exited with `completed-with-integration-failures` and the operator has manually corrected something they expect the loop to now resolve; when iterating on a single failed bug after manual debugging
-argument-hint: "<project> [--max-iterations=N] [--bugs-file=<path>] [--dry-run]"
+argument-hint: "<project> [--max-iterations=N] [--max-concurrent=N] [--bugs-file=<path>] [--dry-run]"
 allowed-tools: Read Bash Grep Glob
 model: inherit
 ---
@@ -23,8 +23,11 @@ Manually invokes the factory orchestrator's automated bug-fix loop (`runFixBugsL
 
 - `<project>` (required) — project directory under `projects/`. Must exist and must have `docs/bugs.yaml`.
 - `--max-iterations=N` — override the loop's iteration cap (default 5).
+- `--max-concurrent=N` — override the per-iteration dispatch concurrency (skill default 3; orchestrator hard-caps at 3 per bug-059 event-loop-starvation finding on reading-log-01 at concurrency=5). Pass `--max-concurrent=1` to force serial dispatch when debugging a specific bug class. Pass `FIX_BUGS_MAXCONCURRENT_OVERRIDE=N` env var to bypass the 3-cap for empirical experimentation.
 - `--bugs-file=<path>` — override the default `docs/bugs.yaml` (rare; useful for testing forks).
 - `--dry-run` — preview which bugs would dispatch + estimated cost; invoke no agents.
+
+**Why `--max-concurrent=3` is the skill default:** the orchestrator's `runFixBugsLoop` defaults internally to `maxConcurrent: 1` (sequential, single-worktree). Empirical reading-log-02 run 2026-05-11: 21 bugs at ~9 min/bug = ~3hr wall-clock for one iteration. With `--max-concurrent=3` (parallel per-bug worktrees via feat-046 Phase A.1), expected ~1hr for the same workload. The 3-cap is the safe ceiling; concurrency=5 caused 5-17 dropped keepalive ticks + 156-509s drift on bug-059 empirical. Caller can override with `--max-concurrent=1` to force serial when diagnosing a single bug class.
 
 Rejected inputs:
 
@@ -58,7 +61,8 @@ About to run fix-bugs loop for kanban-webapp-10:
   - bugs.yaml at docs/bugs.yaml
   - 6 pending bugs (status: pending)
   - max-iterations: 5
-  - bug-fix worktree: .claude/worktrees/fixup
+  - max-concurrent: 3 (parallel per-bug worktrees; cap from bug-059)
+  - bug-fix worktree: .claude/worktrees/fixup (shared merge target)
   - estimated cost: $12-30 per iteration × ~2 iterations = $24-60 total
 
 Pending bugs (priority order):
@@ -80,10 +84,16 @@ Live runs prompt `[y/N]`. On `y`, invoke the orchestrator:
 
 ```bash
 cd <factory-root>
-pnpm --filter orchestrator start generate <project> --resume-feature-graph --bugs-yaml-mode=append [flags]
+pnpm --filter orchestrator start generate <project> \
+  --resume-feature-graph \
+  --bugs-yaml-mode=append \
+  --max-concurrent ${MAX_CONCURRENT:-3} \
+  [other-flags]
 ```
 
 The `--bugs-yaml-mode=append` flag tells the orchestrator NOT to archive `docs/bugs.yaml` at run start — instead, the existing file is read + the loop continues from saved state.
+
+`--max-concurrent 3` is the skill-default per-iteration parallelism (3 bugs dispatched in parallel via per-bug worktrees, merge into shared `fixup` branch at iteration end). Without this flag the orchestrator's `runFixBugsLoop` falls back to sequential single-worktree (default `maxConcurrent: 1`), tripling wall-clock for any non-trivial bug set. The skill-default of 3 matches the hard cap from bug-059's empirical event-loop-starvation finding (anything above 3 drops keepalive ticks).
 
 Stream stdout verbatim. The orchestrator emits structured log lines:
 
@@ -181,6 +191,14 @@ Resume with: /fix-bugs kanban-webapp-10 (continues from saved bugs.yaml state)
 → Loop runs up to 10 iterations (default 5)
 ```
 
+### Force serial dispatch (debugging a specific bug class)
+
+```
+/fix-bugs kanban-webapp-10 --max-concurrent=1
+→ Disables per-bug-worktree parallelism (skill default 3); runs one bug at a time in shared fixup worktree
+→ Use when diagnosing a single bug type — easier to follow output, no worktree merge interleaving
+```
+
 ### Custom bugs file
 
 ```
@@ -207,7 +225,8 @@ Factory-level skill only. Lives at `.claude/skills/fix-bugs/SKILL.md` in the fac
 - [ ] `.claude/skills/fix-bugs/SKILL.md` exists with the frontmatter above
 - [ ] Accepts `<project>` as required positional; rejects with available-projects list when missing
 - [ ] Reads + validates `docs/bugs.yaml` against `schemas/bugs-yaml.schema.json`
-- [ ] Always invokes orchestrator with `--resume-feature-graph --bugs-yaml-mode=append`
+- [ ] Always invokes orchestrator with `--resume-feature-graph --bugs-yaml-mode=append --max-concurrent ${MAX_CONCURRENT:-3}`
+- [ ] Operator can override `--max-concurrent` to 1 (debug serial) or 2; values above 3 only honored when `FIX_BUGS_MAXCONCURRENT_OVERRIDE` env is set (orchestrator clamps per bug-059)
 - [ ] Confirms before live run; skips confirmation for `--dry-run`
 - [ ] Exit code matches orchestrator's exit code
 - [ ] Factory-level only (NOT copied into per-project skill dirs)

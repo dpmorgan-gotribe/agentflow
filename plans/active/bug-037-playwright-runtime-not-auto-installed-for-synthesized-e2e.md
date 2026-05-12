@@ -200,6 +200,7 @@ After 3rd recurrence on reading-log-01 feat-books-core (web-frontend-builder aut
 Phase A is the structural fix at the earliest pipeline surface. Phase B (synthesizer auto-fix-up) + Phase C (verifier hard-fail) remain as defense-in-depth — drafted in original plan, deferred until Phase A's empirical effectiveness is observed on the next project build.
 
 **Next validation**: re-run `/start-build` on a fresh project (or `/new-project foo --proposal "..."` then full pipeline) and confirm:
+
 - `apps/web/package.json` ships with `@playwright/test` in devDeps
 - `apps/web/vitest.config.ts` ships with `**/e2e/**` excluded
 - post-build flow-execution stage runs synthesized specs (not "Cannot find module")

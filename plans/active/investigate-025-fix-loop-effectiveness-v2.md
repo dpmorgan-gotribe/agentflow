@@ -209,7 +209,7 @@ Three load-bearing config defaults silently suppress the signal at exactly the s
 
 The audit detected the right divergences. The classifier dropped 75% of the signal. The threshold + per-bug isolation pattern turned the rest into a shell game.
 
-**Hypothesis H3 (structural-not-perceptual) refined:** The audit IS perceptual (it reads computed styles, not class strings). But it's *narrowly* perceptual — high-resolution per-property + per-element. It can't see that "the entire page is unstyled" because that signal is distributed across thousands of property+element comparisons.
+**Hypothesis H3 (structural-not-perceptual) refined:** The audit IS perceptual (it reads computed styles, not class strings). But it's _narrowly_ perceptual — high-resolution per-property + per-element. It can't see that "the entire page is unstyled" because that signal is distributed across thousands of property+element comparisons.
 
 ### Step 3 — Playwright MCP feasibility
 
@@ -321,18 +321,18 @@ Phase 1+5 = 7 hr for ~70% gap closure. Highest leverage.
 
 ### What gets preserved vs replaced
 
-| Surface | Verdict |
-|---|---|
-| Build / dev-server compile probe | KEEP — cheap deterministic gate |
+| Surface                                           | Verdict                                                                          |
+| ------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Build / dev-server compile probe                  | KEEP — cheap deterministic gate                                                  |
 | Synthesized E2E flows (selector + data-screen-id) | KEEP — catches structural regressions; refine in v3 if H2 turns out load-bearing |
-| DOM kit-skeleton diff | KEEP — fast structural check |
-| audit-computed-styles diff | KEEP + RECONFIGURE per Phase 1 |
-| Reachability / orphan check | KEEP — orthogonal axis |
-| Pixel-diff smoke | NEW — Phase 2 |
-| Vision-LLM perceptual review | NEW — Phase 3 |
-| AI walkthrough | NEW — Phase 4 |
-| Bug-fixer (existing) | KEEP — narrow-scope work; refined dispatch routing |
-| Systemic-fixer (new) | NEW — Phase 5 for systemic patterns |
+| DOM kit-skeleton diff                             | KEEP — fast structural check                                                     |
+| audit-computed-styles diff                        | KEEP + RECONFIGURE per Phase 1                                                   |
+| Reachability / orphan check                       | KEEP — orthogonal axis                                                           |
+| Pixel-diff smoke                                  | NEW — Phase 2                                                                    |
+| Vision-LLM perceptual review                      | NEW — Phase 3                                                                    |
+| AI walkthrough                                    | NEW — Phase 4                                                                    |
+| Bug-fixer (existing)                              | KEEP — narrow-scope work; refined dispatch routing                               |
+| Systemic-fixer (new)                              | NEW — Phase 5 for systemic patterns                                              |
 
 ### Open questions for follow-up
 

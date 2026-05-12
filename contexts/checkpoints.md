@@ -20,3 +20,5 @@
 20260508-071801-human-investigate-024-shipped-validation-v5.md
 20260508-225240-human-investigate-025-shipped-v2-epic-filed.md
 20260511-130533-human-v2-phases-0-1-2-5-shipped-pixel-noise-found.md
+20260511-214104-human-bug-082-shipped-fix-loop-paused.md
+20260512-042354-human-v2-trio-shipped-and-empirically-validated.md

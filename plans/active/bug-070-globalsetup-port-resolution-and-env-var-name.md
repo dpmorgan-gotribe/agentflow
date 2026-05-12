@@ -149,12 +149,14 @@ Template + project both patched. Validated end-to-end via diagnostic
 (`_tmp-pw-bug070-validate.mjs`):
 
 **Pre-fix (b3alrlt19)**:
+
 ```
 playwright exit=1 in 6.5s
 errMsgs: ["ECONNREFUSED 127.0.0.1:8000"]
 ```
 
 **Post-fix (b2ejgj6yu, with ENABLE_TEST_SEED=1 + bug-070 patches)**:
+
 ```
 playwright exit=1 in 40.5s
 stats: { unexpected: 6, expected: 0 }
@@ -165,6 +167,7 @@ suitesCount: 6
 **6 synthesized e2e specs ACTUALLY RAN** against the real backend.
 First time Strategy C's full Layer 2 (synthesized e2e flow execution)
 has worked end-to-end. backend stdout shows real test traffic:
+
 - POST /test/cleanup → 204 (per-flow cleanup)
 - POST /test/seed-baseline → 204 (read-only baseline seeded — bug-070
   port resolution working)

@@ -73,6 +73,7 @@ This means **Phase A's mutex is necessary but not sufficient.** Possible gaps in
 (see frontmatter)
 
 Concretely:
+
 - Use a project with feat-bootstrap dependency satisfied + 4+ features in the next wave (reading-log-01 fits this pattern by design).
 - Resume with --max-concurrent 5 (or any number ≥ 4).
 - Observe: occasional silent failure of one feature at checkout-feature.
