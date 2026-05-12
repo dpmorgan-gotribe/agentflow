@@ -995,10 +995,46 @@ function defaultAgentSequence(violation, tier = "web-frontend-builder") {
     case "flow-execution-failure":
     case "step-transition":
     case "timeout-no-evidence":
-    // feat-068 (2026-05-12) — Tier 4 perceptual findings are element-level
-    // surface drift. bug-fixer's smallest-diff contract is the right lane.
-    case "perceptual-divergence":
       return ["bug-fixer"];
+    // bug-087 (2026-05-12) — category-aware routing for perceptual-
+    // divergence bugs (feat-068 Phase D 2.0 surfaced 80%+ failure rate at
+    // bug-fixer because most perceptual findings aren't smallest-diff-
+    // shaped). Mirrors bug-085's pattern-aware routing for visual-parity.
+    //
+    //   functional / runtime-error / state-routing / runtime /
+    //   missing-interactive-state  → operator-review (backend / data fix
+    //                                 — no source change can resolve
+    //                                 "page renders Book not found")
+    //
+    //   missing-element / missing-component / layout
+    //                              → systemic-fixer (cross-component
+    //                                 structural drift)
+    //
+    //   copy-mismatch / polish / branding / element-name categories /
+    //   no-category                → bug-fixer (default — element-level
+    //                                 / source-of-truth lookups)
+    case "perceptual-divergence": {
+      const category =
+        violation && violation.perceptual && violation.perceptual.category;
+      if (category === undefined || category === null) {
+        return ["bug-fixer"];
+      }
+      const OPERATOR_REVIEW_CATEGORIES = new Set([
+        "functional",
+        "runtime-error",
+        "runtime",
+        "state-routing",
+        "missing-interactive-state",
+      ]);
+      const SYSTEMIC_FIXER_CATEGORIES = new Set([
+        "missing-element",
+        "missing-component",
+        "layout",
+      ]);
+      if (OPERATOR_REVIEW_CATEGORIES.has(category)) return [];
+      if (SYSTEMIC_FIXER_CATEGORIES.has(category)) return ["systemic-fixer"];
+      return ["bug-fixer"];
+    }
     // bug-085 (2026-05-12) — pattern-aware routing for visual-parity bugs.
     // Empirical motivator: reading-log-02 /fix-bugs 2026-05-12 — 5 of 7 failed
     // bugs were visual-parity `layout-regrouping`. bug-fixer's smallest-diff
@@ -1184,11 +1220,15 @@ function buildBugEntry({
               : undefined,
         };
       } else if (violation.kind === "perceptual-finding") {
-        // feat-068 (2026-05-12) — vision-LLM perceptual findings are element-
-        // level surface drift (per-finding fix-shape: 1 element, 1 file).
-        // Route to bug-fixer (cheapest dispatch). If multiple findings on the
-        // same screen accumulate, feat-071 clusterer will fold them later.
-        violationForRouting = { primaryCause: "perceptual-divergence" };
+        // bug-087 (2026-05-12) — preserve `category` through the remap so
+        // defaultAgentSequence's perceptual-divergence branch can route
+        // by category (functional → operator-review, missing-element →
+        // systemic-fixer, default → bug-fixer). Mirrors bug-085's
+        // pattern-preservation for visual-parity.
+        violationForRouting = {
+          primaryCause: "perceptual-divergence",
+          perceptual: { category: violation.category },
+        };
       } else if (violation.kind === "flow-failure" && !violation.primaryCause) {
         // Flow-failure with no upstream classification — default to the
         // flow-execution-failure cause class so bug-fixer routing fires.
