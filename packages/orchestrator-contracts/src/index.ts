@@ -23,6 +23,7 @@ export * from "./paused-state.js";
 export * from "./bugs-yaml.js";
 export * from "./parity-verify.js";
 export * from "./perceptual-review.js";
+export * from "./round-state.js";
 export * from "./screen-fixtures.js";
 export * from "./quota-status.js";
 export * from "./user-flows-manifest.js";
