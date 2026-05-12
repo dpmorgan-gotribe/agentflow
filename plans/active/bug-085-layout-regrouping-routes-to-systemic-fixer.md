@@ -1,7 +1,7 @@
 ---
 id: bug-085-layout-regrouping-routes-to-systemic-fixer
 type: bug
-status: draft
+status: in-progress
 author-agent: human
 created: 2026-05-12
 updated: 2026-05-12
@@ -129,10 +129,11 @@ Recommend: Phase A first (~30min, schema-stable). Only revisit Phase B if the em
 
 ## Validation Criteria
 
-- [ ] `scripts/file-bug-plan.mjs:defaultAgentSequence` (or adjacent) routes `visual-parity + layout-regrouping` to `["systemic-fixer"]`
-- [ ] Non-layout-regrouping visual-parity patterns continue routing to `["bug-fixer"]`
-- [ ] 3 new tests cover the routing branches (layout-regrouping → systemic-fixer; variant-drift → bug-fixer; style-drift → bug-fixer)
-- [ ] `orchestrator/tests/file-bug-plan-parity.test.ts` full suite stays green (44+ tests)
+- [x] `scripts/file-bug-plan.mjs:defaultAgentSequence` routes `visual-parity + layout-regrouping` to `["systemic-fixer"]`
+- [x] Non-layout-regrouping visual-parity patterns (variant-drift, style-drift, etc.) continue routing to `["bug-fixer"]`
+- [x] 3 new tests cover the routing branches: layout-regrouping → systemic-fixer (updated from prior bug-fixer expectation); variant-drift → bug-fixer (new); style-drift → bug-fixer (new). All passing in 46/46 file-bug-plan-parity suite.
+- [x] Companion fix: the parity-divergence → visual-parity remap at the fileBugPlan call-site (line ~1095) now PRESERVES `violation.pattern` into `violationForRouting.parity.pattern`, otherwise defaultAgentSequence's pattern-aware branch would never see it (this was the bug that flipped my first test run red).
+- [x] Regression check: fix-bugs-loop 60/60 + bug-fix-context 17/17 stay green.
 - [ ] Empirical: re-run /fix-bugs reading-log-02 after Phase A lands; the 5 failed layout-regrouping bugs (book-create, book-detail, books-list-empty, settings, tags-manage) should now route to systemic-fixer. Expected lift: at least 3 of 5 should succeed (~60%), based on systemic-fixer's empirical success rate on systemic-divergence patterns elsewhere.
 
 ## Cross-references
@@ -146,4 +147,14 @@ Recommend: Phase A first (~30min, schema-stable). Only revisit Phase B if the em
 
 ## Attempt Log
 
-<!-- Populated by executing agents. -->
+### Attempt 1 — 2026-05-12 — landed (Phase A only; Phase B discriminator-side fix deferred)
+
+- **Phase A — routing**: Added pattern-aware branch to `scripts/file-bug-plan.mjs:defaultAgentSequence`. The `visual-parity` case now reads `violation.parity.pattern`; if `"layout-regrouping"`, returns `["systemic-fixer"]`; otherwise falls through to `["bug-fixer"]`. Conservative: only layout-regrouping routed; copy-sizing-drift (1 of 7 empirical failures) deferred until post-bug-085 re-run signals whether it needs the same treatment.
+
+- **Companion fix — preserve pattern through the remap**: First test run failed because the parity-divergence → visual-parity remap at the fileBugPlan call-site (line ~1095 in file-bug-plan.mjs) constructed `{ primaryCause: "visual-parity" }` WITHOUT preserving `violation.pattern`. The downstream `defaultAgentSequence` switch then had no pattern to read. Updated the remap to include `parity: { pattern: violation.pattern }` for parity-divergence violations (orphans get `parity: undefined`, fall through to bug-fixer per the default case). Without this fix, Phase A would have been a no-op for the actual call path.
+
+- **Phase C — tests**: Updated the existing "violation.kind=parity-divergence with pattern=layout-regrouping → [bug-fixer]" test in `orchestrator/tests/file-bug-plan-parity.test.ts` to expect `["systemic-fixer"]` (the new desired behavior, not a regression). Added 2 new tests for variant-drift and style-drift patterns to confirm they stay at bug-fixer (regression-preserve). Removed a redundant defensive-default test I'd added — already covered by the existing "primaryCause=visual-parity → [bug-fixer]" test which uses stubFlowFailure (no parity field). Final: 46/46 file-bug-plan-parity. fix-bugs-loop 60/60 + bug-fix-context 17/17 stay green.
+
+- **Phase B — discriminator-side fix deferred**: bug-085's plan B would extend `audit-computed-styles.ts:promoteToSystemic` to factor pattern into the systemic-promotion logic. Plan A delivers the same routing outcome at the file-bug-plan layer with less schema churn. Phase B can revisit if the empirical Phase D shows layout-regrouping bugs are sometimes legitimately small (would route to systemic-fixer unnecessarily and waste dispatch cost).
+
+Outcome: Phase A + companion remap + Phase C landed. Empirical Phase D (re-run /fix-bugs reading-log-02) is the next step — same as bug-082+083+084 validation pattern.

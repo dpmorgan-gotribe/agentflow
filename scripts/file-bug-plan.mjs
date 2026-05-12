@@ -926,11 +926,26 @@ function defaultAgentSequence(violation, tier = "web-frontend-builder") {
     // [<tier>, tester, reviewer] (3-agent) defeating bug-fixer routing.
     case "dev-server-compile":
     case "runtime-error":
-    case "visual-parity":
     case "flow-execution-failure":
     case "step-transition":
     case "timeout-no-evidence":
       return ["bug-fixer"];
+    // bug-085 (2026-05-12) — pattern-aware routing for visual-parity bugs.
+    // Empirical motivator: reading-log-02 /fix-bugs 2026-05-12 — 5 of 7 failed
+    // bugs were visual-parity `layout-regrouping`. bug-fixer's smallest-diff
+    // contract isn't structurally suited; restructuring DOM/JSX across files
+    // is exactly systemic-fixer's lane (feat-070). variant-drift / style-drift /
+    // token-drift / pixel-minor-divergence stay at bug-fixer — they're
+    // surface-level per-element nudges that bug-fixer handles when drift is
+    // low. copy-sizing-drift also failed once empirically (1 of 7) but may
+    // not need routing change; defer until post-bug-085 re-run signals.
+    case "visual-parity": {
+      const pattern = violation && violation.parity && violation.parity.pattern;
+      if (pattern === "layout-regrouping") {
+        return ["systemic-fixer"];
+      }
+      return ["bug-fixer"];
+    }
     // Real backend work: full safety net (overrides `tier`).
     case "seed-setup":
       return ["backend-builder", "tester", "reviewer"];
@@ -1077,7 +1092,18 @@ function buildBugEntry({
         violation.kind === "orphan-route" ||
         violation.kind === "parity-divergence"
       ) {
-        violationForRouting = { primaryCause: "visual-parity" };
+        // bug-085 (2026-05-12) — preserve `pattern` through the remap for
+        // parity-divergence so defaultAgentSequence's pattern-aware branch
+        // (layout-regrouping → systemic-fixer) can read it. Orphans don't
+        // carry a pattern; the field will be undefined and default to
+        // bug-fixer per the case fallback.
+        violationForRouting = {
+          primaryCause: "visual-parity",
+          parity:
+            violation.kind === "parity-divergence"
+              ? { pattern: violation.pattern }
+              : undefined,
+        };
       } else if (violation.kind === "flow-failure" && !violation.primaryCause) {
         // Flow-failure with no upstream classification — default to the
         // flow-execution-failure cause class so bug-fixer routing fires.

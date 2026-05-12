@@ -333,9 +333,13 @@ describe("fileBugPlan — feat-058 + feat-062 + feat-064 trimmed agentSequence p
     expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
   });
 
-  it("violation.kind=parity-divergence → [bug-fixer] (feat-064 via visual-parity remap)", async () => {
-    // parity-divergence violations don't carry primaryCause; the call-site
-    // remaps them to visual-parity which (feat-064) routes to bug-fixer.
+  it("bug-085: violation.kind=parity-divergence + pattern=layout-regrouping → [systemic-fixer]", async () => {
+    // Updated 2026-05-12 per bug-085: layout-regrouping is structural drift
+    // (DOM shape mismatch — different parent components, missing wrapper
+    // sections, regrouped flex children). Empirically 5 of 7 reading-log-02
+    // failures were this class — bug-fixer's smallest-diff contract couldn't
+    // handle them. systemic-fixer's cross-file authorization is the right
+    // dispatch.
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({
       projectDir,
@@ -349,6 +353,67 @@ describe("fileBugPlan — feat-058 + feat-062 + feat-064 trimmed agentSequence p
           extra: ["AppShell[0]"],
           variantDrift: [],
           styleDrift: [],
+        },
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["systemic-fixer"]);
+  });
+
+  it("bug-085: variant-drift pattern stays at [bug-fixer] (surface-level per-element nudges)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "parity-divergence",
+        screen: "book-create",
+        pattern: "variant-drift",
+        severity: "P1",
+        detail: {
+          missing: [],
+          extra: [],
+          variantDrift: [
+            {
+              selector: '[data-kit-component="Button"]',
+              mockupValue: "variant=primary",
+              builtValue: "variant=secondary",
+            },
+          ],
+          styleDrift: [],
+        },
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
+  });
+
+  it("bug-085: style-drift pattern stays at [bug-fixer] (per-property tweaks)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "parity-divergence",
+        screen: "settings",
+        pattern: "style-drift",
+        severity: "P2",
+        detail: {
+          missing: [],
+          extra: [],
+          variantDrift: [],
+          styleDrift: [
+            {
+              selector: '[data-kit-component="Card"]',
+              property: "background-color",
+              mockupValue: "rgb(248, 250, 252)",
+              builtValue: "rgb(255, 255, 255)",
+            },
+          ],
         },
       },
       iteration: 1,
