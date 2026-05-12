@@ -247,6 +247,24 @@ describe("fileBugPlan — bug-050 Phase B agent routing by primaryCause", () => 
     ) as { bugs: Array<{ agentSequence: string[] }> };
     expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
   });
+
+  it("bug-084: primaryCause=dev-server-not-responding → [] (operator-review only)", async () => {
+    // Empirical motivator: reading-log-02 2026-05-11+12 — 4-6 flow bugs per
+    // run hit `page.goto` timeouts because the dev server's /health responded
+    // but page navigation never reached networkidle. bug-fixer wasted 15-min
+    // wall-clock per attempt × 3 maxAttempts. Route to [] so the bug surfaces
+    // as `needs-operator-review` and is never dispatched to an agent.
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: stubFlowFailure("dev-server-not-responding"),
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual([]);
+  });
 });
 
 // ─── feat-058 + feat-062: trim agentSequence per cause class ────────────

@@ -724,6 +724,19 @@ function parseReporterJson(
           );
         }
       }
+      // bug-084 (2026-05-12): detect page.goto timeouts at __stepIndex 0.
+      // The synthesizer's per-spec emit format wraps `page.goto("/")` in
+      // its top-level try; on a navigation timeout, errorMsg contains
+      // "page.goto" + "Test timeout of 30000ms exceeded" and meta.step is
+      // 0 or undefined (no interaction ran). This is NOT a fixable source
+      // bug — the dev server's /health endpoint accepted but page nav
+      // never reached networkidle (hydration error, slow cold-boot, etc).
+      // Route to agentSequence:[] in file-bug-plan (operator-review only).
+      const isPageGotoTimeout =
+        isTimedOut &&
+        typeof errorMsg === "string" &&
+        /page\.goto:\s*Test timeout/.test(errorMsg) &&
+        (meta.step === 0 || meta.step === undefined);
       let primaryCause;
       if (runtimeErrors?.devServerOverlay) {
         primaryCause = "dev-server-compile";
@@ -731,6 +744,10 @@ function parseReporterJson(
         primaryCause = "seed-setup";
       } else if (hasRuntimeSignal) {
         primaryCause = "runtime-error";
+      } else if (isPageGotoTimeout) {
+        // bug-084: must be tested BEFORE timeout-no-evidence below — otherwise
+        // these page.goto failures would mis-route to bug-fixer (15-min stall).
+        primaryCause = "dev-server-not-responding";
       } else if (isTimedOut && !meta.step) {
         primaryCause = "timeout-no-evidence";
       } else if (selectorClass === "not-in-design") {

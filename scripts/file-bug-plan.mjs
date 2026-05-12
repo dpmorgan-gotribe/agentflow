@@ -937,6 +937,15 @@ function defaultAgentSequence(violation, tier = "web-frontend-builder") {
     // Operator-review-only — out-of-band fix.
     case "manifest-author":
       return [];
+    // bug-084 (2026-05-12) — page.goto timeout at __stepIndex 0 means the
+    // dev server's /health responded but page navigation never reached
+    // networkidle (hydration error, slow cold-boot, networkidle hang).
+    // bug-fixer can't fix dev-server availability from source — empirically
+    // burns 15-min wall-clock per attempt × 3 maxAttempts. Route to empty
+    // agentSequence so the bug surfaces as `needs-operator-review` and is
+    // never dispatched to an agent.
+    case "dev-server-not-responding":
+      return [];
     // Real feature work: full safety net.
     case "build-gap":
     default:

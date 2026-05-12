@@ -169,6 +169,13 @@ export const FlowPrimaryCause = z.enum([
   // feat-049 Phase C — classifier-driven values:
   "build-gap",
   "manifest-author",
+  // bug-084 (2026-05-12) — page.goto at __stepIndex 0 timed out (dev server
+  // accepts /health but page navigation never reaches networkidle). NOT a
+  // source-code bug; routes to agentSequence:[] for operator-review (no
+  // automated dispatch can fix dev-server availability). Distinguished from
+  // timeout-no-evidence by: (a) error contains "page.goto" + "timeout 30000ms"
+  // and (b) meta.step is 0 or undefined.
+  "dev-server-not-responding",
 ]);
 export type FlowPrimaryCause = z.infer<typeof FlowPrimaryCause>;
 

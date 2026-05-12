@@ -1,7 +1,7 @@
 ---
 id: bug-084-page-goto-timeout-misclassified-as-timeout-no-evidence
 type: bug
-status: draft
+status: in-progress
 author-agent: human
 created: 2026-05-11
 updated: 2026-05-11
@@ -114,10 +114,10 @@ Routes to `agentSequence: []` (empty), which marks the bug as `needs-operator-re
 
 ## Validation Criteria
 
-- [ ] `FlowPrimaryCause` enum extends with `dev-server-not-responding`
-- [ ] `run-synthesized-flows.mjs` classifies `page.goto` timeout at \_\_stepIndex 0 as `dev-server-not-responding`
-- [ ] `file-bug-plan.mjs::defaultAgentSequence` returns `[]` for the new cause → bug ends up with `status: needs-operator-review`
-- [ ] 3 new tests cover the classifier branches + dispatch routing
+- [x] `FlowPrimaryCause` enum extends with `dev-server-not-responding` (`packages/orchestrator-contracts/src/build-to-spec-verify.ts`)
+- [x] `run-synthesized-flows.mjs` classifies `page.goto` timeout at \_\_stepIndex 0 as `dev-server-not-responding` (new `isPageGotoTimeout` branch evaluated BEFORE `timeout-no-evidence`)
+- [x] `file-bug-plan.mjs::defaultAgentSequence` returns `[]` for the new cause → bug ends up with `status: needs-operator-review` via existing `fix-bugs-loop.ts:1725` empty-agentSequence routing
+- [x] 3 new tests cover the classifier branches + dispatch routing: (1) positive page.goto classifier → `dev-server-not-responding`; (2) defensive: step > 0 with page.goto in error message NOT classified as dev-server-not-responding; (3) routing → `agentSequence: []`. All passing; 44/44 file-bug-plan-parity + 23/26 run-synthesized-flows (3 failures pre-existing test-rot per docs/ideas.md, not introduced by bug-084).
 - [ ] Empirical: re-run /fix-bugs reading-log-02 after this fix lands; the 6 page.goto-timeout bugs that previously routed to bug-fixer should now route to operator-review with `agentSequence: []`
 
 ## Cross-references
@@ -130,4 +130,14 @@ Routes to `agentSequence: []` (empty), which marks the bug as `needs-operator-re
 
 ## Attempt Log
 
-<!-- Populated by executing agents. -->
+### Attempt 1 — 2026-05-12 — landed (Phase A + Phase B; Phase C documentation deferred)
+
+- **Phase A — classifier**: Extended `FlowPrimaryCause` enum in `packages/orchestrator-contracts/src/build-to-spec-verify.ts` with `dev-server-not-responding`. In `scripts/run-synthesized-flows.mjs::parseReporterJson`, added an `isPageGotoTimeout` precondition that matches `isTimedOut && /page\.goto:\s*Test timeout/.test(errorMsg) && (meta.step === 0 || meta.step === undefined)`, and inserted a new classifier branch BEFORE `timeout-no-evidence` so the precedence is correct (otherwise these failures would still mis-route to bug-fixer).
+
+- **Phase B — routing**: Added `case "dev-server-not-responding": return []` to `scripts/file-bug-plan.mjs::defaultAgentSequence`. The downstream plumbing (empty-agentSequence → `status: needs-operator-review`) already exists at `orchestrator/src/fix-bugs-loop.ts:1725` (per bug-052 follow-up + manifest-author precedent), so no fix-loop changes needed.
+
+- **Phase C — tests**: Added `bug-084: classifies primaryCause=dev-server-not-responding when page.goto times out at step 0` to `orchestrator/tests/run-synthesized-flows.test.ts`, plus a defensive `page.goto timeout at step > 0 still classifies as timeout-no-evidence` to confirm the new branch doesn't over-fire. Added `bug-084: primaryCause=dev-server-not-responding → []` to `orchestrator/tests/file-bug-plan-parity.test.ts`. All 3 new tests pass; file-bug-plan-parity is 44/44; run-synthesized-flows has 23/26 (3 failures all from the pre-existing test-rot bundle documented in docs/ideas.md, not introduced by bug-084).
+
+- **Phase C documentation deferred**: docs/reviewer-playbook.md operator-action expectation + bug-071 cross-reference can be added in a follow-up if needed. The empirical Phase D re-run is the load-bearing validation.
+
+Outcome: Phase A + B + tests landed. Empirical Phase D (re-run /fix-bugs reading-log-02) is the next step — the run was paused mid-iteration-1 specifically to ship this fix; we'll resume with the new classifier active and measure routing.

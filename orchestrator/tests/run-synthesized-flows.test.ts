@@ -633,6 +633,122 @@ describe("runSynthesizedFlows — feat-027 runtime-errors extraction", () => {
     expect(result.flows.failed[0].runtimeErrors).toBeUndefined();
   });
 
+  it("bug-084: classifies primaryCause=dev-server-not-responding when page.goto times out at step 0", async () => {
+    // The synthesizer's per-spec emit wraps `page.goto("/")` in its top-level
+    // try; on a navigation timeout, the error message contains "page.goto" +
+    // "Test timeout of 30000ms exceeded" and __stepIndex is 0 (no interaction
+    // ran). Empirical: reading-log-02 2026-05-11 — 6/6 flow tests failed at
+    // page.goto; bug-fixer wasted 15-min wall-clock × 3 attempts per bug.
+    // The new branch routes these to agentSequence:[] for operator-review.
+    writePackageJson({ hasPlaywright: true });
+    writePlaywrightConfig();
+    writeSpec("flow-page-goto-timeout.spec.ts");
+
+    const reporterJson = JSON.stringify({
+      suites: [
+        {
+          file: "e2e/synthesized/flow-page-goto-timeout.spec.ts",
+          specs: [
+            {
+              title: "flow-1 page goto failure",
+              tests: [
+                {
+                  results: [
+                    {
+                      status: "timedOut",
+                      error: {
+                        message:
+                          'page.goto: Test timeout of 30000ms exceeded.\n  Call log:\n    - navigating to "http://localhost:3000/", waiting until "networkidle"',
+                      },
+                      attachments: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    const spawnFn = ((..._args: unknown[]) => {
+      return fakeProc({ stdout: reporterJson, exitCode: 1 });
+    }) as unknown as typeof import("node:child_process").spawn;
+
+    const result = await runSynthesizedFlows({
+      projectDir,
+      spawnFn,
+      spawnSyncFn: noopSpawnSync,
+      httpGet: httpGetOk,
+      baseUrlOverride: "http://localhost:3000",
+    });
+
+    expect(result.flows.failed[0].primaryCause).toBe(
+      "dev-server-not-responding",
+    );
+    // Asserting step:0 confirms the classifier triggered on the
+    // __stepIndex-0 branch, not the post-interaction timeout-no-evidence
+    // branch.
+    expect(result.flows.failed[0].step).toBe(0);
+  });
+
+  it("bug-084: page.goto timeout at step > 0 still classifies as timeout-no-evidence (defensive)", async () => {
+    // Defensive: ensure the new branch doesn't over-fire. A timeout AFTER
+    // an interaction has run (step > 0) is still "the page locked up
+    // mid-flow," which is bug-fixer's lane. The new branch only fires
+    // when meta.step is 0 or undefined.
+    writePackageJson({ hasPlaywright: true });
+    writePlaywrightConfig();
+    writeSpec("flow-late-timeout.spec.ts");
+
+    const reporterJson = JSON.stringify({
+      suites: [
+        {
+          file: "e2e/synthesized/flow-late-timeout.spec.ts",
+          specs: [
+            {
+              title: "flow-2 late timeout",
+              tests: [
+                {
+                  results: [
+                    {
+                      status: "timedOut",
+                      // Error contains "page.goto" but meta.step is 3 (parsed
+                      // from the synthesizer's emit format).
+                      error: {
+                        message:
+                          "flow-2 (late) failed at interaction 3: page.goto: Test timeout of 30000ms exceeded",
+                      },
+                      attachments: [],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    const spawnFn = ((..._args: unknown[]) => {
+      return fakeProc({ stdout: reporterJson, exitCode: 1 });
+    }) as unknown as typeof import("node:child_process").spawn;
+
+    const result = await runSynthesizedFlows({
+      projectDir,
+      spawnFn,
+      spawnSyncFn: noopSpawnSync,
+      httpGet: httpGetOk,
+      baseUrlOverride: "http://localhost:3000",
+    });
+
+    // Step > 0 ⇒ NOT dev-server-not-responding. Falls through to
+    // timeout-no-evidence (or step-transition if meta extraction worked).
+    expect(result.flows.failed[0].primaryCause).not.toBe(
+      "dev-server-not-responding",
+    );
+  });
+
   it("classifies primaryCause=step-transition for synthesizer-fired assertion failures", async () => {
     writePackageJson({ hasPlaywright: true });
     writePlaywrightConfig();
