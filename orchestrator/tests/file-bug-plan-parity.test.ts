@@ -571,6 +571,87 @@ describe("fileBugPlan — feat-058 + feat-062 + feat-064 trimmed agentSequence p
     expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
   });
 
+  it("bug-088: category=book-list-item → [systemic-fixer] (element-name structural drift)", async () => {
+    // Empirical motivator: 5 book-list-item findings on the books-list screen
+    // all failed bug-fixer post-bug-087 — they share a single root cause
+    // (book-list-item primitive restructure: covers + badges + dates + tags).
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "books-list",
+        element: "Book cover thumbnails are initials avatars, not cover art",
+        severity: "P0" as const,
+        category: "book-list-item",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["systemic-fixer"]);
+  });
+
+  it("bug-088: category=search → [systemic-fixer] (search-bar component restructure)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "books-list",
+        element: "Search bar narrow + left-aligned instead of wide + centered",
+        severity: "P0" as const,
+        category: "search",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["systemic-fixer"]);
+  });
+
+  it("bug-088: category=nav → [systemic-fixer]", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "books-list",
+        element: "Nav item count badges missing",
+        severity: "P0" as const,
+        category: "nav",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["systemic-fixer"]);
+  });
+
+  it("bug-088: category=copy-mismatch STAYS at [bug-fixer] (source-of-truth lookups)", async () => {
+    // Regression-preserve: copy-mismatch is bug-fixer's lane (single-element
+    // text changes from a known design source).
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "books-list",
+        element: "Search bar placeholder differs from spec",
+        severity: "P1" as const,
+        category: "copy-mismatch",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
+  });
+
   it("bug-087: category=unrecognized-future-value → [bug-fixer] (safe default)", async () => {
     // Forward-compat: when the agent emits a category we don't have in
     // either routing set, fall back to bug-fixer (conservative — won't

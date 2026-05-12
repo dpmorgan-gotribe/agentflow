@@ -1026,10 +1026,30 @@ function defaultAgentSequence(violation, tier = "web-frontend-builder") {
         "state-routing",
         "missing-interactive-state",
       ]);
+      // bug-088 (2026-05-12) — extended set. Empirical motivator: 15 of the
+      // 29 bug-fixer-routed perceptual bugs post-bug-087 failed with
+      // unverified-completion / wall-clock-stall. ALL of those failures
+      // grouped into element-name categories (book-list-item, search, nav,
+      // branding, header, filter-tabs, tag-filter). The bugs were
+      // structurally cross-component (e.g. "book-list-item: covers + badges +
+      // dates + tags absent" — a single book-list-item primitive
+      // restructure resolves 5 findings at once). systemic-fixer is the
+      // right lane for these. Categories that STAY at bug-fixer:
+      // copy-mismatch (small, source-of-truth lookups), no-category (mixed —
+      // bug-fixer empirically handles ~75% of those).
       const SYSTEMIC_FIXER_CATEGORIES = new Set([
+        // bug-087 (bug-shape categories)
         "missing-element",
         "missing-component",
         "layout",
+        // bug-088 (element-name categories — empirically structural)
+        "book-list-item",
+        "search",
+        "nav",
+        "branding",
+        "header",
+        "filter-tabs",
+        "tag-filter",
       ]);
       if (OPERATOR_REVIEW_CATEGORIES.has(category)) return [];
       if (SYSTEMIC_FIXER_CATEGORIES.has(category)) return ["systemic-fixer"];
