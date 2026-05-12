@@ -1026,33 +1026,48 @@ function defaultAgentSequence(violation, tier = "web-frontend-builder") {
         "state-routing",
         "missing-interactive-state",
       ]);
-      // bug-088 (2026-05-12) — extended set. Empirical motivator: 15 of the
-      // 29 bug-fixer-routed perceptual bugs post-bug-087 failed with
-      // unverified-completion / wall-clock-stall. ALL of those failures
-      // grouped into element-name categories (book-list-item, search, nav,
-      // branding, header, filter-tabs, tag-filter). The bugs were
-      // structurally cross-component (e.g. "book-list-item: covers + badges +
-      // dates + tags absent" — a single book-list-item primitive
-      // restructure resolves 5 findings at once). systemic-fixer is the
-      // right lane for these. Categories that STAY at bug-fixer:
-      // copy-mismatch (small, source-of-truth lookups), no-category (mixed —
-      // bug-fixer empirically handles ~75% of those).
+      // bug-087 (2026-05-12) — project-agnostic bug-shape categories.
+      // These are abstract bug-classes the agent emits regardless of
+      // project domain. Always route to systemic-fixer.
       const SYSTEMIC_FIXER_CATEGORIES = new Set([
-        // bug-087 (bug-shape categories)
         "missing-element",
         "missing-component",
         "layout",
-        // bug-088 (element-name categories — empirically structural)
-        "book-list-item",
-        "search",
-        "nav",
-        "branding",
-        "header",
-        "filter-tabs",
-        "tag-filter",
+        "structural",
+      ]);
+      // bug-fixer's lane: surface-level abstract categories.
+      const BUG_FIXER_ABSTRACT_CATEGORIES = new Set([
+        "copy-mismatch",
+        "polish",
+        "uncategorized",
       ]);
       if (OPERATOR_REVIEW_CATEGORIES.has(category)) return [];
       if (SYSTEMIC_FIXER_CATEGORIES.has(category)) return ["systemic-fixer"];
+      if (BUG_FIXER_ABSTRACT_CATEGORIES.has(category)) return ["bug-fixer"];
+      // bug-088 (2026-05-12) — element-name heuristic. The vision-LLM
+      // routinely emits PROJECT-SPECIFIC category names (e.g. book-list-
+      // item, task-card, invoice-row, search, nav, branding) rather than
+      // a fixed abstract taxonomy. Hardcoding per-project element names
+      // doesn't scale.
+      //
+      // Empirical evidence (reading-log-02 2026-05-12): ALL element-name-
+      // categorized perceptual bugs that failed bug-fixer were structural
+      // cross-component drift. Project-agnostic heuristic: any
+      // kebab-case-or-single-word category that isn't in the explicit
+      // abstract-taxonomy sets is an element-name → route to systemic-fixer.
+      //
+      // Edge cases handled:
+      //   - "(no-category)" — has parens, regex fails → falls through to
+      //     bug-fixer (default).
+      //   - "Polish" / mixed-case — regex fails → bug-fixer.
+      //   - empty string — regex fails → bug-fixer.
+      //
+      // Future evolution: a `bugShape` field in the agent's output would
+      // make this explicit. Until then, the heuristic mirrors the
+      // empirical bug-shape signal.
+      const isLikelyElementNameCategory =
+        typeof category === "string" && /^[a-z]+(-[a-z]+)*$/.test(category);
+      if (isLikelyElementNameCategory) return ["systemic-fixer"];
       return ["bug-fixer"];
     }
     // bug-085 (2026-05-12) — pattern-aware routing for visual-parity bugs.

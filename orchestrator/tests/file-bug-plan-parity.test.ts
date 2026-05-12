@@ -631,6 +631,48 @@ describe("fileBugPlan — feat-058 + feat-062 + feat-064 trimmed agentSequence p
     expect(doc.bugs[0]?.agentSequence).toEqual(["systemic-fixer"]);
   });
 
+  it("bug-088 (project-agnostic): novel kebab-case category from a DIFFERENT project → [systemic-fixer] via element-name heuristic", async () => {
+    // bug-088's heuristic must generalize across projects. A category like
+    // `task-card` (kanban) or `invoice-row` (finance app) — never seen on
+    // reading-log-02 — should still route to systemic-fixer because the
+    // empirical bug-shape signal for element-name categories is "structural".
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "kanban-board",
+        element: "task-card lacks priority indicator + tags row",
+        severity: "P0" as const,
+        category: "task-card", // ← brand-new category, never hardcoded
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["systemic-fixer"]);
+  });
+
+  it("bug-088 (heuristic edge case): '(no-category)' placeholder → [bug-fixer] (regex fails on parens)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "home",
+        element: "Some bug without category",
+        severity: "P1" as const,
+        category: "(no-category)",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
+  });
+
   it("bug-088: category=copy-mismatch STAYS at [bug-fixer] (source-of-truth lookups)", async () => {
     // Regression-preserve: copy-mismatch is bug-fixer's lane (single-element
     // text changes from a known design source).

@@ -76,26 +76,52 @@ The empirical data is now in: element-name categories ARE structural in practice
 
 ## Fix Approach
 
-### Phase A — extend SYSTEMIC_FIXER_CATEGORIES (~10min)
+### Phase A — project-agnostic element-name heuristic (~30min, revised)
 
-Add element-name categories to the existing set in `defaultAgentSequence`:
+**Architectural correction (post-implementation review):** Hardcoding
+per-project element names (`book-list-item`, `task-card`, `invoice-row`,
+...) doesn't scale. Every new project would emit a different vocabulary
+and the routing table would explode.
+
+Replaced with a **project-agnostic heuristic** in `defaultAgentSequence`:
 
 ```js
 const SYSTEMIC_FIXER_CATEGORIES = new Set([
-  // bug-087 (bug-shape categories)
+  // Project-agnostic bug-shape categories. The agent's canonical taxonomy.
   "missing-element",
   "missing-component",
   "layout",
-  // bug-088 (element-name categories — empirically structural)
-  "book-list-item",
-  "search",
-  "nav",
-  "branding",
-  "header",
-  "filter-tabs",
-  "tag-filter",
+  "structural",
 ]);
+
+const BUG_FIXER_ABSTRACT_CATEGORIES = new Set([
+  "copy-mismatch",
+  "polish",
+  "uncategorized",
+]);
+
+if (OPERATOR_REVIEW_CATEGORIES.has(category)) return [];
+if (SYSTEMIC_FIXER_CATEGORIES.has(category)) return ["systemic-fixer"];
+if (BUG_FIXER_ABSTRACT_CATEGORIES.has(category)) return ["bug-fixer"];
+
+// Element-name heuristic: any kebab-case-or-single-lowercase-word category
+// that isn't in either abstract set is treated as a project-specific
+// element name (book-list-item / task-card / invoice-row / nav / search /
+// branding / etc.). Per the reading-log-02 empirical: these are structural
+// drift bugs in practice → route to systemic-fixer.
+const isLikelyElementNameCategory =
+  typeof category === "string" && /^[a-z]+(-[a-z]+)*$/.test(category);
+if (isLikelyElementNameCategory) return ["systemic-fixer"];
+return ["bug-fixer"];
 ```
+
+This generalizes across projects:
+
+- reading-log-02's `book-list-item` → systemic-fixer ✓
+- kanban-webapp's `task-card` → systemic-fixer ✓
+- finance-track's `invoice-row` → systemic-fixer ✓
+- copy-mismatch / polish (abstract) → bug-fixer (explicit)
+- (no-category) — regex fails on parens → bug-fixer (default)
 
 Categories that REMAIN at bug-fixer (intentionally):
 
@@ -146,15 +172,32 @@ Expected outcome based on systemic-fixer's empirical 100% rate on layout-regroup
 
 ## Attempt Log
 
-### Attempt 1 — 2026-05-12 — Phase A+B landed
+### Attempt 1 — 2026-05-12 — initial hardcoded approach (REVERTED)
 
-- **Phase A — extend SYSTEMIC_FIXER_CATEGORIES**: Added 7 element-name categories (book-list-item, search, nav, branding, header, filter-tabs, tag-filter) to the set in `scripts/file-bug-plan.mjs:defaultAgentSequence`'s perceptual-divergence case. Existing 3 bug-shape categories (missing-element, missing-component, layout) preserved. Decision rationale recorded inline in code comments.
+- Added 7 reading-log-02-specific element-name categories (book-list-item, search, nav, branding, header, filter-tabs, tag-filter) to SYSTEMIC_FIXER_CATEGORIES. 4 tests passed; 229/229 sweep green.
+- **Operator review flagged the architectural flaw**: per-project hardcoded element names don't generalize. Every new project would emit a different vocabulary; the routing table would grow indefinitely + break on novel categories.
 
-- **Phase B — tests**: 4 new tests in `orchestrator/tests/file-bug-plan-parity.test.ts`:
-  - `category: "book-list-item"` → `["systemic-fixer"]` (highest-failure-count category)
-  - `category: "search"` → `["systemic-fixer"]` (multi-finding root cause)
-  - `category: "nav"` → `["systemic-fixer"]` (structural)
-  - `category: "copy-mismatch"` → `["bug-fixer"]` (regression-preserve)
-  - Net: 58/58 file-bug-plan-parity; 229/229 full sweep.
+### Attempt 2 — 2026-05-12 — project-agnostic heuristic (LANDED)
 
-- **Phase C — empirical re-validation pending**. Same reset-and-rereoute script pattern from bug-087.
+Replaced the hardcoded element-name list with a regex heuristic. Architecture:
+
+- **Operator-review categories** (functional / runtime / state-routing / missing-interactive-state) — abstract, project-agnostic.
+- **Systemic-fixer abstract categories** (missing-element / missing-component / layout / structural) — abstract, project-agnostic.
+- **Bug-fixer abstract categories** (copy-mismatch / polish / uncategorized) — abstract, project-agnostic.
+- **Element-name heuristic**: any category matching `/^[a-z]+(-[a-z]+)*$/` that isn't in any explicit set above → systemic-fixer. Catches book-list-item AND task-card AND invoice-row AND every-future-project's-element-vocabulary uniformly.
+
+Edge cases handled:
+- `(no-category)` placeholder with parens → regex fails → bug-fixer (safe default)
+- Empty string / mixed-case / non-string → regex fails → bug-fixer
+
+Final tests:
+- bug-088 tests using book-list-item / search / nav still pass (the heuristic matches them)
+- NEW test: `task-card` (kanban project) → systemic-fixer (project-agnostic generalization)
+- NEW test: `(no-category)` → bug-fixer (heuristic edge case)
+- bug-fixer regression-preserve (copy-mismatch) — still passes via explicit set
+
+60/60 file-bug-plan-parity; 231/231 full sweep.
+
+### Phase C — empirical re-validation pending
+
+Same reset-and-reroute script pattern from bug-087. The script now preserves the 6 already-completed perceptual bugs (no re-work).
