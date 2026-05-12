@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import yaml from "js-yaml";
 import {
   BugsYamlSchema,
+  bugMatchesRound,
   type BugEntry,
   type BugsYaml,
   type BuildToSpecVerifyOutput,
@@ -81,6 +82,17 @@ export interface FixBugsLoopContext {
   runBuildToSpecVerify: RunBuildToSpecVerifyFn;
   /** Loop-iteration cap. Default 5 (matches plan §Phase B). */
   iterationCap?: number;
+  /**
+   * feat-073 — round filter for the outer-loop wrapper. When set, the
+   * loop's pendingThisIter is additionally filtered to bugs that
+   * match this round's class (bugMatchesRound). The verify pass also
+   * receives the round's enabledTiers so expensive detection tiers
+   * gate on round-state. When unset, the loop behaves pre-feat-073:
+   * dispatches against ALL pending bugs and runs ALL detection tiers
+   * in verify. runRoundsOrchestrator (the outer-loop wrapper) sets
+   * this; direct callers can leave it undefined for back-compat.
+   */
+  roundConfig?: import("@repo/orchestrator-contracts").RoundConfig;
   /**
    * Reset-to-pending count after which a bug is escalated to `failed`
    * (flapping detector). Default 3.
@@ -1691,11 +1703,30 @@ export async function runFixBugsLoop(
     // attempts haven't hit their cap. Treat in-progress as pending: the
     // prior attempt either crashed or was killed mid-flight, so we get a
     // fresh attempt subject to the same cap.
+    //
+    // feat-073 — when ctx.roundConfig is set, additionally filter to bugs
+    // that match this round's class (bugMatchesRound). Bugs in other
+    // rounds remain in the pool but skipped this dispatch.
     const pendingThisIter = [...doc.bugs]
       .filter(
         (b) =>
           (b.status === "pending" || b.status === "in-progress") &&
           (b.attempts ?? 0) < b.maxAttempts,
+      )
+      .filter((b) =>
+        ctx.roundConfig
+          ? bugMatchesRound(
+              {
+                source: b.source,
+                parity: b.parity
+                  ? { pattern: b.parity.pattern as string | undefined }
+                  : undefined,
+                primaryCause: (b as unknown as { primaryCause?: string })
+                  .primaryCause,
+              },
+              ctx.roundConfig,
+            )
+          : true,
       )
       .sort(bugPriorityComparator);
 
@@ -2115,6 +2146,13 @@ export async function runFixBugsLoop(
       // feat-068 — thread invokeAgent so end-of-iteration verify can dispatch
       // the perceptual-reviewer agent (Tier 4 vision-LLM detection).
       invokeAgent: ctx.invokeAgent,
+      // feat-073 — when the round-orchestrator set ctx.roundConfig, gate
+      // expensive detection tiers (4 perceptual, 5 walkthrough) on the
+      // round's enabledTiers. When ctx.roundConfig is unset, omit
+      // enabledTiers so back-compat behavior (all tiers fire) holds.
+      ...(ctx.roundConfig
+        ? { enabledTiers: ctx.roundConfig.enabledTiers }
+        : {}),
     };
     if (ctx.factoryRoot !== undefined) verifyArgs.factoryRoot = ctx.factoryRoot;
     let verify: BuildToSpecVerifyOutput | undefined;

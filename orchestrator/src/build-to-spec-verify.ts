@@ -128,6 +128,16 @@ export interface BuildToSpecVerifyContext {
    */
   runPerceptual?: boolean;
   /**
+   * feat-073 — round-state orchestration. When set, gates expensive
+   * detection tiers on round-state: Tier 4 (perceptual review) only fires
+   * when 4 is in the set; future Tier 5 (walkthrough) only when 5 is in
+   * the set. Cheap tiers (0-3) always fire regardless. When unset,
+   * back-compat behavior (every tier fires unless individually disabled
+   * via runParity / runPerceptual / etc.). The runRoundsOrchestrator
+   * wrapper (Phase B) sets this from the active round's enabledTiers.
+   */
+  enabledTiers?: ReadonlySet<import("@repo/orchestrator-contracts").TierId>;
+  /**
    * feat-068 — test seam replacing the perceptual-review wrapper. Defaults
    * to `runPerceptualReview` from `./perceptual-review.js`. Tests stub to
    * inject canned findings without making real LLM calls.
@@ -776,7 +786,17 @@ export async function runBuildToSpecVerify(
   // dev-server-not-responding.
   let perceptual: PerceptualReviewOutput | undefined;
   let perceptualCost = 0;
-  if (ctx.runPerceptual !== false && ctx.invokeAgent) {
+  // feat-073 — round-state gating. When enabledTiers is set and Tier 4 is
+  // NOT in it, short-circuit the entire perceptual-review dispatch (don't
+  // even enumerate screens). When enabledTiers is unset, back-compat:
+  // runPerceptual flag controls.
+  const tier4Gated = ctx.enabledTiers !== undefined && !ctx.enabledTiers.has(4);
+  if (tier4Gated) {
+    warnings.push(
+      "perceptual-review skipped: Tier 4 not in enabledTiers (round-state gate; feat-073)",
+    );
+  }
+  if (!tier4Gated && ctx.runPerceptual !== false && ctx.invokeAgent) {
     // Derive screen list from pixel-diffs directory (parity-verify persists
     // both PNGs there for every screen post-feat-068 parity-verify change).
     // If parity didn't run OR found 0 screens, this dir is empty + perceptual

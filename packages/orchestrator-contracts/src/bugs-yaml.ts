@@ -177,7 +177,9 @@ export type BugPerceptualContext = z.infer<typeof BugPerceptualContextSchema>;
 export const BugEntrySchema = z.object({
   id: z
     .string()
-    .regex(/^bug-(flow|orphan|coverage|runtime|compile|parity)-[a-z0-9-]+$/),
+    .regex(
+      /^bug-(flow|orphan|coverage|runtime|compile|parity|perceptual)-[a-z0-9-]+$/,
+    ),
   iteration: z.number().int().min(1),
   source: BugSourceSchema,
   severity: BugSeveritySchema.default("P0"),

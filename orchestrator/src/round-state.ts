@@ -59,5 +59,17 @@ export function bugsInRound(
   roundId: RoundId,
 ): BugEntry[] {
   const cfg = ROUND_CONFIGS[roundId];
-  return bugs.filter((bug) => bugMatchesRound(bug, cfg));
+  return bugs.filter((bug) =>
+    bugMatchesRound(
+      {
+        source: bug.source,
+        parity: bug.parity
+          ? { pattern: bug.parity.pattern as string | undefined }
+          : undefined,
+        primaryCause: (bug as unknown as { primaryCause?: string })
+          .primaryCause,
+      },
+      cfg,
+    ),
+  );
 }

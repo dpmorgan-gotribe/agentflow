@@ -182,8 +182,8 @@ export const ROUND_CONFIGS: Record<RoundId, RoundConfig> = {
 export function bugMatchesRound(
   bug: {
     source: string;
-    parity?: { pattern?: string };
-    primaryCause?: string;
+    parity?: { pattern?: string | undefined } | undefined;
+    primaryCause?: string | undefined;
   },
   cfg: RoundConfig,
 ): boolean {
