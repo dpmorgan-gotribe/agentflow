@@ -934,14 +934,24 @@ function defaultAgentSequence(violation, tier = "web-frontend-builder") {
     // Empirical motivator: reading-log-02 /fix-bugs 2026-05-12 — 5 of 7 failed
     // bugs were visual-parity `layout-regrouping`. bug-fixer's smallest-diff
     // contract isn't structurally suited; restructuring DOM/JSX across files
-    // is exactly systemic-fixer's lane (feat-070). variant-drift / style-drift /
-    // token-drift / pixel-minor-divergence stay at bug-fixer — they're
-    // surface-level per-element nudges that bug-fixer handles when drift is
-    // low. copy-sizing-drift also failed once empirically (1 of 7) but may
-    // not need routing change; defer until post-bug-085 re-run signals.
+    // is exactly systemic-fixer's lane (feat-070).
+    //
+    // bug-086 Phase A.1 (2026-05-12) — extend routing to `copy-sizing-drift`.
+    // bug-085's empirical Phase D left 2 of 22 bugs failed; 1 was
+    // bug-parity-book-create-copy-sizing-drift — bug-fixer wall-clock-stalled
+    // + bug-082 caught the unverified-completion. copy-sizing-drift is
+    // typographic-hierarchy drift that touches multiple components (same
+    // cross-file reasoning need as layout-regrouping).
+    //
+    // variant-drift / style-drift / token-drift stay at bug-fixer — surface-
+    // level per-element nudges that bug-fixer handles when drift is low.
+    // pixel-minor-divergence is deferred to Phase A.2 / Phase B (drift-count
+    // threshold) — high-drift cases are systemic but low-drift cases are
+    // bug-fixer territory; routing all of them blanket would waste systemic-
+    // fixer's higher dispatch cost on trivial cases.
     case "visual-parity": {
       const pattern = violation && violation.parity && violation.parity.pattern;
-      if (pattern === "layout-regrouping") {
+      if (pattern === "layout-regrouping" || pattern === "copy-sizing-drift") {
         return ["systemic-fixer"];
       }
       return ["bug-fixer"];

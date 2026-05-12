@@ -424,6 +424,70 @@ describe("fileBugPlan — feat-058 + feat-062 + feat-064 trimmed agentSequence p
     expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
   });
 
+  it("bug-086: copy-sizing-drift pattern → [systemic-fixer] (typographic-hierarchy cross-component drift)", async () => {
+    // Empirical motivator: reading-log-02 post-bug-085 run 2026-05-12 —
+    // bug-parity-book-create-copy-sizing-drift wall-clock-stalled at
+    // bug-fixer + bug-082 caught the unverified-completion. copy-sizing-
+    // drift involves font-scale + hierarchy changes touching multiple
+    // components — same cross-file reasoning need as layout-regrouping.
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "parity-divergence",
+        screen: "book-create",
+        pattern: "copy-sizing-drift",
+        severity: "P1",
+        detail: {
+          missing: [],
+          extra: [],
+          variantDrift: [],
+          styleDrift: [
+            {
+              selector: '[data-kit-component="Heading"]',
+              property: "font-size",
+              mockupValue: "24px",
+              builtValue: "20px",
+            },
+          ],
+        },
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["systemic-fixer"]);
+  });
+
+  it("bug-086: pixel-minor-divergence stays at [bug-fixer] (deferred to Phase A.2 / Phase B drift-threshold)", async () => {
+    // bug-086 Phase A.1 deliberately holds pixel-minor at bug-fixer — at low
+    // drift counts these are trivial per-element nudges. Phase A.2 (route all
+    // pixel-minor) or Phase B (drift-count threshold) decides post-Phase-A.1
+    // empirical re-run signal.
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "parity-divergence",
+        screen: "book-detail",
+        pattern: "pixel-minor-divergence",
+        severity: "P2",
+        detail: {
+          missing: [],
+          extra: [],
+          variantDrift: [],
+          styleDrift: [],
+        },
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
+  });
+
   it("primaryCause=visual-parity → [bug-fixer] (feat-064)", async () => {
     const { fileBugPlan } = await importHelper();
     await fileBugPlan({

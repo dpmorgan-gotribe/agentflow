@@ -1,7 +1,7 @@
 ---
 id: bug-086-extend-systemic-routing-to-copy-sizing-and-pixel-minor
 type: bug
-status: draft
+status: in-progress
 author-agent: human
 created: 2026-05-12
 updated: 2026-05-12
@@ -123,12 +123,12 @@ This is the cleaner discriminator — operates on objective drift counts rather 
 
 ## Validation Criteria
 
-- [ ] `scripts/file-bug-plan.mjs:defaultAgentSequence` routes `copy-sizing-drift` to `["systemic-fixer"]` (Phase A.1 minimum)
-- [ ] Optionally routes `pixel-minor-divergence` to `["systemic-fixer"]` (Phase A.2) OR conditionally on drift counts (Phase B)
-- [ ] Other visual-parity patterns (variant-drift, style-drift, token-drift) continue routing to `["bug-fixer"]`
-- [ ] 2-3 new routing tests in `orchestrator/tests/file-bug-plan-parity.test.ts`
-- [ ] Existing 46 file-bug-plan-parity tests stay green
-- [ ] Empirical: re-run /fix-bugs reading-log-02 after Phase A lands; the 2 currently-failed bugs should now route to systemic-fixer. Expected lift: +1 to +2 fixes, completion 82-86%.
+- [x] `scripts/file-bug-plan.mjs:defaultAgentSequence` routes `copy-sizing-drift` to `["systemic-fixer"]` (Phase A.1 minimum)
+- [ ] Optionally routes `pixel-minor-divergence` to `["systemic-fixer"]` (Phase A.2) OR conditionally on drift counts (Phase B) — DEFERRED pending Phase A.1 empirical signal
+- [x] Other visual-parity patterns (variant-drift, style-drift, token-drift) continue routing to `["bug-fixer"]`
+- [x] 2 new routing tests in `orchestrator/tests/file-bug-plan-parity.test.ts` — copy-sizing-drift → systemic-fixer + pixel-minor-divergence (regression-preserve at bug-fixer for Phase A.1 contract)
+- [x] file-bug-plan-parity: 48/48 green. fix-bugs-loop + bug-fix-context: regression-clean from prior run.
+- [ ] Empirical: re-run /fix-bugs reading-log-02 after Phase A.1 lands; bug-parity-book-create-copy-sizing-drift should now route to systemic-fixer. Expected lift: +1 fix → 82% completion (or higher if the verifier re-files anything that gets cleared).
 
 ## Cross-references
 
@@ -140,4 +140,12 @@ This is the cleaner discriminator — operates on objective drift counts rather 
 
 ## Attempt Log
 
-<!-- Populated by executing agents. -->
+### Attempt 1 — 2026-05-12 — Phase A.1 landed (conservative; A.2 + B deferred pending data)
+
+- **Phase A.1 — routing**: Extended bug-085's pattern-aware branch in `scripts/file-bug-plan.mjs:defaultAgentSequence`. The visual-parity case now routes BOTH `layout-regrouping` AND `copy-sizing-drift` to systemic-fixer; everything else (variant-drift, style-drift, token-drift, pixel-minor-divergence) stays at bug-fixer. Held pixel-minor-divergence at bug-fixer per the conservative plan — low-drift pixel-minor cases are bug-fixer's lane; routing all of them blanket would waste systemic-fixer's dispatch cost.
+
+- **Phase C — tests**: Added 2 tests in `orchestrator/tests/file-bug-plan-parity.test.ts`: (1) copy-sizing-drift → systemic-fixer (positive); (2) pixel-minor-divergence → bug-fixer (regression-preserve for Phase A.1 contract; documents that pixel-minor stays at bug-fixer until Phase A.2 / Phase B). Final: 48/48 file-bug-plan-parity. No regressions on adjacent suites.
+
+- **Phase A.2 + Phase B deferred**: pixel-minor-divergence routing decision delayed until Phase A.1 empirical re-run signals whether copy-sizing-drift fix lands cleanly + whether the remaining pixel-minor bug actually needs the same treatment.
+
+Outcome: Phase A.1 + tests landed. Empirical Phase D (re-run /fix-bugs reading-log-02) is the next step — same single-iter pattern as bug-085 (reset the 1 copy-sizing-drift failed bug, dispatch, measure).
