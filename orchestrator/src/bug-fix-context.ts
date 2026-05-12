@@ -144,6 +144,23 @@ function resolveFilesForBug(
       relPath: "docs/user-flows-manifest.json",
       reason: "User-flows manifest (find this flow's requiredState)",
     });
+    // bug-083 (2026-05-12) — the synthesizer's per-spec try/catch already
+    // writes diagnostic artefacts on failure: an HTML envelope with the
+    // error message + URL + DOM dump, plus a screenshot when capture
+    // succeeded. Pre-loading these saves the agent multiple Read/Grep
+    // turns hunting for the failure signal — empirical reading-log-02
+    // 2026-05-11: agents stalled at the 90s SDK-warn-threshold rediscovering
+    // info that was sitting on disk. emitFileSection silently logs missing
+    // files in the diagnostic block, so over-specifying is safe.
+    out.push({
+      relPath: `docs/build-to-spec/failures/${bug.flow.id}-failure.html`,
+      reason:
+        "Failure envelope (timeout / error message / stack trace / DOM dump when available)",
+    });
+    out.push({
+      relPath: `docs/build-to-spec/failures/${bug.flow.id}-failure.png`,
+      reason: "Failure screenshot (when captured)",
+    });
   }
 
   if (bug.source === "visual-parity" && bug.parity) {

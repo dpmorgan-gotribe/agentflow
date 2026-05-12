@@ -81,8 +81,19 @@ describe("buildBugContextEnvelope — flow-execution-failure", () => {
     expect(envelope.text).toMatch(/Failing synthesized spec.*flow-3\.spec\.ts/);
     expect(envelope.text).toMatch(/User-flows manifest/);
     expect(envelope.text).toMatch(/test\("walks"/);
+    // bug-083: resolver now ALSO requests failure.html + failure.png; this
+    // test's setup doesn't create them so they land in missingFiles[].
     expect(envelope.resolvedFiles).toHaveLength(2);
-    expect(envelope.missingFiles).toHaveLength(0);
+    expect(envelope.missingFiles).toHaveLength(2);
+    expect(envelope.missingFiles).toContainEqual({
+      path: "docs/build-to-spec/failures/flow-3-failure.html",
+      reason:
+        "Failure envelope (timeout / error message / stack trace / DOM dump when available)",
+    });
+    expect(envelope.missingFiles).toContainEqual({
+      path: "docs/build-to-spec/failures/flow-3-failure.png",
+      reason: "Failure screenshot (when captured)",
+    });
   });
 
   it("reports missing spec via missingFiles[] when the spec doesn't exist", () => {
@@ -110,6 +121,131 @@ describe("buildBugContextEnvelope — flow-execution-failure", () => {
       reason: "Failing synthesized spec",
     });
     expect(envelope.text).toMatch(/✗ `apps\/web\/e2e\/synthesized\/flow-99/);
+  });
+
+  // bug-083: pre-load the synthesizer's per-spec failure artefacts so the
+  // dispatched agent has the timeout/error message/DOM dump without
+  // hunting via Read/Grep. Empirical motivator: reading-log-02 2026-05-11
+  // — bug-fixer dispatches stalled at the 90s SDK-warn-threshold rediscovering
+  // info that was already on disk.
+
+  it("bug-083: pre-loads failure.html when present in docs/build-to-spec/failures/", () => {
+    writeProjectFile(
+      "apps/web/e2e/synthesized/flow-2.spec.ts",
+      `import { test } from "@playwright/test";\ntest("x", async () => {});\n`,
+    );
+    writeProjectFile(
+      "docs/user-flows-manifest.json",
+      JSON.stringify({ flows: [{ id: "flow-2" }] }),
+    );
+    writeProjectFile(
+      "docs/build-to-spec/failures/flow-2-failure.html",
+      "<html><body>Error: page.goto: Test timeout of 30000ms exceeded\nURL when error fired: http://localhost:3000/</body></html>",
+    );
+    const bug = makeBug({
+      id: "bug-flow-flow-2",
+      source: "flow-execution-failure",
+      flow: {
+        id: "flow-2",
+        name: "Walk home",
+        failedStep: 0,
+        expectedScreenId: null,
+        actualScreenId: null,
+        selector: null,
+        screenshot: null,
+        htmlDump: null,
+      },
+    });
+    const envelope = buildBugContextEnvelope({ bug, projectRoot });
+    const resolvedPaths = envelope.resolvedFiles.map((r) => r.path);
+    expect(resolvedPaths).toContain(
+      "docs/build-to-spec/failures/flow-2-failure.html",
+    );
+    const failureEntry = envelope.resolvedFiles.find((r) =>
+      r.path.endsWith("flow-2-failure.html"),
+    );
+    expect(failureEntry?.reason).toMatch(/Failure envelope/);
+    expect(envelope.text).toMatch(/Failure envelope.*flow-2-failure\.html/);
+    expect(envelope.text).toMatch(/page\.goto: Test timeout of 30000ms/);
+  });
+
+  it("bug-083: reports failure.html via missingFiles[] when artefact wasn't written", () => {
+    writeProjectFile(
+      "apps/web/e2e/synthesized/flow-4.spec.ts",
+      `import { test } from "@playwright/test";\ntest("y", async () => {});\n`,
+    );
+    writeProjectFile(
+      "docs/user-flows-manifest.json",
+      JSON.stringify({ flows: [{ id: "flow-4" }] }),
+    );
+    // No failure.html or failure.png written — simulates the
+    // "synth-pass-but-runtime-fail-after-cleanup" edge case.
+    const bug = makeBug({
+      source: "flow-execution-failure",
+      flow: {
+        id: "flow-4",
+        name: "Lonely",
+        failedStep: 0,
+        expectedScreenId: null,
+        actualScreenId: null,
+        selector: null,
+        screenshot: null,
+        htmlDump: null,
+      },
+    });
+    const envelope = buildBugContextEnvelope({ bug, projectRoot });
+    expect(envelope.missingFiles).toContainEqual({
+      path: "docs/build-to-spec/failures/flow-4-failure.html",
+      reason:
+        "Failure envelope (timeout / error message / stack trace / DOM dump when available)",
+    });
+    expect(envelope.missingFiles).toContainEqual({
+      path: "docs/build-to-spec/failures/flow-4-failure.png",
+      reason: "Failure screenshot (when captured)",
+    });
+  });
+
+  it("bug-083: failure.html present but failure.png missing resolves cleanly (common envelope-fallback case)", () => {
+    // The synthesizer ALWAYS writes failure.html (post bug-072 hardening)
+    // but only writes failure.png when page.screenshot() succeeds before
+    // the catch handler exits. A page.goto timeout means no screenshot.
+    writeProjectFile(
+      "apps/web/e2e/synthesized/flow-5.spec.ts",
+      `import { test } from "@playwright/test";\ntest("z", async () => {});\n`,
+    );
+    writeProjectFile(
+      "docs/user-flows-manifest.json",
+      JSON.stringify({ flows: [{ id: "flow-5" }] }),
+    );
+    writeProjectFile(
+      "docs/build-to-spec/failures/flow-5-failure.html",
+      "<html><body>envelope-only fallback</body></html>",
+    );
+    const bug = makeBug({
+      source: "flow-execution-failure",
+      flow: {
+        id: "flow-5",
+        name: "Half-captured",
+        failedStep: 0,
+        expectedScreenId: null,
+        actualScreenId: null,
+        selector: null,
+        screenshot: null,
+        htmlDump: null,
+      },
+    });
+    const envelope = buildBugContextEnvelope({ bug, projectRoot });
+    // .html resolved
+    const resolvedPaths = envelope.resolvedFiles.map((r) => r.path);
+    expect(resolvedPaths).toContain(
+      "docs/build-to-spec/failures/flow-5-failure.html",
+    );
+    // .png missing, recorded but no throw
+    expect(envelope.missingFiles).toContainEqual({
+      path: "docs/build-to-spec/failures/flow-5-failure.png",
+      reason: "Failure screenshot (when captured)",
+    });
+    expect(envelope.text).toMatch(/envelope-only fallback/);
   });
 });
 

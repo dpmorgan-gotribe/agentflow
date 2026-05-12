@@ -1,7 +1,7 @@
 ---
 id: bug-083-flow-execution-failure-envelope-enrichment
 type: bug
-status: draft
+status: in-progress
 author-agent: human
 created: 2026-05-11
 updated: 2026-05-11
@@ -115,10 +115,10 @@ Phase B is optional for v1 of this fix — Phase A delivers most of the value. D
 
 ## Validation Criteria
 
-- [ ] flow-execution-failure bugs now resolve 2 additional envelope entries (failure.html + failure.png) when those files exist
-- [ ] `bug-fix-context.test.ts` has 3 new tests covering positive case + 2 negative cases
+- [x] flow-execution-failure bugs now resolve 2 additional envelope entries (failure.html + failure.png) when those files exist (`orchestrator/src/bug-fix-context.ts:resolveFilesForBug` flow-execution-failure branch — bug-083 block)
+- [x] `bug-fix-context.test.ts` has 3 new tests covering positive case + 2 negative cases (full suite: 17/17 passing)
+- [x] No regression on existing bug-fix-context tests (existing flow-execution-failure test #1 updated to account for the 2 new missingFiles[] entries; 14 prior tests stay green)
 - [ ] Empirical: re-run /fix-bugs reading-log-02 after this fix lands; bug-fixer dispatches on flow-failures should now have access to the timeout error + URL + stack via the Read tool (visible in the agent's transcript reading docs/build-to-spec/failures/\*)
-- [ ] No regression on existing bug-fix-context tests (8 tests in visual-parity + reachability-orphan + flow-execution-failure + systemic-fixer branches all stay green)
 
 ## Cross-references
 
@@ -129,4 +129,12 @@ Phase B is optional for v1 of this fix — Phase A delivers most of the value. D
 
 ## Attempt Log
 
-<!-- Populated by executing agents. -->
+### Attempt 1 — 2026-05-12 — landed (Phase A only; Phase B route-inference deferred)
+
+- **Phase A — resolver extension**: Extended the flow-execution-failure branch of `orchestrator/src/bug-fix-context.ts:resolveFilesForBug` to append two new envelope entries: `docs/build-to-spec/failures/${bug.flow.id}-failure.html` and `docs/build-to-spec/failures/${bug.flow.id}-failure.png`. Mirrors the feat-067 Phase C visual-parity pattern (`ca8a0fd`). emitFileSection silently logs missing files as `✗ file missing` so the .png-not-captured edge case (common when page.goto times out before screenshot fires) resolves cleanly.
+
+- **Phase C — tests**: Added 3 new tests to the existing `flow-execution-failure` describe block in `orchestrator/tests/bug-fix-context.test.ts`: (1) positive case — both failure.html exists, agent envelope includes the timeout error text inline; (2) negative case — neither artefact exists, both land in missingFiles[]; (3) common edge case — failure.html present (post bug-072 hardening always writes one) but failure.png missing because page.goto timeout precluded the screenshot. Also updated the existing "pre-loads the synthesized spec + manifest" test to account for the 2 new missingFiles[] entries it now reports (test's setup doesn't write failure.html/png). Final: 17/17 pass in bug-fix-context.test.ts; fix-bugs-loop.test.ts still 60/60.
+
+- **Phase B — route inference**: DEFERRED per the plan's own guidance ("Phase B is optional for v1 — Phase A delivers most of the value"). The visual-parity branch's multi-path heuristic (route file + index + component) could be ported here for `page.goto("/books/X")` → `apps/web/app/books/[id]/page.tsx` inference. Defer until empirical re-run shows Phase A doesn't deliver enough lift on its own.
+
+Outcome: Phase A+C landed. Empirical Phase D (re-run /fix-bugs reading-log-02) bundled with bug-082 + future bug-084 to amortize the ~2.5hr wall-clock + $5-10 spend cost.
