@@ -130,6 +130,14 @@ function stableSlugFor(violation) {
       path.basename(violation.path, path.extname(violation.path));
     return `orphan-${slugify(name)}`;
   }
+  // feat-068 — perceptual finding slug = (screen, element) tuple so
+  // re-running the vision-LLM produces the same id and dedup fires.
+  if (violation.kind === "perceptual-finding") {
+    const elementSlug = slugify(violation.element)
+      .slice(0, 30)
+      .replace(/-+$/, "");
+    return `perceptual-${slugify(violation.screen)}-${elementSlug || "element"}`;
+  }
   // orphan-route
   return `orphan-route-${slugify(violation.routePattern ?? violation.path)}`;
 }
@@ -714,6 +722,47 @@ function parityDivergenceBody(v) {
   return lines.join("\n");
 }
 
+// ─── feat-068: perceptualFindingBody template ────────────────────────────
+//
+// Tier 4 vision-LLM perceptual review produces element-level findings that
+// the structural+pixel parity verifier missed. Each finding becomes one
+// bug; the body surfaces the mockup-vs-actual delta in human-readable
+// form so a reviewer/operator can triage at a glance.
+function perceptualFindingBody(v) {
+  const lines = [];
+  lines.push(`# Perceptual finding on \`${v.screen}\`: \`${v.element}\``);
+  lines.push("");
+  lines.push(
+    "Visual-LLM perceptual review (Tier 4) found a discrepancy between the design mockup and the live build that the structural+pixel parity layer (Tier 3) didn't catch.",
+  );
+  lines.push("");
+  lines.push("## Discrepancy");
+  lines.push("");
+  lines.push("| | Value |");
+  lines.push("| --- | --- |");
+  lines.push(`| **Element** | ${v.element} |`);
+  lines.push(`| **Mockup shows** | ${v.mockupValue} |`);
+  lines.push(`| **Live renders** | ${v.actualValue} |`);
+  lines.push(`| **Severity** | ${v.severity ?? "P1"} |`);
+  lines.push("");
+  lines.push("## References");
+  lines.push("");
+  lines.push(
+    `- Mockup PNG: \`docs/build-to-spec/pixel-diffs/${v.screen}.mockup.png\``,
+  );
+  lines.push(
+    `- Live PNG: \`docs/build-to-spec/pixel-diffs/${v.screen}.built.png\``,
+  );
+  lines.push(`- Mockup HTML: \`docs/screens/webapp/${v.screen}.html\``);
+  lines.push("");
+  lines.push("## Validation");
+  lines.push("");
+  lines.push(
+    "Re-run `/build-to-spec-verify`; perceptual review for this screen should no longer surface this element. (Other findings on the same screen may persist — they file as separate bugs.)",
+  );
+  return lines.join("\n");
+}
+
 // ─── feat-026 Phase A: bugs.yaml writer ───────────────────────────────────
 //
 // In addition to writing the standalone bug-NNN-*.md plan, the verifier
@@ -734,6 +783,7 @@ function bugSourceFor(violation) {
   if (violation.kind === "runtime-error") return "runtime-error";
   if (violation.kind === "dev-server-compile") return "dev-server-compile";
   if (violation.kind === "parity-divergence") return "visual-parity";
+  if (violation.kind === "perceptual-finding") return "perceptual-divergence";
   return "reachability-orphan"; // both orphan-component + orphan-route
 }
 
@@ -929,6 +979,9 @@ function defaultAgentSequence(violation, tier = "web-frontend-builder") {
     case "flow-execution-failure":
     case "step-transition":
     case "timeout-no-evidence":
+    // feat-068 (2026-05-12) — Tier 4 perceptual findings are element-level
+    // surface drift. bug-fixer's smallest-diff contract is the right lane.
+    case "perceptual-divergence":
       return ["bug-fixer"];
     // bug-085 (2026-05-12) — pattern-aware routing for visual-parity bugs.
     // Empirical motivator: reading-log-02 /fix-bugs 2026-05-12 — 5 of 7 failed
@@ -1114,6 +1167,12 @@ function buildBugEntry({
               ? { pattern: violation.pattern }
               : undefined,
         };
+      } else if (violation.kind === "perceptual-finding") {
+        // feat-068 (2026-05-12) — vision-LLM perceptual findings are element-
+        // level surface drift (per-finding fix-shape: 1 element, 1 file).
+        // Route to bug-fixer (cheapest dispatch). If multiple findings on the
+        // same screen accumulate, feat-071 clusterer will fold them later.
+        violationForRouting = { primaryCause: "perceptual-divergence" };
       } else if (violation.kind === "flow-failure" && !violation.primaryCause) {
         // Flow-failure with no upstream classification — default to the
         // flow-execution-failure cause class so bug-fixer routing fires.
@@ -1215,6 +1274,16 @@ function buildBugEntry({
       pattern: violation.pattern,
       detail: violation.detail,
     };
+  } else if (violation.kind === "perceptual-finding") {
+    // feat-068 — surface the vision-LLM's structured finding so the
+    // dispatched bug-fixer can read the exact mockup-vs-actual delta
+    // directly from bugs.yaml.
+    entry.perceptual = {
+      screen: violation.screen,
+      element: violation.element,
+      mockupValue: violation.mockupValue,
+      actualValue: violation.actualValue,
+    };
   }
   return entry;
 }
@@ -1302,6 +1371,12 @@ function summaryFor(violation) {
     if (d.styleDrift.length) counts.push(`${d.styleDrift.length} styleDrift`);
     const tail = counts.length ? ` (${counts.join(", ")})` : "";
     return `Parity ${violation.pattern} on ${violation.screen}${tail}`.slice(
+      0,
+      200,
+    );
+  }
+  if (violation.kind === "perceptual-finding") {
+    return `Perceptual: ${violation.element} on ${violation.screen} — mockup: ${violation.mockupValue}; actual: ${violation.actualValue}`.slice(
       0,
       200,
     );
@@ -1466,6 +1541,8 @@ export async function fileBugPlan({
     body = runtimeErrorBody(violation, { dependsOnBugId });
   } else if (violation.kind === "parity-divergence") {
     body = parityDivergenceBody(violation);
+  } else if (violation.kind === "perceptual-finding") {
+    body = perceptualFindingBody(violation);
   } else if (violation.kind === "orphan-component") {
     body = orphanComponentBody(violation);
   } else {

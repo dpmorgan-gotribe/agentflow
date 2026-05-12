@@ -460,6 +460,40 @@ describe("fileBugPlan — feat-058 + feat-062 + feat-064 trimmed agentSequence p
     expect(doc.bugs[0]?.agentSequence).toEqual(["systemic-fixer"]);
   });
 
+  it("feat-068: perceptual-finding violation kind → primaryCause=perceptual-divergence → [bug-fixer]", async () => {
+    // Tier 4 vision-LLM finding files as a perceptual-finding violation. The
+    // call-site synthesizes primaryCause:perceptual-divergence which routes
+    // to bug-fixer (cheap class — single element fix).
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "book-detail",
+        element: "Pencil edit button on book card",
+        mockupValue: "outline-style pencil icon, 20px",
+        actualValue: "filled pencil icon, 16px with text label",
+        severity: "P1" as const,
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as {
+      bugs: Array<{
+        agentSequence: string[];
+        source: string;
+        perceptual?: { screen: string; element: string };
+      }>;
+    };
+    expect(doc.bugs[0]?.source).toBe("perceptual-divergence");
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
+    expect(doc.bugs[0]?.perceptual?.screen).toBe("book-detail");
+    expect(doc.bugs[0]?.perceptual?.element).toBe(
+      "Pencil edit button on book card",
+    );
+  });
+
   it("bug-086: pixel-minor-divergence stays at [bug-fixer] (deferred to Phase A.2 / Phase B drift-threshold)", async () => {
     // bug-086 Phase A.1 deliberately holds pixel-minor at bug-fixer — at low
     // drift counts these are trivial per-element nudges. Phase A.2 (route all

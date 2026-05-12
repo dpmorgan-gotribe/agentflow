@@ -13,6 +13,13 @@ import {
 } from "@repo/orchestrator-contracts";
 import { runParityVerify, type ParityVerifyContext } from "./parity-verify.js";
 import {
+  runPerceptualReview,
+  perceptualReviewToViolations,
+} from "./perceptual-review.js";
+import type { PerceptualReviewOutput } from "@repo/orchestrator-contracts";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+import {
   bootDevServer,
   readPersistenceLayerSlug,
   teardownDevServer,
@@ -113,6 +120,26 @@ export interface BuildToSpecVerifyContext {
    * to inject canned divergences without booting Playwright.
    */
   parityVerify?: (ctx: ParityVerifyContext) => Promise<ParityVerifyOutput>;
+  /**
+   * feat-068 — when false, skip the Tier 4 vision-LLM perceptual review.
+   * Default true; perceptual review is a no-op when parity didn't run (no
+   * source PNGs on disk) so the default-on stance is safe for parity-less
+   * projects too. Cost: ~$0.005-0.01 per screen × N screens per iteration.
+   */
+  runPerceptual?: boolean;
+  /**
+   * feat-068 — test seam replacing the perceptual-review wrapper. Defaults
+   * to `runPerceptualReview` from `./perceptual-review.js`. Tests stub to
+   * inject canned findings without making real LLM calls.
+   */
+  perceptualReview?: typeof import("./perceptual-review.js").runPerceptualReview;
+  /**
+   * feat-068 — invokeAgent seam plumbed through from the orchestrator so
+   * perceptualReview can dispatch the perceptual-reviewer agent with the
+   * same SDK auth + budget tracking as fix-loop dispatches. When unset,
+   * perceptual review is skipped (warning surfaced).
+   */
+  invokeAgent?: import("./feature-graph.js").InvokeAgentFn;
 }
 
 /**
@@ -741,12 +768,98 @@ export async function runBuildToSpecVerify(
     }
   }
 
+  // ── feat-068: Tier 4 vision-LLM perceptual review ──────────────────────
+  // Runs AFTER parity-verify (Tier 3). Per-screen LLM call comparing mockup
+  // PNG vs live PNG. Cascade contracts: receives parity findings as context
+  // ("don't re-report these"); skips screens where parity already filed
+  // systemic / shell-stripping bugs; skips when Tier 2 hit
+  // dev-server-not-responding.
+  let perceptual: PerceptualReviewOutput | undefined;
+  let perceptualCost = 0;
+  if (ctx.runPerceptual !== false && ctx.invokeAgent) {
+    // Derive screen list from pixel-diffs directory (parity-verify persists
+    // both PNGs there for every screen post-feat-068 parity-verify change).
+    // If parity didn't run OR found 0 screens, this dir is empty + perceptual
+    // is a no-op.
+    const pixelDir = join(projectDir, "docs", "build-to-spec", "pixel-diffs");
+    let screenIds: string[] = [];
+    try {
+      if (existsSync(pixelDir)) {
+        screenIds = readdirSync(pixelDir)
+          .filter((f) => f.endsWith(".mockup.png"))
+          .map((f) => f.replace(/\.mockup\.png$/, ""));
+      }
+    } catch (err) {
+      warnings.push(
+        `perceptual: failed to enumerate pixel-diffs dir: ${(err as Error).message}`,
+      );
+    }
+
+    if (screenIds.length > 0) {
+      const perceptualRunner = ctx.perceptualReview ?? runPerceptualReview;
+      try {
+        perceptual = await perceptualRunner({
+          projectDir,
+          factoryRoot,
+          screenIds,
+          ...(parity ? { parity } : {}),
+          flowFailures: flows.failed,
+          invokeAgent: ctx.invokeAgent,
+          ...(ctx.pipelineRunId !== undefined
+            ? { pipelineRunId: ctx.pipelineRunId }
+            : {}),
+        });
+        for (const w of perceptual.warnings) warnings.push(`perceptual: ${w}`);
+        perceptualCost = perceptual.costUsd;
+      } catch (err) {
+        warnings.push(`perceptual-review threw: ${(err as Error).message}`);
+      }
+    }
+  } else if (ctx.runPerceptual !== false && !ctx.invokeAgent) {
+    warnings.push(
+      "perceptual-review skipped: invokeAgent not provided (verifier called without orchestrator dispatch plumbing)",
+    );
+  }
+
+  // Auto-file ONE bug per perceptual finding. Like parity bugs, each maps
+  // 1:1 to a bug plan + bugs.yaml entry via fileBugPlan.
+  if (ctx.autoFileBugPlans !== false && perceptual) {
+    const fileBugPlan = ctx.fileBugPlan ?? defaultFileBugPlanResolver();
+    const violations = perceptualReviewToViolations(perceptual);
+    for (const v of violations) {
+      try {
+        const args: Parameters<typeof fileBugPlan>[0] = {
+          projectDir,
+          violation: {
+            kind: "perceptual-finding" as const,
+            screen: v.screen,
+            element: v.element,
+            mockupValue: v.mockupValue,
+            actualValue: v.actualValue,
+            severity: v.severity,
+          } as unknown as BugPlanViolation,
+        };
+        if (ctx.pipelineRunId !== undefined)
+          args.pipelineRunId = ctx.pipelineRunId;
+        if (ctx.iteration !== undefined) args.iteration = ctx.iteration;
+        const { planId } = await fileBugPlan(args);
+        bugPlansFiled.push(planId);
+      } catch (err) {
+        warnings.push(
+          `file-bug-plan failed for perceptual ${v.screen}/${v.element}: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
   const parityOk = parity ? parity.divergences.length === 0 : true;
+  const perceptualOk = perceptual ? perceptual.ok : true;
   const ok =
     orphanComponents.length === 0 &&
     orphanRoutes.length === 0 &&
     flows.failed.length === 0 &&
-    parityOk;
+    parityOk &&
+    perceptualOk;
 
   const output: BuildToSpecVerifyOutputType = {
     ok,
@@ -758,8 +871,9 @@ export async function runBuildToSpecVerify(
     },
     flows,
     ...(parity ? { parity } : {}),
+    ...(perceptual ? { perceptual } : {}),
     bugPlansFiled,
-    costUsd: 0, // v1: zero LLM dispatch
+    costUsd: perceptualCost, // feat-068: perceptual is the only LLM dispatch
     durationMs: Date.now() - startedAt,
     warnings,
   };

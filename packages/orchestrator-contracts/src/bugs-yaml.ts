@@ -32,6 +32,7 @@ export const BugSourceSchema = z.enum([
   "runtime-error", // feat-027 runtime-error capture (console / page / network)
   "dev-server-compile", // feat-027 Next.js dev-server overlay (cascade root-cause)
   "visual-parity", // feat-028 ParityVerify (DOM-skeleton + computed-style audit)
+  "perceptual-divergence", // feat-068 vision-LLM perceptual review (Tier 4)
   "pm-coverage-omission", // feat-023 brief-coverage gate (rare; usually fails earlier)
 ]);
 export type BugSource = z.infer<typeof BugSourceSchema>;
@@ -141,6 +142,25 @@ export const BugParityContextSchema = z.object({
 export type BugParityContext = z.infer<typeof BugParityContextSchema>;
 
 /**
+ * Source-specific context for a perceptual-divergence bug (feat-068).
+ * Vision-LLM observed one visible element-level discrepancy between the
+ * mockup and the live build. The agent's structured output is preserved
+ * here so the bug-fixer / systemic-fixer can read the exact mockup-vs-
+ * actual delta from bugs.yaml without re-running the vision-LLM call.
+ */
+export const BugPerceptualContextSchema = z.object({
+  /** Mockup screen-id (matches the parity context's screen field). */
+  screen: z.string().min(1),
+  /** Brief element identifier — e.g. "Pencil edit button on book card". */
+  element: z.string().min(1),
+  /** What the mockup shows for that element. */
+  mockupValue: z.string().min(1),
+  /** What the live build renders. */
+  actualValue: z.string().min(1),
+});
+export type BugPerceptualContext = z.infer<typeof BugPerceptualContextSchema>;
+
+/**
  * One bug entry. `iteration` records when the verifier first detected it;
  * `attempts` is the per-bug attempt counter the loop respects. Either
  * `flow` or `orphan` is populated (matching `source`); the other is
@@ -170,6 +190,11 @@ export const BugEntrySchema = z.object({
   // schema-modeled so the fix-bugs loop can group same-pattern bugs
   // for batched dispatch.
   parity: BugParityContextSchema.optional(),
+  // feat-068 (2026-05-12) — Tier 4 vision-LLM perceptual review observation.
+  // Present iff `source === "perceptual-divergence"`. The agent's structured
+  // output is captured here so downstream bug-fixer dispatch can read the
+  // exact mockup-vs-actual delta without re-running vision-LLM.
+  perceptual: BugPerceptualContextSchema.optional(),
 
   // Correlation (set when verifier matches a flow failure to an orphan)
   correlatedOrphanPath: z.string().nullable().default(null),
@@ -255,6 +280,7 @@ export function defaultAgentSequenceForSource(
     case "runtime-error":
     case "dev-server-compile":
     case "visual-parity":
+    case "perceptual-divergence":
     case "pm-coverage-omission":
       return ["web-frontend-builder", "tester", "reviewer"] as const;
   }

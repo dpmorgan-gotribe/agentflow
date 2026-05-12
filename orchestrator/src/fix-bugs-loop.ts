@@ -1033,8 +1033,9 @@ function bugPriorityComparator(a: BugEntry, b: BugEntry): number {
     "runtime-error": 1, // feat-027 — JS error prevents interaction
     "reachability-orphan": 2,
     "visual-parity": 3, // feat-028 — DOM-skeleton / computed-style mismatch
-    "flow-execution-failure": 4,
-    "pm-coverage-omission": 5,
+    "perceptual-divergence": 4, // feat-068 — vision-LLM finding (post-parity)
+    "flow-execution-failure": 5,
+    "pm-coverage-omission": 6,
   };
   return sourceOrder[a.source] - sourceOrder[b.source];
 }

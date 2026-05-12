@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ParityVerifyOutputSchema } from "./parity-verify.js";
+import { PerceptualReviewOutputSchema } from "./perceptual-review.js";
 
 /**
  * `/build-to-spec-verify` output contract — feat-022.
@@ -283,6 +284,10 @@ export const BuildToSpecVerifyOutput = z.object({
   reachability: ReachabilityReport,
   flows: FlowsReport,
   parity: ParityVerifyOutputSchema.optional(),
+  // feat-068 (2026-05-12) — Tier 4 vision-LLM perceptual review sub-report.
+  // Optional; absent when ctx.runPerceptual:false OR when parity didn't
+  // produce per-screen PNGs for the runner to compare.
+  perceptual: PerceptualReviewOutputSchema.optional(),
   bugPlansFiled: z.array(z.string()).default([]),
   costUsd: z.number().nonnegative(),
   durationMs: z.number().int().nonnegative(),
