@@ -2112,6 +2112,9 @@ export async function runFixBugsLoop(
       autoFileBugPlans: true,
       pipelineRunId: ctx.pipelineRunId,
       iteration: iteration + 1,
+      // feat-068 — thread invokeAgent so end-of-iteration verify can dispatch
+      // the perceptual-reviewer agent (Tier 4 vision-LLM detection).
+      invokeAgent: ctx.invokeAgent,
     };
     if (ctx.factoryRoot !== undefined) verifyArgs.factoryRoot = ctx.factoryRoot;
     let verify: BuildToSpecVerifyOutput | undefined;
