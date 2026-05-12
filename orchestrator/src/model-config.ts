@@ -143,6 +143,13 @@ const FACTORY_DEFAULT_AGENT_TIERS: Record<
   // the 18-min stall cap below provide the budget for cross-file
   // exploration; the tier itself doesn't need to differ.
   "systemic-fixer": { tier: "building", effort: "medium" },
+  // perceptual-reviewer — Tier 4 vision-LLM agent (feat-068). Per-screen
+  // mockup-vs-live image comparison + structured-output findings.
+  // tier:building resolves to Sonnet (vision-capable, ~5× cheaper than
+  // Opus); the task is pattern-recognition over images, not deep
+  // reasoning. effort:medium gives enough budget for image inputs +
+  // parity-context preload without wasting it on reasoning depth.
+  "perceptual-reviewer": { tier: "building", effort: "medium" },
 };
 
 const DEFAULT_STALL_TIMEOUT_BY_AGENT: Record<string, number | null> = {
@@ -171,6 +178,10 @@ const DEFAULT_STALL_TIMEOUT_BY_AGENT: Record<string, number | null> = {
   // bug-077-class work; 18 gives ~50% headroom for the long tail without
   // letting the agent wander past the bug-fixer's failure-mode budget.
   "systemic-fixer": 18 * 60 * 1000,
+  // feat-068 (2026-05-12) — perceptual-reviewer is a 3-turn read+write
+  // agent: read mockup + live PNGs, write findings JSON, return outcome.
+  // 5-minute cap is generous — typical wall-clock per screen is ~30-60s.
+  "perceptual-reviewer": 5 * 60 * 1000,
 };
 
 /**

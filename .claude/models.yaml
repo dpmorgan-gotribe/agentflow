@@ -40,12 +40,13 @@ agents:
   systemic-fixer: { tier: building, effort: medium }
   # feat-068 (2026-05-12) — perceptual-reviewer is the Tier 4 vision-LLM
   # agent. Per-screen mockup-vs-live comparison, structured-output JSON.
-  # tier:planning maps to Sonnet (vision-capable, cheaper than Opus); the
-  # task is pattern-recognition, not deep reasoning. effort:medium gives
-  # enough context budget for the per-screen image inputs + parity context
-  # without wasting it on reasoning the task doesn't need. ~$0.005-0.01
-  # per screen.
-  perceptual-reviewer: { tier: planning, effort: medium }
+  # tier:building resolves to Sonnet (vision-capable, ~5× cheaper than
+  # Opus on tier:planning); the task is pattern-recognition over images,
+  # not deep reasoning. effort:medium gives enough budget for image
+  # inputs + parity-context preload. ~$0.005-0.01 per screen.
+  # Also pinned in FACTORY_DEFAULT_AGENT_TIERS so project-level YAMLs
+  # don't need to repeat this (matches bug-fixer / systemic-fixer pattern).
+  perceptual-reviewer: { tier: building, effort: medium }
 
 # Budget overrides. Leave empty to inherit.
 # budget:
