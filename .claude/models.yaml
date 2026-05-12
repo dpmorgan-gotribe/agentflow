@@ -38,6 +38,14 @@ agents:
   # exploration budget comes from agent frontmatter (maxTurns: 12) and
   # the 18-min stall cap in model-config.ts:DEFAULT_STALL_TIMEOUT_BY_AGENT.
   systemic-fixer: { tier: building, effort: medium }
+  # feat-068 (2026-05-12) — perceptual-reviewer is the Tier 4 vision-LLM
+  # agent. Per-screen mockup-vs-live comparison, structured-output JSON.
+  # tier:planning maps to Sonnet (vision-capable, cheaper than Opus); the
+  # task is pattern-recognition, not deep reasoning. effort:medium gives
+  # enough context budget for the per-screen image inputs + parity context
+  # without wasting it on reasoning the task doesn't need. ~$0.005-0.01
+  # per screen.
+  perceptual-reviewer: { tier: planning, effort: medium }
 
 # Budget overrides. Leave empty to inherit.
 # budget:
