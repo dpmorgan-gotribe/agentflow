@@ -848,16 +848,25 @@ export async function runBuildToSpecVerify(
     const violations = perceptualReviewToViolations(perceptual);
     for (const v of violations) {
       try {
+        // feat-068 followup — pass through the richer finding fields
+        // (description / category) so file-bug-plan can render them in
+        // the bug body + persist into bugs.yaml's perceptual context.
+        const violationPayload: Record<string, unknown> = {
+          kind: "perceptual-finding" as const,
+          screen: v.screen,
+          element: v.element,
+          severity: v.severity,
+        };
+        if (v.mockupValue !== undefined)
+          violationPayload.mockupValue = v.mockupValue;
+        if (v.actualValue !== undefined)
+          violationPayload.actualValue = v.actualValue;
+        if (v.description !== undefined)
+          violationPayload.description = v.description;
+        if (v.category !== undefined) violationPayload.category = v.category;
         const args: Parameters<typeof fileBugPlan>[0] = {
           projectDir,
-          violation: {
-            kind: "perceptual-finding" as const,
-            screen: v.screen,
-            element: v.element,
-            mockupValue: v.mockupValue,
-            actualValue: v.actualValue,
-            severity: v.severity,
-          } as unknown as BugPlanViolation,
+          violation: violationPayload as unknown as BugPlanViolation,
         };
         if (ctx.pipelineRunId !== undefined)
           args.pipelineRunId = ctx.pipelineRunId;

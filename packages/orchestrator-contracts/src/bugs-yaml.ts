@@ -153,10 +153,26 @@ export const BugPerceptualContextSchema = z.object({
   screen: z.string().min(1),
   /** Brief element identifier — e.g. "Pencil edit button on book card". */
   element: z.string().min(1),
-  /** What the mockup shows for that element. */
-  mockupValue: z.string().min(1),
-  /** What the live build renders. */
-  actualValue: z.string().min(1),
+  /**
+   * What the mockup shows for that element. Optional — agents may roll
+   * mockup+actual into a single `description` field instead. When present,
+   * pairs with `actualValue` for the bug-body's mockup-vs-actual table.
+   */
+  mockupValue: z.string().optional(),
+  /** What the live build renders. Optional, see `mockupValue`. */
+  actualValue: z.string().optional(),
+  /**
+   * Free-text description of the discrepancy. Fallback when the agent
+   * didn't split into mockupValue/actualValue. Rendered as the primary
+   * bug-body diagnostic when present.
+   */
+  description: z.string().optional(),
+  /**
+   * Bug-class hint from the agent (e.g. "content-missing", "branding",
+   * "polish", "state-routing"). Free-form; downstream clusterer +
+   * routing consume.
+   */
+  category: z.string().optional(),
 });
 export type BugPerceptualContext = z.infer<typeof BugPerceptualContextSchema>;
 

@@ -212,8 +212,104 @@ function formatParityFindingsForScreen(
 }
 
 /**
- * Read + validate the agent's per-screen findings JSON. Returns the
- * parsed review on success; on parse/validation failure, returns a
+ * Normalize a severity-like string to the P0/P1/P2 enum. Accepts aliases
+ * the vision-LLM emits naturally: "critical"/"high"/"P0" → P0;
+ * "major"/"medium"/"P1" → P1; "minor"/"low"/"polish"/"P2" → P2.
+ * Returns "P1" when nothing matches (matches the schema default).
+ */
+function normalizeSeverity(raw: unknown): "P0" | "P1" | "P2" {
+  if (typeof raw !== "string") return "P1";
+  const s = raw.trim().toLowerCase();
+  if (s === "p0" || s === "critical" || s === "high" || s === "blocker") {
+    return "P0";
+  }
+  if (s === "p2" || s === "minor" || s === "low" || s === "polish") {
+    return "P2";
+  }
+  // p1 / major / medium / unknown all bucket to P1
+  return "P1";
+}
+
+/**
+ * Pull a string field from the raw object, trying multiple keys in order.
+ * Returns undefined if none match or value isn't a string.
+ */
+function pickString(
+  obj: Record<string, unknown>,
+  keys: string[],
+): string | undefined {
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === "string" && v.trim().length > 0) return v;
+  }
+  return undefined;
+}
+
+/**
+ * Normalize one finding object from the agent's emitted shape into the
+ * canonical PerceptualFindingSchema-compatible shape. Handles the alias
+ * patterns the vision-LLM uses empirically:
+ *   - `tier` / `priority` → `severity`
+ *   - `title` / `zone` / `name` / `label` → `element` (fallback if no element)
+ *   - free-text `description` stays as-is; `expected`/`mockup` → mockupValue;
+ *     `actual`/`built`/`observed` → actualValue
+ */
+function normalizeFinding(
+  raw: unknown,
+  index: number,
+): Record<string, unknown> | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const obj = raw as Record<string, unknown>;
+
+  const element = pickString(obj, [
+    "element",
+    "title",
+    "zone",
+    "name",
+    "label",
+    "description",
+  ]);
+  // Without an element, we can't anchor a bug. Skip the finding.
+  if (!element) return null;
+
+  const severity = normalizeSeverity(obj.severity ?? obj.tier ?? obj.priority);
+  const id =
+    pickString(obj, ["id", "findingId", "bugId"]) ?? `finding-${index + 1}`;
+  const category = pickString(obj, ["category", "type", "class"]);
+  const mockupValue = pickString(obj, [
+    "mockupValue",
+    "mockup",
+    "expected",
+    "expectedValue",
+    "designValue",
+  ]);
+  const actualValue = pickString(obj, [
+    "actualValue",
+    "actual",
+    "observed",
+    "built",
+    "builtValue",
+  ]);
+  const description = pickString(obj, ["description", "detail", "explanation"]);
+
+  const normalized: Record<string, unknown> = {
+    id,
+    element,
+    severity,
+  };
+  if (category !== undefined) normalized.category = category;
+  if (mockupValue !== undefined) normalized.mockupValue = mockupValue;
+  if (actualValue !== undefined) normalized.actualValue = actualValue;
+  if (description !== undefined) normalized.description = description;
+  return normalized;
+}
+
+/**
+ * Read + validate the agent's per-screen findings JSON. Normalizes the
+ * agent's emitted shape (which empirically drifts from the contract — see
+ * the feat-068 followup investigation) before Zod parse so common alias
+ * patterns (`tier`/`severity`, `title`/`element`, etc.) are absorbed.
+ * Returns the parsed review on success; on parse failure, returns a
  * review with empty findings + an entry in errors describing the issue.
  */
 function readAgentFindings(
@@ -223,6 +319,7 @@ function readAgentFindings(
   if (!existsSync(outputPath)) {
     return {
       screen: screenId,
+      alreadyFiled: [],
       findings: [],
       errors: {
         "post-dispatch": "agent did not write the findings file",
@@ -232,23 +329,48 @@ function readAgentFindings(
   }
   try {
     const raw = JSON.parse(readFileSync(outputPath, "utf8")) as unknown;
-    // The agent's JSON includes `screen`, `findings`, `errors`. Validate the
-    // findings + errors fields against the contract; allow the screen field
-    // to be either present + correct OR missing (we know which screen this is).
     if (typeof raw !== "object" || raw === null) {
       throw new Error("findings JSON is not an object");
     }
     const obj = raw as Record<string, unknown>;
-    const validated = PerceptualScreenReviewSchema.safeParse({
+
+    // Normalize findings array — strip findings that lack an anchorable
+    // element (their bug would be unfilable anyway).
+    const rawFindings = Array.isArray(obj.findings) ? obj.findings : [];
+    const normalizedFindings = rawFindings
+      .map((f, i) => normalizeFinding(f, i))
+      .filter((f): f is Record<string, unknown> => f !== null);
+
+    // Per-screen rollup fields — verdict / summary / alreadyFiled
+    const verdictRaw = pickString(obj, ["verdict", "overallVerdict"]);
+    let verdict: "passed" | "failed" | "blocked" | undefined;
+    if (verdictRaw) {
+      const v = verdictRaw.toLowerCase();
+      if (v === "passed" || v === "pass" || v === "clean") verdict = "passed";
+      else if (v === "failed" || v === "fail") verdict = "failed";
+      else if (v === "blocked" || v === "block") verdict = "blocked";
+    }
+    const summary = pickString(obj, ["summary", "overview"]);
+    const alreadyFiled = Array.isArray(obj.alreadyFiled)
+      ? (obj.alreadyFiled.filter((s) => typeof s === "string") as string[])
+      : [];
+
+    const candidate: Record<string, unknown> = {
       screen: screenId,
-      findings: Array.isArray(obj.findings) ? obj.findings : [],
+      findings: normalizedFindings,
       errors:
         typeof obj.errors === "object" && obj.errors !== null ? obj.errors : {},
       costUsd: 0,
-    });
+      alreadyFiled,
+    };
+    if (verdict !== undefined) candidate.verdict = verdict;
+    if (summary !== undefined) candidate.summary = summary;
+
+    const validated = PerceptualScreenReviewSchema.safeParse(candidate);
     if (!validated.success) {
       return {
         screen: screenId,
+        alreadyFiled: [],
         findings: [],
         errors: {
           "schema-validation": validated.error.issues[0]?.message ?? "invalid",
@@ -260,6 +382,7 @@ function readAgentFindings(
   } catch (err) {
     return {
       screen: screenId,
+      alreadyFiled: [],
       findings: [],
       errors: { "parse-error": (err as Error).message },
       costUsd: 0,
@@ -302,6 +425,7 @@ export async function runPerceptualReview(
     if (skip) {
       reviews.push({
         screen: screenId,
+        alreadyFiled: [],
         findings: [],
         errors: {},
         costUsd: 0,
@@ -359,6 +483,7 @@ export async function runPerceptualReview(
         );
         reviews.push({
           screen: screenId,
+          alreadyFiled: [],
           findings: [],
           errors: { dispatch: errMsg },
           costUsd: result.costUsd,
@@ -378,6 +503,7 @@ export async function runPerceptualReview(
       );
       reviews.push({
         screen: screenId,
+        alreadyFiled: [],
         findings: [],
         errors: { dispatch: (err as Error).message },
         costUsd: 0,
@@ -409,20 +535,28 @@ export async function runPerceptualReview(
 export function perceptualReviewToViolations(output: PerceptualReviewOutput): {
   screen: string;
   element: string;
-  mockupValue: string;
-  actualValue: string;
+  mockupValue?: string;
+  actualValue?: string;
+  description?: string;
+  category?: string;
   severity: PerceptualFinding["severity"];
 }[] {
   const out: ReturnType<typeof perceptualReviewToViolations> = [];
   for (const review of output.reviews) {
     for (const finding of review.findings) {
-      out.push({
+      const entry: ReturnType<typeof perceptualReviewToViolations>[number] = {
         screen: review.screen,
         element: finding.element,
-        mockupValue: finding.mockupValue,
-        actualValue: finding.actualValue,
         severity: finding.severity,
-      });
+      };
+      if (finding.mockupValue !== undefined)
+        entry.mockupValue = finding.mockupValue;
+      if (finding.actualValue !== undefined)
+        entry.actualValue = finding.actualValue;
+      if (finding.description !== undefined)
+        entry.description = finding.description;
+      if (finding.category !== undefined) entry.category = finding.category;
+      out.push(entry);
     }
   }
   return out;

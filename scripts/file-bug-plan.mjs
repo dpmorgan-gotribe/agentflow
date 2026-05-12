@@ -741,10 +741,23 @@ function perceptualFindingBody(v) {
   lines.push("| | Value |");
   lines.push("| --- | --- |");
   lines.push(`| **Element** | ${v.element} |`);
-  lines.push(`| **Mockup shows** | ${v.mockupValue} |`);
-  lines.push(`| **Live renders** | ${v.actualValue} |`);
+  if (v.category) lines.push(`| **Category** | ${v.category} |`);
+  if (v.mockupValue) lines.push(`| **Mockup shows** | ${v.mockupValue} |`);
+  if (v.actualValue) lines.push(`| **Live renders** | ${v.actualValue} |`);
+  if (v.description && !v.mockupValue && !v.actualValue) {
+    // Agent emitted a single description instead of split mockup/actual.
+    // Surface it as a single row so the operator + bug-fixer have context.
+    lines.push(`| **Description** | ${v.description} |`);
+  }
   lines.push(`| **Severity** | ${v.severity ?? "P1"} |`);
   lines.push("");
+  if (v.description && (v.mockupValue || v.actualValue)) {
+    // Both fields present — show description as supplementary context below.
+    lines.push("### Description");
+    lines.push("");
+    lines.push(v.description);
+    lines.push("");
+  }
   lines.push("## References");
   lines.push("");
   lines.push(
@@ -754,6 +767,9 @@ function perceptualFindingBody(v) {
     `- Live PNG: \`docs/build-to-spec/pixel-diffs/${v.screen}.built.png\``,
   );
   lines.push(`- Mockup HTML: \`docs/screens/webapp/${v.screen}.html\``);
+  lines.push(
+    `- Per-screen perceptual JSON: \`docs/build-to-spec/perceptual/${v.screen}.json\``,
+  );
   lines.push("");
   lines.push("## Validation");
   lines.push("");
@@ -1278,12 +1294,22 @@ function buildBugEntry({
     // feat-068 — surface the vision-LLM's structured finding so the
     // dispatched bug-fixer can read the exact mockup-vs-actual delta
     // directly from bugs.yaml.
-    entry.perceptual = {
+    // feat-068 followup — mockupValue/actualValue now optional (agent
+    // sometimes emits a single `description` instead). category is a
+    // bug-class hint from the agent.
+    const perceptual = {
       screen: violation.screen,
       element: violation.element,
-      mockupValue: violation.mockupValue,
-      actualValue: violation.actualValue,
     };
+    if (violation.mockupValue !== undefined)
+      perceptual.mockupValue = violation.mockupValue;
+    if (violation.actualValue !== undefined)
+      perceptual.actualValue = violation.actualValue;
+    if (violation.description !== undefined)
+      perceptual.description = violation.description;
+    if (violation.category !== undefined)
+      perceptual.category = violation.category;
+    entry.perceptual = perceptual;
   }
   return entry;
 }
@@ -1376,7 +1402,22 @@ function summaryFor(violation) {
     );
   }
   if (violation.kind === "perceptual-finding") {
-    return `Perceptual: ${violation.element} on ${violation.screen} — mockup: ${violation.mockupValue}; actual: ${violation.actualValue}`.slice(
+    // feat-068 followup — handle the optional mockupValue/actualValue case.
+    // Prefer the mockup-vs-actual split when present; fall back to
+    // description; finally fall back to element-only.
+    if (violation.mockupValue && violation.actualValue) {
+      return `Perceptual: ${violation.element} on ${violation.screen} — mockup: ${violation.mockupValue}; actual: ${violation.actualValue}`.slice(
+        0,
+        200,
+      );
+    }
+    if (violation.description) {
+      return `Perceptual: ${violation.element} on ${violation.screen} — ${violation.description}`.slice(
+        0,
+        200,
+      );
+    }
+    return `Perceptual: ${violation.element} on ${violation.screen}`.slice(
       0,
       200,
     );

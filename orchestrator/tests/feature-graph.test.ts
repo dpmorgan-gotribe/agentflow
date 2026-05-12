@@ -53,6 +53,7 @@ function makeCtx(
     runFixBugsLoop: (
       ctx: import("../src/fix-bugs-loop.js").FixBugsLoopContext,
     ) => Promise<import("../src/fix-bugs-loop.js").FixBugsLoopResult>;
+    useRoundsOrchestration: boolean;
   }> = {},
 ) {
   return {
