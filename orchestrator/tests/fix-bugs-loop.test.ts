@@ -2730,3 +2730,278 @@ describe("bug-091 — protected-files guard", () => {
     }
   });
 });
+
+// bug-089 (2026-05-13) — auto-merge robustness. When the fix-bugs loop
+// reaches "clean" and tries to `git merge fix/bugs-yaml-iter → master`,
+// dirty working-tree files in projectRoot can block the merge. Pre-fix
+// behavior: silent single-line WARNING, loop reports "clean" anyway,
+// operator sees stale master with no visible failure signal.
+//
+// Phase A: status flips to "auto-merge-failed" + loud multi-line stderr
+//          summary + autoMergeBlockers names the files.
+// Phase B: when ALL blockers match the safe-reset whitelist
+//          (synthesized E2E specs / .claude/models.yaml / prisma DB files /
+//          .env), reset them + retry merge once.
+describe("bug-089 — auto-merge silent fail", () => {
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString();
+  }
+
+  function setupRepoWithFixupCommit(args: {
+    /** Files to ADD on the fixup branch (paths relative to projectRoot). */
+    fixupAdds: Record<string, string>;
+  }): {
+    repoRoot: string;
+    fixupWorktreePath: string;
+    cleanup: () => void;
+  } {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bug-089-repo-"));
+    git(repoRoot, "init -q -b master");
+    git(repoRoot, "config user.email test@example.com");
+    git(repoRoot, "config user.name Test");
+    git(repoRoot, "config commit.gpgsign false");
+
+    // Initial commit on master with just README + .claude/hooks scaffold
+    // (seedWorktree requires the hooks dir).
+    writeFileSync(join(repoRoot, "README.md"), "master v1\n");
+    const hooksDir = join(repoRoot, ".claude", "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    for (const h of [
+      "block-dangerous.sh",
+      "detect-loop.mjs",
+      "enforce-boundaries.sh",
+      "validate-brief.mjs",
+    ]) {
+      writeFileSync(join(hooksDir, h), "#!/bin/sh\n");
+    }
+    git(repoRoot, "add -A");
+    git(repoRoot, 'commit -q -m "initial"');
+
+    // Create fixup worktree on a new branch starting at master HEAD.
+    const fixupWorktreePath = join(repoRoot, ".claude", "worktrees", "fixup");
+    mkdirSync(join(repoRoot, ".claude", "worktrees"), { recursive: true });
+    git(repoRoot, `worktree add "${fixupWorktreePath}" -b fix/bugs-yaml-iter`);
+
+    // Add commit on fixup branch (inside the fixup worktree) — these
+    // are the "fixes" that need to merge back to master at close-out.
+    for (const [rel, content] of Object.entries(args.fixupAdds)) {
+      const abs = join(fixupWorktreePath, rel);
+      mkdirSync(
+        join(fixupWorktreePath, rel.split("/").slice(0, -1).join("/")),
+        {
+          recursive: true,
+        },
+      );
+      writeFileSync(abs, content);
+      git(fixupWorktreePath, `add ${rel.replace(/\\/g, "/")}`);
+    }
+    git(fixupWorktreePath, 'commit -q -m "fix-loop result"');
+
+    return {
+      repoRoot,
+      fixupWorktreePath,
+      cleanup: () => rmSync(repoRoot, { recursive: true, force: true }),
+    };
+  }
+
+  /** Seed bugs.yaml with a single ALREADY-COMPLETED bug so runFixBugsLoop
+   * has nothing pending → exits as "clean" → close-out fires. */
+  function seedCompletedBugYaml(repoRoot: string): string {
+    const path = join(repoRoot, "docs", "bugs.yaml");
+    mkdirSync(join(repoRoot, "docs"), { recursive: true });
+    writeFileSync(
+      path,
+      yaml.dump({
+        version: "1.0",
+        generated_at: new Date().toISOString(),
+        project_name: "test-project",
+        source_run_id: "run-test-089",
+        iteration: 1,
+        iteration_cap: 1,
+        bugs: [
+          makeBug({
+            id: "bug-parity-already-done",
+            agentSequence: ["bug-fixer"],
+            status: "completed",
+            resolvedInIteration: 1,
+          }),
+        ],
+      } satisfies BugsYaml),
+    );
+    return path;
+  }
+
+  let stderrCaptured: string[];
+  let origStderrWrite: typeof process.stderr.write;
+
+  beforeEach(() => {
+    stderrCaptured = [];
+    origStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      stderrCaptured.push(typeof chunk === "string" ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stderr.write;
+  });
+
+  afterEach(() => {
+    process.stderr.write = origStderrWrite;
+  });
+
+  it("clean tree → merge succeeds → status:clean + master has fixup commit + branch deleted", async () => {
+    const { repoRoot, cleanup } = setupRepoWithFixupCommit({
+      fixupAdds: { "apps/web/fix-marker.ts": "// fix landed\n" },
+    });
+    try {
+      const projectBugsYaml = seedCompletedBugYaml(repoRoot);
+      const invokeAgent: InvokeAgentFn = async () => ({
+        taskStatus: {},
+        errors: {},
+        costUsd: 0,
+      });
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      expect(result.status).toBe("clean");
+      expect(result.autoMergeBlockers).toBeUndefined();
+
+      // Master HEAD now contains the fixup commit's file.
+      expect(existsSync(join(repoRoot, "apps/web/fix-marker.ts"))).toBe(true);
+
+      // fix/bugs-yaml-iter branch was deleted after successful merge.
+      const branchList = execSync("git branch --list fix/bugs-yaml-iter", {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      expect(branchList.trim()).toBe("");
+
+      // No "AUTO-MERGE FAILED" banner in stderr.
+      const allStderr = stderrCaptured.join("");
+      expect(allStderr).not.toMatch(/AUTO-MERGE FAILED/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("whitelist blocker (.claude/models.yaml dirty) → Phase B resets + retries + status:clean", async () => {
+    // The fixup branch adds .claude/models.yaml. The working tree has the
+    // SAME file as untracked dirt that would be overwritten by merge.
+    // Both branches add the file = merge tries to bring it in. Working
+    // tree untracked file blocks. .claude/models.yaml is whitelisted →
+    // recovery rm's the untracked + retries.
+    const { repoRoot, cleanup } = setupRepoWithFixupCommit({
+      fixupAdds: { ".claude/models.yaml": "version: '1.0'\nfixup-content\n" },
+    });
+    try {
+      // Seed the SAME path in projectRoot as untracked dirt.
+      writeFileSync(
+        join(repoRoot, ".claude/models.yaml"),
+        "version: '1.0'\nlocal-dirt\n",
+      );
+
+      const projectBugsYaml = seedCompletedBugYaml(repoRoot);
+      const invokeAgent: InvokeAgentFn = async () => ({
+        taskStatus: {},
+        errors: {},
+        costUsd: 0,
+      });
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      expect(result.status).toBe("clean");
+      expect(result.autoMergeBlockers).toBeUndefined();
+
+      // Master now has the fixup version of .claude/models.yaml (not the
+      // pre-merge "local-dirt" working-tree version).
+      const finalContent = readFileSync(
+        join(repoRoot, ".claude/models.yaml"),
+        "utf8",
+      );
+      expect(finalContent).toContain("fixup-content");
+      expect(finalContent).not.toContain("local-dirt");
+
+      // Stderr surfaces the recovery (not the failure banner).
+      const allStderr = stderrCaptured.join("");
+      expect(allStderr).toMatch(/auto-merge recovered/);
+      expect(allStderr).toContain(".claude/models.yaml");
+      expect(allStderr).not.toMatch(/AUTO-MERGE FAILED/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("non-whitelist blocker (apps/web/src/wip.tsx dirty) → status:auto-merge-failed + blockers populated + loud stderr", async () => {
+    const { repoRoot, cleanup } = setupRepoWithFixupCommit({
+      fixupAdds: { "apps/web/src/wip.tsx": "// fixup wants this\n" },
+    });
+    try {
+      // Seed the same path as untracked operator WIP in projectRoot.
+      mkdirSync(join(repoRoot, "apps/web/src"), { recursive: true });
+      writeFileSync(
+        join(repoRoot, "apps/web/src/wip.tsx"),
+        "// operator WIP — must not be overwritten\n",
+      );
+
+      const projectBugsYaml = seedCompletedBugYaml(repoRoot);
+      const invokeAgent: InvokeAgentFn = async () => ({
+        taskStatus: {},
+        errors: {},
+        costUsd: 0,
+      });
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      // bug-089 Phase A — status flips to auto-merge-failed.
+      expect(result.status).toBe("auto-merge-failed");
+      expect(result.autoMergeBlockers).toBeDefined();
+      expect(result.autoMergeBlockers).toContain("apps/web/src/wip.tsx");
+
+      // Operator WIP is preserved (not overwritten).
+      const wipContent = readFileSync(
+        join(repoRoot, "apps/web/src/wip.tsx"),
+        "utf8",
+      );
+      expect(wipContent).toContain("operator WIP");
+
+      // Loud stderr banner present.
+      const allStderr = stderrCaptured.join("");
+      expect(allStderr).toMatch(/AUTO-MERGE FAILED/);
+      expect(allStderr).toContain("fix/bugs-yaml-iter");
+      expect(allStderr).toContain("apps/web/src/wip.tsx");
+      expect(allStderr).toMatch(/git stash -u/);
+      expect(allStderr).toMatch(/git merge --no-ff/);
+
+      // The fixup branch is PRESERVED (not deleted) so operator can recover.
+      const branchList = execSync("git branch --list fix/bugs-yaml-iter", {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      expect(branchList.trim()).toContain("fix/bugs-yaml-iter");
+    } finally {
+      cleanup();
+    }
+  });
+});

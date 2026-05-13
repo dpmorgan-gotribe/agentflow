@@ -61,7 +61,20 @@ export interface IterationSummary {
 }
 
 export interface FixBugsLoopResult {
-  status: "clean" | "iteration-cap-hit" | "all-bugs-failed" | "no-bugs";
+  status:
+    | "clean"
+    | "iteration-cap-hit"
+    | "all-bugs-failed"
+    | "no-bugs"
+    /**
+     * bug-089 (2026-05-13) — the bugs themselves resolved cleanly (would be
+     * "clean") but the final `git merge fix/bugs-yaml-iter → master` step
+     * failed because the working tree was dirty with non-whitelisted files.
+     * Fixes are stranded on the fixup branch; operator must merge manually.
+     * Stronger than "clean" because the operator-facing site review will see
+     * STALE master code until the manual merge happens.
+     */
+    | "auto-merge-failed";
   iterationsRun: number;
   bugsResolved: string[]; // bug ids
   bugsFailed: string[];
@@ -70,6 +83,12 @@ export interface FixBugsLoopResult {
   iterationLog: IterationSummary[];
   /** Final verify output (last iteration's verify pass), if any. */
   finalVerify?: BuildToSpecVerifyOutput;
+  /**
+   * bug-089 — when status === "auto-merge-failed", names the files that
+   * blocked the merge AND were not in the safe-reset whitelist. Operator
+   * uses this to decide stash-vs-restore-vs-investigate.
+   */
+  autoMergeBlockers?: string[];
 }
 
 export type RunBuildToSpecVerifyFn = (
@@ -978,13 +997,59 @@ export function closePerBugWorktree(args: {
  * a warning on the result rather than throwing (the loop's bug outcomes
  * are the actual source of truth, not the worktree state).
  */
+/**
+ * bug-089 (2026-05-13) — auto-merge recovery whitelist. Files in this list
+ * are "safe to reset before retrying the merge" because they're either
+ * regenerated on every fix-loop iteration (synthesized E2E specs), managed
+ * by the factory (.claude/models.yaml), or runtime artifacts (Prisma DB
+ * files). When the merge fails because these files are dirty in the working
+ * tree, the auto-recover path resets them + retries the merge once.
+ *
+ * Anything OUTSIDE this list is treated as operator WIP — the merge fails
+ * loud + the operator decides stash-vs-restore-vs-investigate.
+ */
+const AUTO_MERGE_SAFE_RESET_PATTERNS: readonly RegExp[] = [
+  /^apps\/web\/e2e\/synthesized\/.*\.spec\.ts$/,
+  /^\.claude\/models\.yaml$/,
+  /^apps\/api\/prisma\/data\/.*\.db$/,
+  /^apps\/api\/\.env(\.local)?$/,
+];
+
+/**
+ * bug-089 — return type of {@link closeFixupWorktree}. `mergeOutcome` is the
+ * load-bearing signal for the caller's status flip.
+ */
+type MergeOutcome =
+  /** Merge attempted + succeeded on the first try. */
+  | "merged"
+  /** mergeFirst was false (loop didn't exit clean) — merge intentionally skipped. */
+  | "skipped-no-merge"
+  /** Merge failed initially but Phase B reset whitelisted blockers + retry succeeded. */
+  | "recovered"
+  /** Merge failed AND non-whitelisted blockers exist — operator must resolve manually. */
+  | "blocked";
+
+interface CloseFixupOk {
+  ok: true;
+  mergeOutcome: MergeOutcome;
+  /** Non-whitelisted blockers when mergeOutcome === "blocked". */
+  blockers?: string[];
+}
+
+interface CloseFixupErr {
+  ok: false;
+  reason: string;
+}
+
 function closeFixupWorktree(args: {
   projectRoot: string;
   worktreePath: string;
   branch: string;
   mergeFirst: boolean;
-}): { ok: true } | { ok: false; reason: string } {
-  if (!existsSync(args.worktreePath)) return { ok: true };
+}): CloseFixupOk | CloseFixupErr {
+  if (!existsSync(args.worktreePath)) {
+    return { ok: true, mergeOutcome: "skipped-no-merge" };
+  }
   try {
     // bug-027: remove worktree FIRST. Empirically observed: when the
     // fixup worktree has the fix branch checked out, `git merge --no-ff
@@ -996,40 +1061,244 @@ function closeFixupWorktree(args: {
       cwd: args.projectRoot,
       stdio: ["ignore", "pipe", "pipe"],
     });
+
+    let mergeOutcome: MergeOutcome = "skipped-no-merge";
+    let blockers: string[] = [];
+
     if (args.mergeFirst) {
-      // Attempt to merge fixup branch back to master after worktree release.
-      try {
-        execSync(
-          `git merge --no-ff ${shellQuote(args.branch)} -m "merge ${args.branch} (fix-bugs-loop)"`,
-          { cwd: args.projectRoot, stdio: ["ignore", "pipe", "pipe"] },
-        );
-      } catch (mergeErr) {
-        // Conflict or no commits — surface as warning instead of silent
-        // (bug-027 root cause: prior code swallowed merge errors entirely,
-        // operators only noticed when checking master HEAD post-run).
-        const detail =
-          mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
-        process.stderr.write(
-          `[fix-bugs-loop] WARNING: auto-merge of ${args.branch} failed; fixes remain on the branch. Run \`git merge --no-ff ${args.branch}\` manually. Detail: ${detail}\n`,
-        );
+      const firstAttempt = tryGitMerge(args.projectRoot, args.branch);
+      if (firstAttempt.ok) {
+        mergeOutcome = "merged";
+      } else {
+        // bug-089 Phase B — attempt whitelist-driven recovery. Parse the
+        // blocker paths from git's stderr; if every blocker matches the
+        // safe-reset whitelist, reset them + retry the merge once.
+        const recovery = tryWhitelistRecovery({
+          projectRoot: args.projectRoot,
+          branch: args.branch,
+          firstAttemptStderr: firstAttempt.stderr,
+        });
+        if (recovery.ok) {
+          mergeOutcome = "recovered";
+          process.stderr.write(
+            `[fix-bugs-loop] auto-merge recovered: reset ${recovery.resetPaths.length} whitelisted blocker(s) (${recovery.resetPaths.join(", ")}) + retried merge successfully.\n`,
+          );
+        } else {
+          mergeOutcome = "blocked";
+          blockers = recovery.nonWhitelistedBlockers;
+          // bug-089 Phase A — loud operator-facing summary. The prior
+          // behavior emitted a single-line WARNING that operators routinely
+          // missed in long orchestrator logs. The new shape is multi-line +
+          // visually distinct + names the exact remediation steps.
+          const initialErr = firstAttempt.stderr.trim();
+          process.stderr.write(
+            [
+              "",
+              "⚠️  [fix-bugs-loop] AUTO-MERGE FAILED",
+              `    Branch \`${args.branch}\` did NOT merge into the project's master.`,
+              "    Fixes are STRANDED on the fixup branch. The site you boot",
+              "    will show STALE master code until you manually merge.",
+              "",
+              "    Non-whitelisted blockers (files that would be overwritten):",
+              ...blockers.map((b) => `      - ${b}`),
+              "",
+              "    Recovery options (pick one):",
+              "      1. Stash + merge:",
+              "           git stash -u",
+              `           git merge --no-ff ${args.branch}`,
+              "           git stash pop  # if you want the WIP back",
+              "      2. Inspect + restore the specific blockers, then merge:",
+              "           git status",
+              `           git restore <blocker-paths>  # only for files you don't need`,
+              `           git merge --no-ff ${args.branch}`,
+              "",
+              `    Initial git stderr: ${initialErr.slice(0, 400)}`,
+              "",
+            ].join("\n"),
+          );
+        }
       }
     }
-    try {
-      execSync(`git branch -D ${shellQuote(args.branch)}`, {
-        cwd: args.projectRoot,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch {
-      /* branch may have been merged + auto-cleaned, or merge failed and
-       operator wants to keep it for manual recovery */
+
+    // Branch cleanup — only when merge succeeded. On failure, KEEP the
+    // branch so the operator can complete the merge manually.
+    if (mergeOutcome === "merged" || mergeOutcome === "recovered") {
+      try {
+        execSync(`git branch -D ${shellQuote(args.branch)}`, {
+          cwd: args.projectRoot,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch {
+        /* branch may have been merged + auto-cleaned by git; harmless */
+      }
     }
-    return { ok: true };
+
+    const result: CloseFixupOk = { ok: true, mergeOutcome };
+    if (blockers.length > 0) result.blockers = blockers;
+    return result;
   } catch (err) {
     return {
       ok: false,
       reason: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+/** bug-089 — single-attempt git merge. Used by closeFixupWorktree for both
+ * the initial attempt and Phase B retry-after-recovery. Returns the captured
+ * stderr text on failure (NOT the execSync err.message, which only contains
+ * the command string + exit code — the actual git error is in err.stderr). */
+function tryGitMerge(
+  projectRoot: string,
+  branch: string,
+): { ok: true } | { ok: false; stderr: string } {
+  try {
+    execSync(
+      `git merge --no-ff ${shellQuote(branch)} -m "merge ${branch} (fix-bugs-loop)"`,
+      { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    return { ok: true };
+  } catch (err) {
+    // execSync attaches captured stdout/stderr to the thrown error when
+    // stdio is "pipe". Prefer that; fall back to err.message if not set.
+    const errObj = err as {
+      stderr?: Buffer | string;
+      stdout?: Buffer | string;
+      message?: string;
+    };
+    const stderrBuf = errObj.stderr;
+    const stdoutBuf = errObj.stdout;
+    const stderrText =
+      stderrBuf !== undefined
+        ? typeof stderrBuf === "string"
+          ? stderrBuf
+          : stderrBuf.toString("utf8")
+        : "";
+    const stdoutText =
+      stdoutBuf !== undefined
+        ? typeof stdoutBuf === "string"
+          ? stdoutBuf
+          : stdoutBuf.toString("utf8")
+        : "";
+    // git emits the "would be overwritten by merge" block to stdout on some
+    // platforms + stderr on others. Concatenate to be safe; the parser
+    // handles either source.
+    const captured = (stderrText + "\n" + stdoutText).trim();
+    return {
+      ok: false,
+      stderr: captured.length > 0 ? captured : (errObj.message ?? String(err)),
+    };
+  }
+}
+
+/**
+ * bug-089 — parse the file paths git names as merge blockers from its
+ * stderr. Two shapes git emits:
+ *
+ *   error: Your local changes to the following files would be overwritten by merge:
+ *           apps/api/.env.local
+ *   Please commit your changes or stash them before you merge.
+ *
+ *   error: The following untracked working tree files would be overwritten by merge:
+ *           apps/web/src/wip.tsx
+ *   Please move or remove them before you merge.
+ *
+ * Returns the list of blocker paths. Empty array if neither pattern matched
+ * (e.g. a different failure shape like signing failure, branch-already-merged,
+ * etc.) — caller treats empty list as "blocked but unknown why" + escalates.
+ */
+function parseMergeBlockers(stderr: string): string[] {
+  const blockers: string[] = [];
+  const re =
+    /(?:Your local changes to the following files|The following untracked working tree files) would be overwritten by merge:\s*\n([\s\S]*?)(?:\n[A-Z]|\nPlease |\nAborting|$)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(stderr)) !== null) {
+    const block = match[1] ?? "";
+    for (const line of block.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
+      blockers.push(trimmed.replace(/\\/g, "/"));
+    }
+  }
+  return blockers;
+}
+
+/**
+ * bug-089 Phase B — examine the files git named as merge blockers in the
+ * failed-merge stderr. If EVERY blocker matches the safe-reset whitelist,
+ * reset them (git checkout HEAD -- <file> for tracked, rm for untracked)
+ * + retry the merge. If ANY blocker is outside the whitelist, return its
+ * name so the caller can surface as a non-whitelisted blocker. The check
+ * is conservative: when in doubt, escalate to the operator rather than
+ * risk overwriting WIP.
+ */
+function tryWhitelistRecovery(args: {
+  projectRoot: string;
+  branch: string;
+  firstAttemptStderr: string;
+}):
+  | { ok: true; resetPaths: string[] }
+  | { ok: false; nonWhitelistedBlockers: string[] } {
+  const blockerPaths = parseMergeBlockers(args.firstAttemptStderr);
+  if (blockerPaths.length === 0) {
+    // Merge failed for a reason that didn't list specific blocker files
+    // (e.g. signing failure, "Already up to date", strategy error). Don't
+    // pretend we can recover; surface as blocked with empty list so the
+    // caller still flips status to auto-merge-failed.
+    return { ok: false, nonWhitelistedBlockers: [] };
+  }
+
+  const nonWhitelistedBlockers: string[] = [];
+  const whitelistedBlockers: string[] = [];
+  for (const path of blockerPaths) {
+    if (AUTO_MERGE_SAFE_RESET_PATTERNS.some((re) => re.test(path))) {
+      whitelistedBlockers.push(path);
+    } else {
+      nonWhitelistedBlockers.push(path);
+    }
+  }
+
+  if (nonWhitelistedBlockers.length > 0) {
+    return { ok: false, nonWhitelistedBlockers };
+  }
+
+  // All blockers are whitelisted — reset them. `git checkout HEAD -- <file>`
+  // restores tracked files to their HEAD-committed state. Untracked files
+  // (no HEAD version) need rm; we try checkout first + fall back to rm.
+  const resetPaths: string[] = [];
+  for (const path of whitelistedBlockers) {
+    try {
+      execSync(`git checkout HEAD -- ${shellQuote(path)}`, {
+        cwd: args.projectRoot,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      resetPaths.push(path);
+    } catch {
+      // Likely an untracked file (no HEAD version). Try rm.
+      try {
+        rmSync(join(args.projectRoot, path), { force: true });
+        resetPaths.push(path);
+      } catch {
+        // Couldn't reset. Escalate as a non-whitelisted-shaped failure so
+        // the caller surfaces the path to the operator.
+        return { ok: false, nonWhitelistedBlockers: [path] };
+      }
+    }
+  }
+
+  // Retry the merge with the working tree cleaned.
+  const retry = tryGitMerge(args.projectRoot, args.branch);
+  if (retry.ok) {
+    return { ok: true, resetPaths };
+  }
+  // Retry failed for a different reason. We did our best; surface as
+  // blocked so the operator gets a loud message.
+  return {
+    ok: false,
+    nonWhitelistedBlockers: [
+      `(post-reset merge retry still failed: ${retry.stderr.slice(0, 200)})`,
+    ],
+  };
 }
 
 /**
@@ -2255,13 +2524,26 @@ export async function runFixBugsLoop(
     }
   }
 
+  let autoMergeBlockers: string[] | undefined;
   if (!skipWorktreeManagement) {
-    closeFixupWorktree({
+    const close = closeFixupWorktree({
       projectRoot: ctx.projectRoot,
       worktreePath,
       branch: fixupBranch,
       mergeFirst: status === "clean",
     });
+    // bug-089 — when the loop reached "clean" but the post-loop merge was
+    // blocked by non-whitelisted dirty files, the fixes are stranded on
+    // the fixup branch. Flip status to "auto-merge-failed" so the caller
+    // (orchestrator + operator-facing logs) treats this as a non-clean
+    // exit. The bugs themselves are still resolved (bugsResolved stays
+    // populated) — but the integration to master didn't happen.
+    if (close.ok && close.mergeOutcome === "blocked") {
+      status = "auto-merge-failed";
+      if (close.blockers && close.blockers.length > 0) {
+        autoMergeBlockers = close.blockers;
+      }
+    }
   }
 
   const bugsResolved = doc.bugs
@@ -2283,5 +2565,6 @@ export async function runFixBugsLoop(
     totalCostUsd,
     iterationLog,
     ...(finalVerify ? { finalVerify } : {}),
+    ...(autoMergeBlockers ? { autoMergeBlockers } : {}),
   };
 }
