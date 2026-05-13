@@ -26,6 +26,10 @@ import {
   formatProtectedFileViolations,
   verifyProtectedFiles,
 } from "./protected-files.js";
+import {
+  ensureVerifyWorktree,
+  teardownVerifyWorktree,
+} from "./verify-worktree.js";
 
 /**
  * feat-026 — automated bug-fix loop runner.
@@ -2441,11 +2445,39 @@ export async function runFixBugsLoop(
     const preVerifyIds = new Set(doc.bugs.map((b) => b.id));
     const preVerifyByid = new Map(doc.bugs.map((b) => [b.id, { ...b }]));
 
+    // bug-090 — resolve the verify worktree's cwd. The verifier reads from
+    // a dedicated .claude/worktrees/verify/ checked out on fix/bugs-yaml-iter,
+    // so dev-server boot + parity + perceptual + flow execution all see the
+    // INTEGRATED post-merge-cascade state (not stale master). Bug-filing
+    // writes still target projectRoot so the loop's own bugs.yaml read/write
+    // loop stays at the operator-facing path. Falls back to projectRoot
+    // when the fixup branch doesn't exist (first iteration before any
+    // per-bug merges) — preserves pre-bug-090 behavior in that edge case.
+    let verifyProjectDir = ctx.projectRoot;
+    if (!skipWorktreeManagement) {
+      const ensure = ensureVerifyWorktree({
+        projectRoot: ctx.projectRoot,
+        fixupBranchName: fixupBranch,
+      });
+      if (ensure.ok) {
+        verifyProjectDir = ensure.cwd;
+      } else {
+        // Silent fallback — the loop's first iteration before any per-bug
+        // commits has no fixup branch yet, so this fires every fresh run.
+        // Not a warning-worthy event.
+      }
+    }
+
     // Re-run verify with iteration+1 so any newly-filed bugs are tagged
     // with the iteration they FIRST appeared in (not the one we just
     // ran fixes against).
     const verifyArgs: BuildToSpecVerifyContext = {
-      projectDir: ctx.projectRoot,
+      projectDir: verifyProjectDir,
+      // bug-090 — bug-filing writes go to projectRoot (the loop reads
+      // bugs.yaml from there) while reads happen against verifyProjectDir.
+      ...(verifyProjectDir !== ctx.projectRoot
+        ? { bugFilingProjectDir: ctx.projectRoot }
+        : {}),
       autoFileBugPlans: true,
       pipelineRunId: ctx.pipelineRunId,
       iteration: iteration + 1,
@@ -2526,6 +2558,12 @@ export async function runFixBugsLoop(
 
   let autoMergeBlockers: string[] | undefined;
   if (!skipWorktreeManagement) {
+    // bug-090 — tear down the verify worktree before close-out. Best-effort;
+    // if it lingers, the next run's ensureVerifyWorktree recovers via the
+    // orphan-recreate path. Must happen BEFORE closeFixupWorktree because
+    // closeFixupWorktree's `git branch -D fix/bugs-yaml-iter` would fail
+    // while a worktree (the verify one) still has that branch checked out.
+    teardownVerifyWorktree({ projectRoot: ctx.projectRoot });
     const close = closeFixupWorktree({
       projectRoot: ctx.projectRoot,
       worktreePath,

@@ -158,6 +158,17 @@ export interface BuildToSpecVerifyContext {
    * perceptual review is skipped (warning surfaced).
    */
   invokeAgent?: import("./feature-graph.js").InvokeAgentFn;
+  /**
+   * bug-090 — when set, bug-filing writes (docs/bugs.yaml + plans/active/)
+   * go to THIS path while everything else (reach + synth + dev-server +
+   * runFlows + parityVerify + perceptual) reads from `projectDir`. Lets the
+   * fix-bugs loop point projectDir at the dedicated verify worktree (fresh
+   * `fix/bugs-yaml-iter` state) while keeping the loop's own bugs.yaml
+   * read/write loop at the operator-facing projectRoot. Defaults to
+   * `projectDir` (pre-bug-090 behavior) when unset — preserves /start-build
+   * post-Mode-B verify semantics where there's no separate verify worktree.
+   */
+  bugFilingProjectDir?: string;
 }
 
 /**
@@ -309,6 +320,12 @@ export async function runBuildToSpecVerify(
   const factoryRoot = ctx.factoryRoot ?? process.cwd();
   const runScript = ctx.runScript ?? defaultRunScript;
   const projectDir = resolve(ctx.projectDir);
+  // bug-090 — bug-filing writes go here (default to projectDir for pre-
+  // bug-090 callers; fix-bugs-loop sets this explicitly to the operator's
+  // projectRoot when projectDir is the verify worktree).
+  const bugFilingProjectDir = ctx.bugFilingProjectDir
+    ? resolve(ctx.bugFilingProjectDir)
+    : projectDir;
 
   const warnings: string[] = [];
 
@@ -549,13 +566,20 @@ export async function runBuildToSpecVerify(
     const fileBugPlan: NonNullable<BuildToSpecVerifyContext["fileBugPlan"]> =
       ctx.fileBugPlan ??
       (async ({
-        projectDir: pd,
+        // bug-090: ignore the per-call projectDir (= verifyCwd in fix-loop
+        // dispatches) and write to the operator-facing bugFilingProjectDir
+        // instead. The verifier reads from projectDir but bug-filing writes
+        // (docs/bugs.yaml + plans/active/) must hit the loop-visible path
+        // so the next iteration sees new entries. When unset,
+        // bugFilingProjectDir falls back to projectDir (pre-bug-090).
+        projectDir: _ignoredCallerProjectDir,
         violation,
         relatedOrphan,
         pipelineRunId: prid,
         iteration: it,
         dependsOnBugId,
       }) => {
+        void _ignoredCallerProjectDir;
         const specifier = `../../scripts/file-bug-plan.mjs`;
         const mod = (await import(specifier)) as unknown as {
           fileBugPlan: (args: {
@@ -572,7 +596,7 @@ export async function runBuildToSpecVerify(
           }>;
         };
         const callArgs: Parameters<typeof mod.fileBugPlan>[0] = {
-          projectDir: pd,
+          projectDir: bugFilingProjectDir,
           violation,
         };
         if (relatedOrphan !== undefined) callArgs.relatedOrphan = relatedOrphan;
