@@ -3005,3 +3005,202 @@ describe("bug-089 — auto-merge silent fail", () => {
     }
   });
 });
+
+// bug-092 (2026-05-13) — mergeFirst gate too restrictive on partial-success.
+// Pre-bug-092 gate was `status === "clean"`; partial-success runs (some bugs
+// resolved + some failed → status flips to "all-bugs-failed" or
+// "iteration-cap-hit") stranded the resolved fixes on fix/bugs-yaml-iter.
+// New gate: merge whenever ANY bug resolved this run.
+describe("bug-092 — mergeFirst on partial success", () => {
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString();
+  }
+
+  function setupCleanRepo(): { repoRoot: string; cleanup: () => void } {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bug-092-repo-"));
+    git(repoRoot, "init -q -b master");
+    git(repoRoot, "config user.email test@example.com");
+    git(repoRoot, "config user.name Test");
+    git(repoRoot, "config commit.gpgsign false");
+    writeFileSync(join(repoRoot, "README.md"), "master v1\n");
+    const hooksDir = join(repoRoot, ".claude", "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    for (const h of [
+      "block-dangerous.sh",
+      "detect-loop.mjs",
+      "enforce-boundaries.sh",
+      "validate-brief.mjs",
+    ]) {
+      writeFileSync(join(hooksDir, h), "#!/bin/sh\n");
+    }
+    git(repoRoot, "add -A");
+    git(repoRoot, 'commit -q -m "initial"');
+    return {
+      repoRoot,
+      cleanup: () => rmSync(repoRoot, { recursive: true, force: true }),
+    };
+  }
+
+  it("partial success (1 resolved + 1 failed) → mergeFirst fires + master advances + status:all-bugs-failed", async () => {
+    const { repoRoot, cleanup } = setupCleanRepo();
+    try {
+      const bugA = makeBug({
+        id: "bug-parity-resolves-fine",
+        agentSequence: ["bug-fixer"],
+        maxAttempts: 1,
+      });
+      const bugB = makeBug({
+        id: "bug-parity-always-fails",
+        agentSequence: ["bug-fixer"],
+        maxAttempts: 1,
+      });
+      const projectBugsYaml = join(repoRoot, "docs", "bugs.yaml");
+      mkdirSync(join(repoRoot, "docs"), { recursive: true });
+      writeFileSync(
+        projectBugsYaml,
+        yaml.dump({
+          version: "1.0",
+          generated_at: new Date().toISOString(),
+          project_name: "test-project",
+          source_run_id: "run-test-092",
+          iteration: 1,
+          iteration_cap: 1,
+          bugs: [bugA, bugB],
+        } satisfies BugsYaml),
+      );
+
+      // Agent for bug-A commits a real fix → resolves. Agent for bug-B
+      // returns failure (taskOutcomes: failed) → bug burns its one attempt
+      // → transitionFailedDispatch returns "failed" (attempts >= maxAttempts)
+      // → bug.status = "failed" definitively.
+      const invokeAgent: InvokeAgentFn = async (a) => {
+        const cwd = a.cwd as string;
+        const bugId = a.tasks[0]!.id.replace(/-bug-fixer$/, "");
+        if (bugId === "bug-parity-resolves-fine") {
+          writeFileSync(
+            join(cwd, "fixed-by-bug-A.txt"),
+            "bug-A landed cleanly\n",
+          );
+          execSync("git add fixed-by-bug-A.txt", { cwd });
+          execSync('git commit -q -m "fix: resolve bug-A" --no-verify', {
+            cwd,
+          });
+          return {
+            stage: a.agent,
+            taskStatus: { [a.tasks[0]!.id]: "completed" },
+            taskRetryRequests: {},
+            errors: {},
+            costUsd: 0.01,
+            durationMs: 1,
+          };
+        }
+        // bug-B path: report failed (no commit).
+        return {
+          stage: a.agent,
+          taskStatus: { [a.tasks[0]!.id]: "failed" },
+          taskRetryRequests: {},
+          errors: { [a.tasks[0]!.id]: "synthetic test failure" },
+          costUsd: 0.01,
+          durationMs: 1,
+        };
+      };
+
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      // Loop terminates "all-bugs-failed" because bug-B is definitively failed
+      // (no pending remaining). But bug-A resolved, so master should advance.
+      expect(result.status).toBe("all-bugs-failed");
+      expect(result.bugsResolved).toContain("bug-parity-resolves-fine");
+      expect(result.bugsFailed).toContain("bug-parity-always-fails");
+
+      // bug-092 — the merge attempt fired (mergeFirst=true via the new
+      // anyResolved gate) and succeeded. Master HEAD advanced to include
+      // bug-A's fix commit.
+      expect(existsSync(join(repoRoot, "fixed-by-bug-A.txt"))).toBe(true);
+
+      // fix/bugs-yaml-iter was deleted post-successful merge (closeFixupWorktree
+      // branch -D path). This is the proof that mergeOutcome === "merged".
+      const branchList = execSync("git branch --list fix/bugs-yaml-iter", {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      expect(branchList.trim()).toBe("");
+
+      // status is "all-bugs-failed" (bug-B failed) but autoMergeBlockers is
+      // undefined (the merge SUCCEEDED — partial progress landed). That's
+      // the proper signal pattern: status reports loop terminal state +
+      // autoMergeBlockers is the merge-attempt outcome.
+      expect(result.autoMergeBlockers).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("zero resolved (all failed) → mergeFirst stays false + master unchanged + fix branch preserved", async () => {
+    // Regression-baseline: when NO bugs resolved, the new gate must still
+    // skip the merge (no point merging an empty fixup branch).
+    const { repoRoot, cleanup } = setupCleanRepo();
+    try {
+      const masterShaBefore = git(repoRoot, "rev-parse HEAD").trim();
+      const bugA = makeBug({
+        id: "bug-parity-only-fails",
+        agentSequence: ["bug-fixer"],
+        maxAttempts: 1,
+      });
+      const projectBugsYaml = join(repoRoot, "docs", "bugs.yaml");
+      mkdirSync(join(repoRoot, "docs"), { recursive: true });
+      writeFileSync(
+        projectBugsYaml,
+        yaml.dump({
+          version: "1.0",
+          generated_at: new Date().toISOString(),
+          project_name: "test-project",
+          source_run_id: "run-test-092",
+          iteration: 1,
+          iteration_cap: 1,
+          bugs: [bugA],
+        } satisfies BugsYaml),
+      );
+
+      const invokeAgent: InvokeAgentFn = async (a) => ({
+        stage: a.agent,
+        taskStatus: { [a.tasks[0]!.id]: "failed" },
+        taskRetryRequests: {},
+        errors: { [a.tasks[0]!.id]: "synthetic failure" },
+        costUsd: 0.01,
+        durationMs: 1,
+      });
+
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      expect(result.status).toBe("all-bugs-failed");
+      expect(result.bugsResolved).toEqual([]);
+      expect(result.bugsFailed).toContain("bug-parity-only-fails");
+
+      // Master unchanged (nothing to merge).
+      const masterShaAfter = git(repoRoot, "rev-parse HEAD").trim();
+      expect(masterShaAfter).toBe(masterShaBefore);
+    } finally {
+      cleanup();
+    }
+  });
+});

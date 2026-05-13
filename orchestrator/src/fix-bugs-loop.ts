@@ -2564,11 +2564,23 @@ export async function runFixBugsLoop(
     // closeFixupWorktree's `git branch -D fix/bugs-yaml-iter` would fail
     // while a worktree (the verify one) still has that branch checked out.
     teardownVerifyWorktree({ projectRoot: ctx.projectRoot });
+    // bug-092 — mergeFirst gates the post-loop attempt to land fix/bugs-yaml-iter
+    // back on master. Pre-bug-092 gate was `status === "clean"` — too narrow:
+    // partial-success runs (some bugs resolved, some failed → status flips to
+    // "all-bugs-failed" or "iteration-cap-hit") stranded the resolved fixes on
+    // the fixup branch. The empirical signal from feat-066 v2 Phase 1 empirical
+    // re-run #1 (2026-05-13): tooling-config-mismatch resolved + tooling-test-
+    // seed-contract-broken failed → status="all-bugs-failed" → mergeFirst=false
+    // → fix never reached master. Bug-089's loud-banner contract was subverted
+    // because no merge was even attempted. New gate: merge whenever ANY bug
+    // was resolved this run. bug-089's auto-merge robustness fires on the
+    // attempt; if no progress was made, mergeFirst=false (no-op, unchanged).
+    const anyResolved = doc.bugs.some((b) => b.status === "completed");
     const close = closeFixupWorktree({
       projectRoot: ctx.projectRoot,
       worktreePath,
       branch: fixupBranch,
-      mergeFirst: status === "clean",
+      mergeFirst: anyResolved,
     });
     // bug-089 — when the loop reached "clean" but the post-loop merge was
     // blocked by non-whitelisted dirty files, the fixes are stranded on
