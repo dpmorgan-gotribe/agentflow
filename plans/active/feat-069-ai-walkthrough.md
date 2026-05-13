@@ -156,9 +156,27 @@ The 2026-05-08 plan defines the approach; this section breaks it into shippable 
 - **feat-073** — rounds-orchestrator. Round 4 (behavioral) is feat-069's home; `enabledTiers: ALL_TIERS` already includes Tier 5. No round-state change needed.
 - **bug-090** — verify worktree (shipped 2026-05-13). The walkthrough script reads from the fresh-fix verify worktree, not stale projectRoot.
 - **bug-091/089/092** — Phase 1 correctness infrastructure (shipped 2026-05-13). All apply to walkthrough-divergence bugs that bug-fixer resolves.
-- **bug-094 — delete-fires-multiple-times** (filed 2026-05-13). The canonical empirical motivator. feat-069's first validation gate.
+- **bug-094 — delete-fires-multiple-times** (superseded 2026-05-13). Originally feat-069's first validation gate; today's empirical run produced 1 DELETE per click, not 6, contradicting the hypothesis. The real bug under the symptom (`bug-delete-content-type-400`) was attributed correctly by the walkthrough's agent.
 - **feat-071** — clusterer (planned). Sister Phase 2 work. Once feat-069 produces walkthrough-divergence findings, feat-071 folds related findings into single dispatches.
 
 ## Attempt Log
 
-<!-- Populated by executing agents. -->
+### 2026-05-13 — Phases A through F shipped + empirically validated
+
+Commits on `feat/vision-llm-perceptual-review`:
+
+- `d82eefb` Phase 1 — B.1 route sweep + dispatcher + agent
+- `05fb83e` Phase B.2 — interaction sweep (theme/search/delete/tab) + deterministic duplicate-request detector
+- `1ebb687` Phase B.3 — confirm-dialog flow + render-aware polling for delete-click + route restoration
+
+Validation surface (reading-log-02, 2026-05-13):
+
+- Standalone walkthrough runs ($0.35–$1.01 each, ~4–15 min): all 5 routes captured, interaction sweep produced delete-click + search-fill + tab-traversal manifest entries, DELETE events captured.
+- Full `/build-to-spec-verify` run with invokeAgent wired (`bfb4i16rd`, $1.50, 15.6 min): walkthrough fired as Tier 5, surfaced 4 findings, dup-detector caught duplicate-GET patterns deterministically without false-firing on the single DELETE per click.
+- `/fix-bugs reading-log-02 --max-concurrent=3` ($26.55, 5/5 iterations, status `clean`): walkthrough-divergence bugs entered the rounds-orchestrator's round 4 lane; bug-fixer dispatches resolved real findings, escalated false positives correctly via convergence detector.
+
+Empirical proof of leverage: the agent traced the project-side `bug-delete-content-type-400` (Content-Type-on-body-less-DELETE → 400 rejection → user-visible "delete does nothing") in one walkthrough pass. No other tier (parity, perceptual) catches this — both are read-only. This finding alone justifies the entire Tier 5 stack.
+
+### Decision
+
+Phases A–F closed as shipped. Phase G (operator-triggerable standalone) is deferred to a future polish phase; the existing `orchestrator/scripts/run-walkthrough.ts` operator script (promoted from `_tmp-` on 2026-05-13) covers the operator-needs surface for now. Phase H (MCP variant) remains indefinitely deferred — CLI variant is the load-bearing channel.
