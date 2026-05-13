@@ -518,8 +518,13 @@ function specForFlowInteractions(flow, flowIndex, strategy) {
       // an explicit base, request.post("/test/cleanup") goes to the frontend
       // which returns a 404 Next.js page → throws "feat-050 cleanup failed:
       // 404". Use the same env var as seed-db.ts helpers for consistency.
+      //
+      // bug-096 (2026-05-13) hardening: use `||` (not `??`) so empty-string
+      // env values trigger the fallback. Check BOTH `NEXT_PUBLIC_API_BASE_URL`
+      // and `NEXT_PUBLIC_API_BASE` — project scaffolds set the latter, but
+      // some test runners propagate the former. Either resolves correctly.
       lines.push(
-        `    const __apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";`,
+        `    const __apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE || "http://localhost:3001";`,
       );
       const tables = JSON.stringify(reqState.tablesToCleanup);
       lines.push(
@@ -557,7 +562,7 @@ function specForFlowInteractions(flow, flowIndex, strategy) {
         `    // Restore baseline so subsequent flows see clean state.`,
       );
       lines.push(
-        `    const __apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";`,
+        `    const __apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE || "http://localhost:3001";`,
       );
       lines.push(
         `    const restoreRes = await request.post(\`\${__apiBase}/test/seed-baseline\`, { data: {} });`,

@@ -1,20 +1,21 @@
 ---
 id: bug-096-bug-052-apibase-env-regression
 type: bug
-status: draft
+status: completed
 author-agent: human
 created: 2026-05-13
 updated: 2026-05-13
-parent-plan: feat-066-fix-loop-effectiveness-v2 (v2-Phase-3 lead candidate)
+outcome: empirically not reproducible post-bug-097 ship — synthesizer hardened with || + dual env-name fallback as defense-in-depth
+parent-plan: feat-066-fix-loop-effectiveness-v2 (v2-Phase-3)
 supersedes: null
 superseded-by: null
 branch: fix/bug-052-apibase-regression
 affected-files:
   - scripts/synthesize-flow-e2e.mjs
-  - scripts/run-synthesized-flows.mjs
+  - orchestrator/tests/synthesize-flow-e2e.test.ts
 feature-area: orchestrator/verifier-flows
 priority: P0
-attempt-count: 0
+attempt-count: 1
 max-attempts: 5
 error-message: 'All 6 synthesized flow specs fail at step 0 with ''feat-050 cleanup failed: 404: <!DOCTYPE html><html lang=en>...'' — the body is Next.js dev-server HTML, meaning the cleanup request hit :3000 (frontend) instead of :3001 (Fastify API). The synthesizer''s bug-052 fix emitted `process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001"` but somehow the request still lands on :3000.'
 reproduction-steps: "1. Generate a project with Strategy-C test-seed contract (any node-fastify or python-fastapi backend). 2. Run /build-to-spec-verify against it. 3. Inspect docs/_tmp-verify-output.json: flows[].failed[].message will start with 'feat-050 cleanup failed: 404' and the body will be Next.js HTML rather than a Fastify 404 JSON response."
@@ -84,4 +85,46 @@ Hypothesis #1 is the most likely, but the fact that the hardcoded fallback to `:
 
 ## Attempt Log
 
-<!-- Populated by executing agents. -->
+### 2026-05-13 — diagnostic + defense-in-depth, hypothesis falsified
+
+**Diagnostic run** (post-bug-097 ship, dev-servers up, env=1):
+
+```
+$ cd projects/reading-log-02/apps/web
+$ DEBUG=pw:api pnpm exec playwright test e2e/synthesized/flow-1.spec.ts --reporter=line
+
+pw:api → POST http://localhost:3001/test/seed-baseline  ← 204 No Content (globalSetup)
+pw:api → POST http://127.0.0.1:3001/test/seed
+pw:api → POST http://localhost:3001/test/cleanup        ← 204 No Content (flow-1 beforeAll)
+```
+
+All `/test/*` requests resolve to `:3001` and return `204`. The cleanup that was failing this morning with "404 + Next.js HTML body" no longer reproduces.
+
+**Most likely root cause of the original observation**: bug-097's `ENABLE_TEST_SEED=0` state caused the Fastify backend to NOT register the `/test/*` routes. When the verifier dispatched the synthesized spec, Playwright reused the existing (pre-booted by the orchestrator) backend instance — which didn't have `/test/cleanup` registered. The 404 came back. The HTML-body-from-Next.js part remains a mystery but is plausibly an artifact of the orchestrator's pre-boot routing layer or `reuseExistingServer` cross-wiring between the two webServer entries in `playwright.config.ts`.
+
+**Defense-in-depth landed** (independent of root cause, since the original observation was real):
+
+Updated `scripts/synthesize-flow-e2e.mjs` apiBase resolution from:
+
+```js
+const __apiBase =
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+```
+
+to:
+
+```js
+const __apiBase =
+  process.env.NEXT_PUBLIC_API_BASE_URL ||
+  process.env.NEXT_PUBLIC_API_BASE ||
+  "http://localhost:3001";
+```
+
+Two improvements:
+
+1. **`||` instead of `??`**: empty-string env values trigger the fallback. `??` only fires on nullish (`undefined` / `null`).
+2. **Dual env-name lookup**: project scaffolds set `NEXT_PUBLIC_API_BASE` (no `_URL` suffix); some test runners propagate `NEXT_PUBLIC_API_BASE_URL`. Either resolves correctly now.
+
+Test added (`orchestrator/tests/synthesize-flow-e2e.test.ts`): asserts the synthesized spec contains the exact `||` + dual-env-name + hardcoded fallback expression.
+
+Suite: 31/31 synthesizer + 944/944 full orchestrator suite pass.

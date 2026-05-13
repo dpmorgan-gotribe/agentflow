@@ -1042,6 +1042,12 @@ describe("synthesize-flow-e2e — per-flow requiredState (feat-050 Phase B)", ()
     ).toBeNull();
     expect(spec).toContain("test.afterAll(async ({ request })");
     expect(spec).toContain("request.post(`${__apiBase}/test/seed-baseline`");
+    // bug-096 (2026-05-13): apiBase resolution uses `||` (not `??`) so
+    // empty-string env values fall through; checks BOTH _URL-suffixed and
+    // unsuffixed forms because project scaffolds vary on the env name.
+    expect(spec).toContain(
+      `process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE || "http://localhost:3001"`,
+    );
   });
 
   it("requiredState.kind='custom' emits cleanup + seed with fixtures + restore", () => {
