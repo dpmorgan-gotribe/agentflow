@@ -187,10 +187,12 @@ Replaced the hardcoded element-name list with a regex heuristic. Architecture:
 - **Element-name heuristic**: any category matching `/^[a-z]+(-[a-z]+)*$/` that isn't in any explicit set above → systemic-fixer. Catches book-list-item AND task-card AND invoice-row AND every-future-project's-element-vocabulary uniformly.
 
 Edge cases handled:
+
 - `(no-category)` placeholder with parens → regex fails → bug-fixer (safe default)
 - Empty string / mixed-case / non-string → regex fails → bug-fixer
 
 Final tests:
+
 - bug-088 tests using book-list-item / search / nav still pass (the heuristic matches them)
 - NEW test: `task-card` (kanban project) → systemic-fixer (project-agnostic generalization)
 - NEW test: `(no-category)` → bug-fixer (heuristic edge case)

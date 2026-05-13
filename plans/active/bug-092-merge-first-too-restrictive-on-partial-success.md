@@ -34,6 +34,7 @@ The bug: partial-success runs are routine. Systemic bugs sometimes resolve, some
 **Empirical confirmation (reading-log-02 /fix-bugs run 2026-05-13, post-bug-089/090/091 ship):**
 
 Two pending pre-verify systemic bugs dispatched:
+
 - `tooling-config-mismatch`: systemic-fixer committed `9c5c3a3 fix(tooling): add missing postcss.config.mjs and remove output:export from next.config.ts` → merged into `fix/bugs-yaml-iter` at `14ea7b6` ✓
 - `tooling-test-seed-contract-broken`: agent hit "no SDK message in 110s + 118s" rate-limit/stall → bug-082 unverified-completion guard caught empty commit → marked failed
 
@@ -61,6 +62,7 @@ Bug-fix loop:
 (Aggregated reporting from rounds-orchestrator dedup-bug aside, the underlying per-runFixBugsLoop status was `all-bugs-failed` for the round that actually dispatched work. `mergeFirst` gated on that status and skipped the merge.)
 
 State post-run:
+
 ```
 $ git -C projects/reading-log-02 log master..fix/bugs-yaml-iter --oneline
 14ea7b6 merge fix/bug-compile-pre-verify-tooling-config-mismatch into fix/bugs-yaml-iter
@@ -79,7 +81,7 @@ const close = closeFixupWorktree({
   projectRoot: ctx.projectRoot,
   worktreePath,
   branch: fixupBranch,
-  mergeFirst: status === "clean",   // ← TOO RESTRICTIVE
+  mergeFirst: status === "clean", // ← TOO RESTRICTIVE
 });
 ```
 
@@ -88,6 +90,7 @@ const close = closeFixupWorktree({
 The intent of `mergeFirst` is "should we attempt to land the loop's work on master?" — which is YES whenever ANY resolved bug produced a real commit. The current gate equates "loop fully clean" with "any progress to ship", which is wrong.
 
 Why the bug didn't surface earlier:
+
 - Pre-rounds-orchestrator (feat-073), the loop ran ONCE per `/fix-bugs` invocation. Either all bugs resolved (`clean`, merge fires) or all failed (`all-bugs-failed`, merge skipped — semantically reasonable: nothing to merge).
 - Post-rounds-orchestrator, the loop runs N times (once per outer iteration). Round-state-gated dispatches mean each inner-loop call can produce mixed outcomes — some resolved, some failed — but the `status` aggregation summarizes the WHOLE picture and ignores per-iteration partial success.
 - bug-089 added auto-merge robustness on the merge ATTEMPT path. It didn't change the merge-gate. The gate stays narrow → bug-089's loud-banner never fires for partial-success runs.
@@ -121,6 +124,7 @@ const close = closeFixupWorktree({
 Why "any" not "any new this iteration": the fixup branch HOLDS the cumulative state across all rounds-orchestrator outer iterations. The merge needs to ship whatever's on the branch that isn't on master yet — regardless of whether THIS specific runFixBugsLoop call's iteration was responsible.
 
 Edge cases handled:
+
 - `bugsResolved.length === 0` (zero progress) → mergeFirst=false → existing behavior (no-op merge skipped).
 - `bugsResolved.length > 0` AND `status === "all-bugs-failed"` → mergeFirst=true → merge attempted. bug-089's whitelist recovery + loud banner fire correctly.
 - `bugsResolved.length > 0` AND `status === "iteration-cap-hit"` → same as above.
@@ -139,6 +143,7 @@ Add to `orchestrator/tests/fix-bugs-loop.test.ts` (in the bug-089 describe block
 ### Phase D — empirical re-validation (~$0 cost)
 
 Manual `git -C projects/reading-log-02 merge --no-ff fix/bugs-yaml-iter` to land the stranded fix from the 2026-05-13 run. Then re-run `/fix-bugs reading-log-02` against the remaining failed bug (seed-contract-broken). Validate:
+
 - The resolved bug DID land on master automatically (no manual merge needed).
 - If it fails again, bug-089's loud banner fires correctly.
 - If it resolves, master advances + bug count drops.
