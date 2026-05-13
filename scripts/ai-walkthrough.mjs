@@ -237,14 +237,27 @@ export async function runAiWalkthrough({
    * Find the first locator matching one of the given selectors that exists
    * AND is visible. Returns null if none match. Used by all interaction
    * helpers so detection failure is graceful.
+   *
+   * feat-069 B.3: scrollIntoViewIfNeeded BEFORE the visibility check so
+   * affordances rendered below the fold (Delete button at bottom of book
+   * detail page) get detected. Without this, the B.2 run missed the
+   * Delete button entirely.
    */
-  async function findFirstVisible(selectors) {
+  async function findFirstVisible(selectors, opts = {}) {
+    const { scopeLocator = null, scrollIntoView = true } = opts;
+    const root = scopeLocator ?? page;
     for (const sel of selectors) {
       try {
-        const loc = page.locator(sel).first();
-        if ((await loc.count()) > 0 && (await loc.isVisible())) {
-          return loc;
+        const loc = root.locator(sel).first();
+        if ((await loc.count()) === 0) continue;
+        if (scrollIntoView) {
+          try {
+            await loc.scrollIntoViewIfNeeded({ timeout: 1000 });
+          } catch {
+            /* element may not be scrollable; visibility check still authoritative */
+          }
         }
+        if (await loc.isVisible()) return loc;
       } catch {
         // Selector parse error → try next.
       }
@@ -340,30 +353,104 @@ export async function runAiWalkthrough({
   }
 
   /**
-   * Delete-click interaction. Looks for a delete affordance (book-detail
-   * route specifically), clicks it ONCE, captures the 2s window of
-   * network requests + a post-action screenshot. The bug-094 canonical
-   * detection — duplicate DELETE requests show as N entries in the
-   * network log for one click.
+   * Delete-click interaction. Looks for a delete affordance, clicks the
+   * trigger, then detects + clicks through a confirm dialog when present
+   * (the typical destructive-action pattern). Captures the time window
+   * across BOTH clicks + 2.5s settle so duplicate-request cascades in the
+   * network log fall inside one step's tsBefore/tsAfter range.
+   *
+   * The bug-094 canonical detection — empirical motivator: single click
+   * on the dialog's confirm produces 6 DELETE requests within 1.8s.
+   *
+   * feat-069 B.3:
+   *  - Widened trigger selectors (text-match with "Delete book" was missed
+   *    in B.2 due to scroll position; scrollIntoView in findFirstVisible
+   *    + extra text variants fix it).
+   *  - Confirm-dialog flow: after trigger, look for [role=dialog] /
+   *    [role=alertdialog] / a visible dialog container; inside it find
+   *    the destructive-confirm button and click it.
+   *  - Native confirm() dialogs still auto-accepted as fallback.
    */
   async function runDeleteClick(routeSlug) {
+    // Poll up to 3s for a Delete affordance. Empirical (reading-log-02
+    // book-detail): networkidle resolves before React's post-fetch re-render
+    // commits — Delete button isn't in the DOM at goto+500ms but appears
+    // ~1.5s later when loadBook's useEffect finishes its setState cycle.
+    // Without the poll the helper short-circuits on routes that DO carry a
+    // Delete affordance, silently skipping the bug-094 detection surface.
+    for (let i = 0; i < 6; i++) {
+      const c = await page
+        .locator('button:has-text("Delete")')
+        .count()
+        .catch(() => 0);
+      if (c > 0) break;
+      await page.waitForTimeout(500);
+    }
     const deleteBtn = await findFirstVisible([
       'button[aria-label*="delete" i]',
       'button:has-text("Delete")',
+      'button:text-matches("delete", "i")',
+      '[role="button"]:has-text("Delete")',
       '[data-action="delete"]',
+      '[data-action*="delete" i]',
     ]);
     if (!deleteBtn) return null;
     const step = nextStep();
     const tsBefore = Date.now();
     let screenshotPath = null;
+    let confirmedThroughDialog = false;
     try {
-      // Auto-confirm any browser-native confirm() dialog the click triggers,
-      // so the second-click confirm path proceeds without operator input.
-      // Many apps use window.confirm("Are you sure?") for destructive ops.
+      // Native window.confirm() fallback — many destructive flows use it.
       page.once("dialog", (dialog) => {
         dialog.accept().catch(() => {});
       });
+
+      // Step 1: click the trigger (likely opens a confirm dialog).
       await deleteBtn.click({ timeout: 5000 });
+      // Brief settle for dialog mount + Framer/Radix animation.
+      await page.waitForTimeout(400);
+
+      // Step 2: detect a confirm dialog. Common React patterns:
+      //   <div role="dialog" aria-labelledby="..." aria-modal="true">
+      //   <div role="alertdialog">
+      //   Headless UI / Radix / shadcn variants emit role=dialog.
+      const dialog = await findFirstVisible(
+        [
+          '[role="alertdialog"]',
+          '[role="dialog"]',
+          '[aria-modal="true"]',
+          // Some apps don't set role but use a class-based modal — last resort.
+          'div[class*="modal" i][class*="open" i]',
+          'div[class*="dialog" i]',
+        ],
+        { scrollIntoView: false },
+      );
+      if (dialog) {
+        // Inside the dialog, find the confirm button. The destructive
+        // confirm typically reuses the same verb ("Delete") OR uses
+        // "Confirm" / "Yes". Search the dialog scope only so we don't
+        // accidentally re-click the original trigger.
+        const confirmBtn = await findFirstVisible(
+          [
+            'button:has-text("Delete")',
+            'button:has-text("Confirm")',
+            'button:has-text("Yes")',
+            'button:has-text("OK")',
+            'button[data-variant="destructive"]',
+            'button[type="submit"]',
+          ],
+          { scopeLocator: dialog, scrollIntoView: false },
+        );
+        if (confirmBtn) {
+          await confirmBtn.click({ timeout: 5000 });
+          confirmedThroughDialog = true;
+        } else {
+          warnings.push(
+            `step ${step} (delete-click): confirm dialog detected but no confirm button matched — dialog may have a custom layout`,
+          );
+        }
+      }
+
       // Wait long enough for any duplicate-request cascade to land in the
       // network log (empirical bug-094: 6 DELETE requests within 1.8s).
       await page.waitForTimeout(2500);
@@ -381,6 +468,7 @@ export async function runAiWalkthrough({
       tsBefore,
       tsAfter: Date.now(),
       screenshotPath,
+      confirmedThroughDialog,
     };
   }
 
@@ -501,12 +589,23 @@ export async function runAiWalkthrough({
 
     // ── feat-069 B.2 interaction sweep — exercise common UI affordances
     // ── + capture evidence so the walkthrough-reviewer agent can find
-    // ── duplicate-request / no-op-control / keyboard-nav-skip behavior. ──
+    // ── duplicate-request / no-op-control / keyboard-nav-skip behavior.
+    //
+    // feat-069 B.3 ordering + route restoration:
+    //  - runDeleteClick runs BEFORE runSearchFill because global search
+    //    typically navigates (e.g. typing pushes ?q= and routes back to /).
+    //    On /books/[id] empirical: search-fill swept the page from the
+    //    book detail view to the filtered library list — subsequent delete
+    //    + tab helpers couldn't find the per-page affordances.
+    //  - After each helper that potentially navigates (any helper, really),
+    //    re-navigate to the original URL so the next helper sees the
+    //    declared route context.
+    // ──
     const interactionSteps = [];
     for (const helper of [
       runThemeToggle,
-      runSearchFill,
       runDeleteClick,
+      runSearchFill,
       runTabTraversal,
     ]) {
       try {
@@ -518,6 +617,18 @@ export async function runAiWalkthrough({
             screenId: route.screenId,
             url,
           });
+        }
+        if (page.url() !== url) {
+          try {
+            await page.goto(url, {
+              waitUntil: "domcontentloaded",
+              timeout: 15000,
+            });
+          } catch (navErr) {
+            warnings.push(
+              `re-navigate after interaction on ${url} failed: ${navErr instanceof Error ? navErr.message : String(navErr)}`,
+            );
+          }
         }
       } catch (err) {
         warnings.push(
