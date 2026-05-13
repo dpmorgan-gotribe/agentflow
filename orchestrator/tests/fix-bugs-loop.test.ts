@@ -14,6 +14,7 @@ import {
   type BugEntry,
   type BugsYaml,
   type BuildToSpecVerifyOutput,
+  BugsYamlSchema,
 } from "@repo/orchestrator-contracts";
 import { BudgetTracker } from "../src/budget-tracker.js";
 import { execSync } from "node:child_process";
@@ -2393,6 +2394,118 @@ describe("dispatchAgentsForBug — bug-082 unverified-completion guard", () => {
     // self-report is honored as before (preserves pre-bug-082 behavior
     // for tests + environments without git state).
     expect(result.bugsResolved).toEqual(["bug-orphan-nogit"]);
+  });
+
+  // bug-093 (2026-05-13) — TIGHTENED bug-082 guard. When the bug carries
+  // affectsFiles[], the diff must overlap with at least one entry; otherwise
+  // an agent could "fix" the bug by committing unrelated source changes
+  // (test repair, adjacent refactor, etc.) and pass bug-082's lenient check.
+  it("bug-093: accepts success when agent commits to a path in bug.affectsFiles", async () => {
+    gitInit();
+    writeBugsYamlDoc([
+      makeBug({
+        id: "bug-orphan-scope-match",
+        agentSequence: ["web-frontend-builder"],
+        affectsFiles: ["apps/api/.env.example"],
+      }),
+    ]);
+    let agentCallNum = 0;
+    const invoke: InvokeAgentFn = async (args) => {
+      agentCallNum++;
+      if (agentCallNum === 1) {
+        // Agent edits the EXACT file the bug names. Should pass.
+        makeRealCommit(
+          "apps/api/.env.example",
+          "PORT=3001\nENABLE_TEST_SEED=1\n",
+        );
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+    const result = await runFixBugsLoop(makeCtx(invoke, cleanVerify));
+    const doc = readBugsYamlDoc();
+    expect(doc.bugs[0]!.status).toBe("completed");
+    expect(result.bugsResolved).toEqual(["bug-orphan-scope-match"]);
+  });
+
+  it("bug-093: rejects success when agent commits to unrelated source paths (gaming pattern)", async () => {
+    gitInit();
+    writeBugsYamlDoc([
+      makeBug({
+        id: "bug-orphan-unrelated-source",
+        agentSequence: ["web-frontend-builder"],
+        affectsFiles: ["apps/api/.env.example"],
+      }),
+    ]);
+    let agentCallNum = 0;
+    const invoke: InvokeAgentFn = async (args) => {
+      agentCallNum++;
+      if (agentCallNum === 1) {
+        // Agent commits source change OUTSIDE bug.affectsFiles. Empirical
+        // reading-log-02 case: bug names apps/api/.env.example, agent
+        // commits b58f676 fix(tests) touching apps/web/components/*.test.tsx.
+        // bug-082's lenient guard accepted that; bug-093 rejects it.
+        makeRealCommit(
+          "apps/web/components/Foo.test.tsx",
+          "describe('Foo', () => { it('repaired drifted assertion', () => {}); });",
+        );
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+    const result = await runFixBugsLoop(
+      makeCtx(invoke, cleanVerify, { iterationCap: 1 }),
+    );
+    const doc = readBugsYamlDoc();
+    const bug = doc.bugs[0]!;
+    expect(bug.status).toBe("pending");
+    expect(bug.attempts).toBe(1);
+    const errorLogJoined = bug.errorLog.join(" ");
+    expect(errorLogJoined).toMatch(/silent-failure \(bug-093\)/);
+    expect(errorLogJoined).toMatch(/apps\/api\/\.env\.example/);
+    expect(errorLogJoined).toMatch(/apps\/web\/components\/Foo\.test\.tsx/);
+    expect(result.bugsResolved).toEqual([]);
+  });
+
+  it("bug-093: lenient fallback when affectsFiles is empty (preserves bug-082 behavior)", async () => {
+    gitInit();
+    writeBugsYamlDoc([
+      makeBug({
+        id: "bug-orphan-no-affects-files",
+        agentSequence: ["web-frontend-builder"],
+        // affectsFiles defaults to [] from the schema
+      }),
+    ]);
+    let agentCallNum = 0;
+    const invoke: InvokeAgentFn = async (args) => {
+      agentCallNum++;
+      if (agentCallNum === 1) {
+        // Any source change passes when affectsFiles is empty.
+        makeRealCommit(
+          "apps/web/components/SomeFile.tsx",
+          "export const Foo = 1;",
+        );
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+    const result = await runFixBugsLoop(makeCtx(invoke, cleanVerify));
+    expect(result.bugsResolved).toEqual(["bug-orphan-no-affects-files"]);
   });
 });
 

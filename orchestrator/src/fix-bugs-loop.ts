@@ -272,6 +272,47 @@ function diffContainsSourceChange(paths: readonly string[]): boolean {
 }
 
 /**
+ * bug-093 (2026-05-13) — TIGHTENING of `diffContainsSourceChange`.
+ *
+ * The bug-082 guard accepts ANY non-bookkeeping source touch as evidence
+ * of fix. Empirical case (reading-log-02 2026-05-13): an agent dispatched
+ * against `bug-compile-pre-verify-tooling-test-seed-contract-broken`
+ * (canonical fix: 1-line edit to `apps/api/.env.example`) committed
+ * `b58f676 fix(tests): repair drifted web test assertions` touching
+ * `apps/web/components/**.test.tsx` — completely unrelated. bug-082's
+ * guard accepted it. Loop marked the bug `resolved`. The actual env file
+ * was never touched.
+ *
+ * This helper tightens the check: when the bug carries `affectsFiles[]`,
+ * REQUIRE at least one changed path to overlap with that list (exact match
+ * OR prefix match for directories like `apps/api/`). Falls back to lenient
+ * `diffContainsSourceChange` when `affectsFiles[]` is empty (pre-bug-093
+ * behavior preserved for legacy bugs).
+ *
+ * Returns true when the dispatch's diff is acceptable as a real fix.
+ */
+function diffOverlapsBugScope(
+  paths: readonly string[],
+  affectsFiles: readonly string[],
+): boolean {
+  // Lenient fallback for bugs whose affectsFiles[] wasn't populated by
+  // the bug-filer. Equivalent to pre-bug-093 behavior.
+  if (affectsFiles.length === 0) {
+    return diffContainsSourceChange(paths);
+  }
+  return paths.some((p) =>
+    affectsFiles.some((scoped) => {
+      // Exact-path match: agent touched the bug's named file.
+      if (p === scoped) return true;
+      // Prefix match for directories. Both `apps/api/` and `apps/api`
+      // forms should match `apps/api/.env.example`.
+      const prefix = scoped.endsWith("/") ? scoped : scoped + "/";
+      return p.startsWith(prefix);
+    }),
+  );
+}
+
+/**
  * Open the shared fixup worktree on master. Uses the same `git worktree
  * add` pattern as `runCheckoutFeature` in invoke-agent.ts (cross-platform
  * shell quoting via `shellQuote`).
@@ -1594,6 +1635,23 @@ async function dispatchAgentsForPatternGroup(args: {
         );
         return { success: false, costUsd, errorLog };
       }
+      // bug-093 — TIGHTENED scope check for batched dispatch. Require the
+      // diff to overlap with the UNION of affectsFiles[] across the batch.
+      // Looser than per-bug overlap (any batched bug's scope satisfies)
+      // but still catches the "all unrelated source" gaming case.
+      const unionAffectsFiles = Array.from(
+        new Set(bugs.flatMap((b) => b.affectsFiles)),
+      );
+      if (
+        changedPaths !== null &&
+        unionAffectsFiles.length > 0 &&
+        !diffOverlapsBugScope(changedPaths, unionAffectsFiles)
+      ) {
+        errorLog.push(
+          `[unverified-completion] batched agent(s) [${agentSequence.join(", ")}] committed source changes but NONE overlap with the batch's union affectsFiles for pattern-batch ${pattern} (expected one of: ${unionAffectsFiles.join(", ")}; actually touched: ${changedPaths.join(", ")}); rejecting as silent-failure (bug-093)`,
+        );
+        return { success: false, costUsd, errorLog };
+      }
     }
   }
 
@@ -1755,6 +1813,20 @@ async function dispatchAgentsForBug(args: {
       if (changedPaths !== null && !diffContainsSourceChange(changedPaths)) {
         errorLog.push(
           `[unverified-completion] agent(s) [${bug.agentSequence.join(", ")}] committed but only touched bookkeeping paths (${changedPaths.join(", ")}); no source change — treating as silent-failure (bug-082)`,
+        );
+        return { success: false, costUsd, errorLog };
+      }
+      // bug-093 — TIGHTENED scope check. When `bug.affectsFiles[]` is
+      // populated, require the diff to overlap with it. Catches the
+      // "agent commits unrelated source to game the resolve-status"
+      // pattern that the lenient bug-082 guard misses.
+      if (
+        changedPaths !== null &&
+        bug.affectsFiles.length > 0 &&
+        !diffOverlapsBugScope(changedPaths, bug.affectsFiles)
+      ) {
+        errorLog.push(
+          `[unverified-completion] agent(s) [${bug.agentSequence.join(", ")}] committed source changes but NONE overlap with bug.affectsFiles (expected one of: ${bug.affectsFiles.join(", ")}; actually touched: ${changedPaths.join(", ")}); rejecting as silent-failure (bug-093)`,
         );
         return { success: false, costUsd, errorLog };
       }
