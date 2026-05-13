@@ -111,10 +111,53 @@ const runFlowsOk = async () => ({
   warnings: [],
 });
 
+// feat-068 / feat-073 added a dev-server pre-boot path (line ~412 in
+// build-to-spec-verify.ts) that runs whenever `executeFlows !== false` AND
+// generatedFiles.length > 0, OR whenever `runParity !== false`. The pre-boot
+// hits real filesystem + ports + waits up to 60s, which times out tests at
+// the 5s default vitest cap. Tests written before this path landed didn't
+// opt out, so they 5s-timeout in CI. This helper carries the opt-outs for
+// tests that don't exercise flows / parity / perceptual paths.
+// Tests that DO exercise one of those paths spread this helper + override
+// the specific field back (or pass an explicit stub, e.g. `parityVerify`).
+const BENIGN_NO_DEV_SERVER = {
+  executeFlows: false as const,
+  runParity: false as const,
+  runPerceptual: false as const,
+};
+
+// Variant for flow-execution tests: keep executeFlows default-on (so the
+// stubbed runFlows is reached), but still skip parity + perceptual which
+// would try to bootDevServer + 5s-timeout.
+const BENIGN_NO_PARITY_OR_PERCEPTUAL = {
+  runParity: false as const,
+  runPerceptual: false as const,
+};
+
+// Variant for parity tests: keep runParity default-on (so the stubbed
+// parityVerify is reached), skip flows + perceptual.
+const BENIGN_NO_FLOWS_OR_PERCEPTUAL = {
+  executeFlows: false as const,
+  runPerceptual: false as const,
+};
+
+// Fast-stub for the dev-server pre-boot. Tests that exercise flow execution
+// still trip `needsDevServer = true` (because executeFlows is default-on +
+// generatedFiles > 0) → without this stub the real bootDevServer fires
+// against an empty tmp dir + the test 5s-timeouts. This stub returns a
+// minimal handle whose teardown is a no-op.
+const stubBootDevServer = async () =>
+  ({
+    process: { kill: () => true } as never,
+    baseUrl: "http://localhost:3000",
+    startedAtMs: Date.now(),
+  }) as never;
+
 describe("runBuildToSpecVerify — happy path (no violations)", () => {
   it("returns ok:true when both scripts return zero violations", async () => {
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_DEV_SERVER,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -137,6 +180,7 @@ describe("runBuildToSpecVerify — happy path (no violations)", () => {
   it("captures synth's generated files into flows.generated[]", async () => {
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_DEV_SERVER,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -155,6 +199,7 @@ describe("runBuildToSpecVerify — violation routing", () => {
     const filed: string[] = [];
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_DEV_SERVER,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachWithViolations()
@@ -176,6 +221,7 @@ describe("runBuildToSpecVerify — violation routing", () => {
     const filed: string[] = [];
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_DEV_SERVER,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOrphanRoute()
@@ -196,6 +242,7 @@ describe("runBuildToSpecVerify — violation routing", () => {
     let called = 0;
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_DEV_SERVER,
       autoFileBugPlans: false,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
@@ -214,6 +261,7 @@ describe("runBuildToSpecVerify — violation routing", () => {
   it("surfaces fileBugPlan errors as warnings without aborting", async () => {
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_DEV_SERVER,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachWithViolations()
@@ -232,6 +280,7 @@ describe("runBuildToSpecVerify — script-output edge cases", () => {
   it("missing manifest in synth → warning surfaced + flows.generated stays empty", async () => {
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_DEV_SERVER,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -247,6 +296,7 @@ describe("runBuildToSpecVerify — script-output edge cases", () => {
   it("malformed reachability stdout → warning + empty arrays + ok:true", async () => {
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_DEV_SERVER,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? { stdout: "<<not-json>>", stderr: "", exitCode: 0 }
@@ -266,6 +316,7 @@ describe("runBuildToSpecVerify — script-output edge cases", () => {
   it("durationMs is non-negative and integer", async () => {
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_DEV_SERVER,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -283,6 +334,8 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
     let runFlowsCalled = 0;
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_PARITY_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -311,6 +364,8 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
     let runFlowsCalled = 0;
     await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_PARITY_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -331,7 +386,7 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
     let runFlowsCalled = 0;
     await runBuildToSpecVerify({
       projectDir,
-      executeFlows: false,
+      ...BENIGN_NO_DEV_SERVER,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -353,6 +408,8 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
     let lastBugViolation: { kind?: string } = {};
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_PARITY_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -391,6 +448,8 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
     let lastBugViolation: { kind?: string } = {};
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_PARITY_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -423,6 +482,8 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
     let bugPlansFiledCount = 0;
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_PARITY_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -451,6 +512,8 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
   it("flow failures contribute to ok:false even with zero orphans", async () => {
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_PARITY_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -491,6 +554,8 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
     const filed: { kind: string; relatedOrphan?: string }[] = [];
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_PARITY_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? // orphan path includes "modal" which matches the failed flow's
@@ -560,6 +625,8 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
   it("surfaces runFlows.warnings into top-level warnings[] (prefixed)", async () => {
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_PARITY_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -577,6 +644,8 @@ describe("runBuildToSpecVerify — flow-execution integration (feat-025)", () =>
   it("treats a thrown runFlows as a runtime-error tool-failure bug + ok:false (feat-056 Gap A)", async () => {
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_PARITY_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -605,6 +674,8 @@ describe("runBuildToSpecVerify — feat-027 cascade-root routing", () => {
     let seq = 0;
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_PARITY_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -692,6 +763,8 @@ describe("runBuildToSpecVerify — feat-027 cascade-root routing", () => {
     const filed: string[] = [];
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_PARITY_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -756,6 +829,8 @@ describe("runBuildToSpecVerify — feat-027 cascade-root routing", () => {
     const filed: Array<{ kind: string; dependsOnBugId?: string }> = [];
     await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_PARITY_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -822,6 +897,8 @@ describe("runBuildToSpecVerify — feat-027 cascade-root routing", () => {
     const filed: string[] = [];
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_PARITY_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
@@ -867,11 +944,12 @@ describe("runBuildToSpecVerify — parity-verify integration (feat-028)", () => 
     let parityCalls = 0;
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_FLOWS_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
           : stubSynthOk(),
-      executeFlows: false,
       parityVerify: async () => {
         parityCalls += 1;
         return {
@@ -920,11 +998,12 @@ describe("runBuildToSpecVerify — parity-verify integration (feat-028)", () => 
   it("flips top-level ok:false when parity has divergences (otherwise green)", async () => {
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_FLOWS_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
           : stubSynthOk(),
-      executeFlows: false,
       parityVerify: async () => ({
         ok: false,
         screensChecked: 1,
@@ -960,11 +1039,12 @@ describe("runBuildToSpecVerify — parity-verify integration (feat-028)", () => 
   it("propagates parity warnings into top-level warnings[]", async () => {
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_FLOWS_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
           : stubSynthOk(),
-      executeFlows: false,
       parityVerify: async () => ({
         ok: true,
         screensChecked: 0,
@@ -982,11 +1062,12 @@ describe("runBuildToSpecVerify — parity-verify integration (feat-028)", () => 
   it("captures parityVerify exceptions as warnings without aborting", async () => {
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_FLOWS_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
           : stubSynthOk(),
-      executeFlows: false,
       parityVerify: async () => {
         throw new Error("parity boom");
       },
@@ -1001,11 +1082,12 @@ describe("runBuildToSpecVerify — parity-verify integration (feat-028)", () => 
     const filed: string[] = [];
     await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_FLOWS_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
           : stubSynthOk(),
-      executeFlows: false,
       parityVerify: async () => ({
         ok: false,
         screensChecked: 2,
@@ -1060,12 +1142,13 @@ describe("runBuildToSpecVerify — parity-verify integration (feat-028)", () => 
     let calls = 0;
     const result = await runBuildToSpecVerify({
       projectDir,
+      ...BENIGN_NO_FLOWS_OR_PERCEPTUAL,
+      bootDevServer: stubBootDevServer,
       autoFileBugPlans: false,
       runScript: async ({ script }) =>
         script.includes("audit-app-reachability")
           ? stubReachOk()
           : stubSynthOk(),
-      executeFlows: false,
       parityVerify: async () => ({
         ok: false,
         screensChecked: 1,

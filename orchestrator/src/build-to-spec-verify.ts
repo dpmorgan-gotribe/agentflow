@@ -144,6 +144,14 @@ export interface BuildToSpecVerifyContext {
    */
   perceptualReview?: typeof import("./perceptual-review.js").runPerceptualReview;
   /**
+   * bug-091 follow-up — test seam replacing the dev-server pre-boot. Defaults
+   * to `bootDevServer` from `./dev-server.js`. Tests stub to skip the actual
+   * boot (which spawns processes + waits up to 60s for HTTP probes — kills
+   * test timeouts when an empty tmp project root can't satisfy the wait).
+   * Production keeps the real bootDevServer.
+   */
+  bootDevServer?: typeof import("./dev-server.js").bootDevServer;
+  /**
    * feat-068 — invokeAgent seam plumbed through from the orchestrator so
    * perceptualReview can dispatch the perceptual-reviewer agent with the
    * same SDK auth + budget tracking as fix-loop dispatches. When unset,
@@ -417,7 +425,8 @@ export async function runBuildToSpecVerify(
     try {
       const persistenceLayer = readPersistenceLayerSlug(projectDir);
       const bootTimeoutMs = persistenceLayer === "real-db" ? 180_000 : 60_000;
-      sharedDevServerHandle = await bootDevServer(projectDir, bootTimeoutMs);
+      const bootDevServerFn = ctx.bootDevServer ?? bootDevServer;
+      sharedDevServerHandle = await bootDevServerFn(projectDir, bootTimeoutMs);
       warnings.push(
         `dev-server: pre-booted at ${sharedDevServerHandle.baseUrl} (took ${Date.now() - sharedDevServerHandle.startedAtMs}ms)`,
       );

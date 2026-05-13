@@ -33,6 +33,24 @@ You patch ONE specific defect inside a per-bug worktree. The dispatch envelope p
 - **Don't run `pnpm install` / `pnpm lint` / full `pnpm typecheck` unless something genuinely fails.** The verifier will catch type errors on its own pass; you waste 30-90s per redundant typecheck.
 - **Don't emit JSX/TSX changes that violate `@repo/ui-kit` consumption** (per existing builder discipline). When in doubt, mirror the kit primitives the existing pre-loaded file uses.
 
+## Protected files — DO NOT DELETE OR EMPTY (bug-091)
+
+The factory ships load-bearing config files that downstream CSS compilation, build orchestration, dev-server boot, and test discovery DEPEND ON. Past dispatches have deleted these while reasoning that a config file was the source of unwanted behavior — silently regressing prior structural correctness (most empirically bug-077: deleting `apps/web/postcss.config.mjs` disables Tailwind utility compilation across the entire web app while typecheck + tests stay green).
+
+If you suspect a config file is causing your bug, FLAG it in your output's `errors` field — do NOT delete or rewrite it. A separate operator-routed fix is the correct path.
+
+Files in this category (canonical source: `orchestrator/src/protected-files.ts`):
+
+- `apps/web/postcss.config.{mjs,js,cjs,ts}` — Tailwind PostCSS entrypoint
+- `apps/web/tailwind.config.{ts,js}` — Tailwind content roots
+- `apps/web/next.config.{ts,mjs,js}` — Next routing/bundling
+- `apps/web/vitest.config.ts`, `apps/web/tsconfig.json` — bug-023 scaffold-owned
+- `apps/web/package.json`, `apps/api/package.json`, `package.json`, `packages/*/package.json`, `packages/*/tsconfig.json`, `pnpm-workspace.yaml`
+- `scripts/dev.mjs` — multi-tier dev orchestrator (bug-033 / bug-040)
+- `@tailwind base/components/utilities` directives in `packages/ui-kit/src/styles/globals.css` (content-level invariant — emptying the file is the same as deleting it)
+
+A post-dispatch invariant check rejects any commit that violates this list: your attempt is marked failed, the merge cascade is skipped, the violation is threaded into the next retry's context. Save yourself the retry — flag, don't delete. See `.claude/rules/protected-files-policy.md` for the policy doc.
+
 ## Stop conditions
 
 If you've made 5+ Edit calls and the bug still doesn't have an obvious fix, return `taskOutcomes.<task-id>: "failed"` with the blocker in `errors.<task-id>`. The orchestrator's retry ladder will re-dispatch with extra context.

@@ -2387,3 +2387,346 @@ describe("dispatchAgentsForBug — bug-082 unverified-completion guard", () => {
     expect(result.bugsResolved).toEqual(["bug-orphan-nogit"]);
   });
 });
+
+// bug-091 (2026-05-13) — protected-files guard. Agents in the /fix-bugs loop
+// dispatch chain (bug-fixer / systemic-fixer) have unrestricted Write/Edit
+// permissions and occasionally delete load-bearing config files (most
+// empirically: apps/web/postcss.config.mjs, reopening bug-077's Tailwind
+// pipeline gap). The verifyProtectedFiles call inserted between dispatch
+// and closePerBugWorktree catches the violation BEFORE the merge cascade,
+// so the bad commit never reaches fix/bugs-yaml-iter.
+describe("bug-091 — protected-files guard", () => {
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString();
+  }
+
+  function setupRepoWithProtectedFiles(): {
+    repoRoot: string;
+    fixupWorktreePath: string;
+    cleanup: () => void;
+  } {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bug-091-repo-"));
+    git(repoRoot, "init -q -b master");
+    git(repoRoot, "config user.email test@example.com");
+    git(repoRoot, "config user.name Test");
+    git(repoRoot, "config commit.gpgsign false");
+    writeFileSync(join(repoRoot, "README.md"), "v1\n");
+
+    // .claude/hooks scaffolding seedWorktree expects.
+    const hooksDir = join(repoRoot, ".claude", "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    for (const h of [
+      "block-dangerous.sh",
+      "detect-loop.mjs",
+      "enforce-boundaries.sh",
+      "validate-brief.mjs",
+    ]) {
+      writeFileSync(join(hooksDir, h), "#!/bin/sh\n");
+    }
+
+    // Protected-file scaffolding — bug-091's invariants need a baseline of
+    // protected files seeded so the guard's "happy state" is the post-
+    // setup state. The dispatched invokeAgent in each test mutates ONE
+    // file from this baseline.
+    const seed = (rel: string, content = "// scaffold\n"): void => {
+      const abs = join(repoRoot, rel);
+      mkdirSync(join(repoRoot, rel.split("/").slice(0, -1).join("/")), {
+        recursive: true,
+      });
+      writeFileSync(abs, content);
+    };
+    seed("apps/web/postcss.config.mjs");
+    seed("apps/web/tailwind.config.ts");
+    seed("apps/web/next.config.ts");
+    seed("apps/web/vitest.config.ts");
+    seed("apps/web/tsconfig.json", "{}\n");
+    seed("apps/web/package.json", "{}\n");
+    seed("apps/api/package.json", "{}\n");
+    seed("package.json", "{}\n");
+    seed("pnpm-workspace.yaml");
+    seed("scripts/dev.mjs");
+    seed("packages/ui-kit/package.json", "{}\n");
+    seed("packages/ui-kit/tsconfig.json", "{}\n");
+    seed(
+      "packages/ui-kit/src/styles/globals.css",
+      `@tailwind base;\n@tailwind components;\n@tailwind utilities;\nbody{margin:0}\n`,
+    );
+
+    git(repoRoot, "add -A");
+    git(repoRoot, 'commit -q -m "initial scaffold"');
+
+    const fixupWorktreePath = join(repoRoot, ".claude", "worktrees", "fixup");
+    mkdirSync(join(repoRoot, ".claude", "worktrees"), { recursive: true });
+    git(repoRoot, `worktree add "${fixupWorktreePath}" -b fix/bugs-yaml-iter`);
+
+    return {
+      repoRoot,
+      fixupWorktreePath,
+      cleanup: () => rmSync(repoRoot, { recursive: true, force: true }),
+    };
+  }
+
+  let stderrCaptured: string[];
+  let origStderrWrite: typeof process.stderr.write;
+
+  beforeEach(() => {
+    stderrCaptured = [];
+    origStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      stderrCaptured.push(typeof chunk === "string" ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stderr.write;
+  });
+
+  afterEach(() => {
+    process.stderr.write = origStderrWrite;
+  });
+
+  it("rejects a dispatch that deletes apps/web/postcss.config.mjs and skips the merge cascade", async () => {
+    const { repoRoot, cleanup } = setupRepoWithProtectedFiles();
+    try {
+      const bug = makeBug({
+        id: "bug-parity-postcss-delete",
+        agentSequence: ["bug-fixer"],
+      });
+      const projectBugsYaml = join(repoRoot, "docs", "bugs.yaml");
+      mkdirSync(join(repoRoot, "docs"), { recursive: true });
+      writeFileSync(
+        projectBugsYaml,
+        yaml.dump({
+          version: "1.0",
+          generated_at: new Date().toISOString(),
+          project_name: "test-project",
+          source_run_id: "run-test-091",
+          iteration: 1,
+          iteration_cap: 1,
+          bugs: [bug],
+        } satisfies BugsYaml),
+      );
+
+      // The agent dispatch DELETES the protected postcss config (the
+      // bug-077 regression empirical motivator). It reports success +
+      // commits the deletion — exactly the shape that historically
+      // landed on fix/bugs-yaml-iter undetected. We stage ONLY the
+      // protected-file deletion (not `git add -A`) so seedWorktree's
+      // untracked .claude/settings.json + apps/*/.env.local files don't
+      // sweep into the commit and trip the merge cascade independently.
+      const invokeAgent: InvokeAgentFn = async (a) => {
+        const cwd = a.cwd as string;
+        execSync(`git rm -q apps/web/postcss.config.mjs`, { cwd });
+        execSync(
+          `git commit -q -m "fix: drop postcss.config.mjs" --no-verify`,
+          {
+            cwd,
+          },
+        );
+        return {
+          stage: a.agent,
+          taskStatus: { [`${bug.id}-${a.agent}`]: "completed" },
+          taskRetryRequests: {},
+          errors: {},
+          costUsd: 0.01,
+          durationMs: 1,
+        };
+      };
+
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      // Bug must be reported failed; the deletion must NOT have landed on
+      // master (the loop's end-of-run closeFixupWorktree tears down the
+      // fixup worktree directory, so we assert against master at repoRoot).
+      expect(result.bugsResolved).toEqual([]);
+      expect(result.bugsFailed.length + result.bugsRemaining.length).toBe(1);
+
+      // Stderr must surface the bug-091 violation.
+      const allStderr = stderrCaptured.join("");
+      expect(allStderr).toMatch(/dispatch violated protected files/);
+      expect(allStderr).toMatch(/protected-files-violation/);
+      expect(allStderr).toContain("apps/web/postcss.config.mjs");
+
+      // Master must NOT have the deletion — the merge cascade was skipped
+      // so the violating per-bug commit never reached fix/bugs-yaml-iter,
+      // and therefore couldn't propagate to master.
+      expect(existsSync(join(repoRoot, "apps/web/postcss.config.mjs"))).toBe(
+        true,
+      );
+
+      // Errorlog on the bug must have the violation entry threaded in
+      // so the next retry's pre-loaded context surfaces WHY the prior
+      // attempt was rejected.
+      const finalDoc = yaml.load(
+        readFileSync(projectBugsYaml, "utf8"),
+      ) as BugsYaml;
+      const finalBug = finalDoc.bugs.find((b) => b.id === bug.id);
+      expect(finalBug?.errorLog ?? []).toContainEqual(
+        expect.stringContaining("[protected-files-violation]"),
+      );
+      expect(finalBug?.errorLog ?? []).toContainEqual(
+        expect.stringContaining("apps/web/postcss.config.mjs"),
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("rejects a dispatch that strips @tailwind directives from globals.css (missing-content invariant)", async () => {
+    const { repoRoot, cleanup } = setupRepoWithProtectedFiles();
+    try {
+      const bug = makeBug({
+        id: "bug-parity-tailwind-strip",
+        agentSequence: ["systemic-fixer"],
+      });
+      const projectBugsYaml = join(repoRoot, "docs", "bugs.yaml");
+      mkdirSync(join(repoRoot, "docs"), { recursive: true });
+      writeFileSync(
+        projectBugsYaml,
+        yaml.dump({
+          version: "1.0",
+          generated_at: new Date().toISOString(),
+          project_name: "test-project",
+          source_run_id: "run-test-091",
+          iteration: 1,
+          iteration_cap: 1,
+          bugs: [bug],
+        } satisfies BugsYaml),
+      );
+
+      // The agent strips the @tailwind directives (the OTHER bug-077
+      // regression motif — file present but emptied). The deletion
+      // wouldn't trip a presence check; the content-invariant catches it.
+      // Stage ONLY this file — see test 1's note on seedWorktree leftovers.
+      const invokeAgent: InvokeAgentFn = async (a) => {
+        const cwd = a.cwd as string;
+        writeFileSync(
+          join(cwd, "packages/ui-kit/src/styles/globals.css"),
+          `body { margin: 0; }\n`,
+        );
+        execSync(`git add packages/ui-kit/src/styles/globals.css`, { cwd });
+        execSync(`git commit -q -m "fix: trim globals.css" --no-verify`, {
+          cwd,
+        });
+        return {
+          stage: a.agent,
+          taskStatus: { [`${bug.id}-${a.agent}`]: "completed" },
+          taskRetryRequests: {},
+          errors: {},
+          costUsd: 0.01,
+          durationMs: 1,
+        };
+      };
+
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      expect(result.bugsResolved).toEqual([]);
+      const allStderr = stderrCaptured.join("");
+      expect(allStderr).toMatch(/dispatch violated protected files/);
+      expect(allStderr).toContain("packages/ui-kit/src/styles/globals.css");
+      expect(allStderr).toContain("@tailwind");
+
+      // Master's globals.css must STILL contain the directives — the
+      // violating per-bug commit didn't reach fix/bugs-yaml-iter and
+      // therefore didn't propagate to master.
+      const masterGlobalsCss = readFileSync(
+        join(repoRoot, "packages/ui-kit/src/styles/globals.css"),
+        "utf8",
+      );
+      expect(masterGlobalsCss).toContain("@tailwind base");
+      expect(masterGlobalsCss).toContain("@tailwind components");
+      expect(masterGlobalsCss).toContain("@tailwind utilities");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("allows a benign dispatch (no protected-file mutation) to merge normally — regression baseline", async () => {
+    const { repoRoot, cleanup } = setupRepoWithProtectedFiles();
+    try {
+      const bug = makeBug({
+        id: "bug-parity-benign",
+        agentSequence: ["bug-fixer"],
+      });
+      const projectBugsYaml = join(repoRoot, "docs", "bugs.yaml");
+      mkdirSync(join(repoRoot, "docs"), { recursive: true });
+      writeFileSync(
+        projectBugsYaml,
+        yaml.dump({
+          version: "1.0",
+          generated_at: new Date().toISOString(),
+          project_name: "test-project",
+          source_run_id: "run-test-091",
+          iteration: 1,
+          iteration_cap: 1,
+          bugs: [bug],
+        } satisfies BugsYaml),
+      );
+
+      // The agent makes a benign edit that doesn't touch any protected
+      // file — the guard must let this through cleanly. Stage ONLY this
+      // file — see test 1's note on seedWorktree leftovers.
+      const invokeAgent: InvokeAgentFn = async (a) => {
+        const cwd = a.cwd as string;
+        writeFileSync(join(cwd, "apps/web/src-fix.txt"), "fix landed\n");
+        execSync(`git add apps/web/src-fix.txt`, { cwd });
+        execSync(`git commit -q -m "fix: benign source edit" --no-verify`, {
+          cwd,
+        });
+        return {
+          stage: a.agent,
+          taskStatus: { [`${bug.id}-${a.agent}`]: "completed" },
+          taskRetryRequests: {},
+          errors: {},
+          costUsd: 0.01,
+          durationMs: 1,
+        };
+      };
+
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      // Bug resolved cleanly.
+      expect(result.bugsResolved).toEqual(["bug-parity-benign"]);
+      expect(result.status).toBe("clean");
+
+      // No violation in stderr (only LF→CRLF git warnings are expected).
+      const allStderr = stderrCaptured.join("");
+      expect(allStderr).not.toMatch(/dispatch violated protected files/);
+
+      // The benign change landed on master (the loop's mergeFirst=true
+      // on status:"clean" merges fix/bugs-yaml-iter back to master before
+      // tearing down the fixup worktree).
+      expect(existsSync(join(repoRoot, "apps/web/src-fix.txt"))).toBe(true);
+      // Protected files still intact on master.
+      expect(existsSync(join(repoRoot, "apps/web/postcss.config.mjs"))).toBe(
+        true,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+});

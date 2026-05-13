@@ -76,6 +76,13 @@ export interface CliOptions {
    * an auto-approve stub.
    */
   waitForGateOverride?: WaitForGateFn;
+  /**
+   * bug-091 follow-up — test hook to skip the post-merge /build-to-spec-verify
+   * stage in Mode B. Forwards to runFeatureGraph's `skipBuildToSpecVerify`.
+   * Useful for cli-runner tests that exercise feature-graph orchestration
+   * but don't want the verifier's dev-server pre-boot (5s timeout in CI).
+   */
+  skipBuildToSpecVerify?: boolean;
 }
 
 export interface CliResult {
@@ -396,6 +403,7 @@ export async function runCli(
       ...(opts.maxConcurrent
         ? { maxConcurrentFeatures: opts.maxConcurrent }
         : {}),
+      ...(opts.skipBuildToSpecVerify ? { skipBuildToSpecVerify: true } : {}),
     };
     const result = await runFeatureGraph(tasks, graphCtx);
     messages.push(`Features completed: ${result.completed.length}`);

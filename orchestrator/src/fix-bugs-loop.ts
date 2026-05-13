@@ -22,6 +22,10 @@ import type { BuildToSpecVerifyContext } from "./build-to-spec-verify.js";
 import type { InvokeAgentFn } from "./feature-graph.js";
 import { seedWorktree } from "./invoke-agent.js";
 import { PauseSignal } from "./pause.js";
+import {
+  formatProtectedFileViolations,
+  verifyProtectedFiles,
+} from "./protected-files.js";
 
 /**
  * feat-026 — automated bug-fix loop runner.
@@ -2079,6 +2083,39 @@ export async function runFixBugsLoop(
                 `verify the agent actually fired (could indicate an orchestrator dispatch skip). ` +
                 `Phase B's empty-merge guard will reject the close-feature step if no commits landed.\n`,
             );
+          }
+          // bug-091 — protected-files guard. Verify the per-bug worktree
+          // didn't delete or empty out load-bearing config files. If it
+          // did, mark the dispatch failed + skip the merge cascade so the
+          // regression doesn't land on the fixup branch. bug-061's
+          // unconditional teardown-on-next-open handles the orphan branch.
+          // Violation entries flow into bug.errorLog so the retry's
+          // pre-loaded context surfaces them via buildRetryContextMessage.
+          //
+          // Baseline = the fixup worktree (the per-bug branch's base). The
+          // guard flags ONLY regressions vs that baseline, not pre-existing
+          // absences. Mobile-only / backend-only / fresh-test projects that
+          // legitimately ship without apps/web/ never produce false positives.
+          if (!skipWorktreeManagement) {
+            const wtPath = bugWorktreePath(ctx.projectRoot, result.unit.unitId);
+            const verify = verifyProtectedFiles(wtPath, worktreePath);
+            if (!verify.ok) {
+              const formatted = formatProtectedFileViolations(
+                verify.violations,
+              );
+              process.stderr.write(
+                `[fix-bugs-loop] WARNING: unit ${result.unit.unitId} dispatch violated protected files; ` +
+                  `skipping merge + marking attempt failed.\n` +
+                  formatted.map((line) => `  ${line}\n`).join(""),
+              );
+              for (const bug of result.unit.bugs) {
+                for (const entry of formatted) bug.errorLog.push(entry);
+                if (transitionFailedDispatch(bug) === "failed") {
+                  failedCount += 1;
+                }
+              }
+              continue;
+            }
           }
           // Try to merge the per-unit branch into the fixup branch.
           let mergedOk = true;
