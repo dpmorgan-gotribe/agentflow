@@ -322,6 +322,182 @@ describe("runWalkthroughReview", () => {
     expect(f2.evidence).toEqual([]);
   });
 
+  it("deterministic duplicate-request detector catches bug-094-class patterns even when LLM agent misses them", async () => {
+    // feat-069 B.2 regression: the LLM agent doesn't always notice
+    // duplicate-request behavior in the network log. The deterministic
+    // detector runs after the agent + emits synthetic findings for any
+    // interaction step where a single URL fires ≥ 3 times.
+
+    // Pre-seed the walkthrough artefacts the detector reads (manifest +
+    // network.ndjson). 4 GETs of /books?q=foo within a 544ms window =
+    // the bug-094 multi-fetcher pattern.
+    const outDir = join(projectDir, "docs", "build-to-spec", "walkthrough");
+    mkdirSync(outDir, { recursive: true });
+    const tsBefore = 1778667189198;
+    const tsAfter = 1778667189742;
+    writeFileSync(
+      join(outDir, "manifest.json"),
+      JSON.stringify({
+        version: "1.0",
+        schemaVersion: "feat-069-B.2",
+        steps: [
+          {
+            step: 1,
+            kind: "route-visit",
+            screenId: "book-detail",
+            routePattern: "/books/[id]",
+            url: "/books/seed-book-1",
+            tsBefore: 1778667188000,
+            tsAfter: 1778667189000,
+          },
+          {
+            step: 2,
+            kind: "search-fill",
+            url: "/books/seed-book-1",
+            tsBefore,
+            tsAfter,
+          },
+        ],
+      }),
+    );
+    const lines = [
+      // 4 dup GETs in the search-fill window — should trigger the detector
+      {
+        kind: "request",
+        ts: tsBefore + 50,
+        method: "GET",
+        url: "http://localhost:3000/api/books?q=foo",
+      },
+      {
+        kind: "request",
+        ts: tsBefore + 100,
+        method: "GET",
+        url: "http://localhost:3000/api/books?q=foo",
+      },
+      {
+        kind: "request",
+        ts: tsBefore + 200,
+        method: "GET",
+        url: "http://localhost:3000/api/books?q=foo",
+      },
+      {
+        kind: "request",
+        ts: tsBefore + 300,
+        method: "GET",
+        url: "http://localhost:3000/api/books?q=foo",
+      },
+      // Next.js asset request — must NOT count (legitimate fanout)
+      {
+        kind: "request",
+        ts: tsBefore + 50,
+        method: "GET",
+        url: "http://localhost:3000/_next/static/chunk.js",
+      },
+    ];
+    writeFileSync(
+      join(outDir, "network.ndjson"),
+      lines.map((l) => JSON.stringify(l)).join("\n") + "\n",
+    );
+    writeFileSync(join(outDir, "console.ndjson"), "");
+
+    // Stub the agent to return zero findings — the deterministic detector
+    // is the only finding source for this test.
+    const reviewBody = {
+      stepsRun: 2,
+      alreadyFiled: [],
+      findings: [],
+      errors: {},
+    };
+    const output = await runWalkthroughReview({
+      projectDir,
+      factoryRoot,
+      baseUrl,
+      invokeAgent: makeAgentStub(reviewBody),
+      runWalkthroughScript: async () => ({
+        ok: true,
+        stepsRun: 2,
+        screenshotsCount: 2,
+        errors: [],
+        warnings: [],
+        durationMs: 100,
+        outDir,
+        manifestPath: join(outDir, "manifest.json"),
+      }),
+    });
+
+    // Exactly one deterministic finding (the 4× /api/books search dup).
+    expect(output.findings).toHaveLength(1);
+    const f = output.findings[0]!;
+    expect(f.category).toBe("duplicate-request");
+    expect(f.step).toBe(2);
+    expect(f.element).toContain("search-fill");
+    expect(f.severity).toBe("P1"); // 4 dups → P1; ≥6 would be P0
+    expect(f.observation).toContain("4 `GET");
+    expect(f.observation).toContain("expected 1");
+    // ok flips to false because there's a finding.
+    expect(output.ok).toBe(false);
+  });
+
+  it("skips route-visit steps in deterministic detection (legitimate page-load fanout)", async () => {
+    // Route-visits naturally trigger N requests (data loads, analytics).
+    // The detector must ignore them and only check interaction steps.
+    const outDir = join(projectDir, "docs", "build-to-spec", "walkthrough");
+    mkdirSync(outDir, { recursive: true });
+    const tsBefore = 1778667188000;
+    const tsAfter = 1778667189000;
+    writeFileSync(
+      join(outDir, "manifest.json"),
+      JSON.stringify({
+        steps: [
+          {
+            step: 1,
+            kind: "route-visit",
+            url: "/",
+            tsBefore,
+            tsAfter,
+          },
+        ],
+      }),
+    );
+    const lines = Array.from({ length: 5 }, (_, i) => ({
+      kind: "request",
+      ts: tsBefore + i * 10,
+      method: "GET",
+      url: "http://localhost:3000/api/books",
+    }));
+    writeFileSync(
+      join(outDir, "network.ndjson"),
+      lines.map((l) => JSON.stringify(l)).join("\n") + "\n",
+    );
+    writeFileSync(join(outDir, "console.ndjson"), "");
+
+    const output = await runWalkthroughReview({
+      projectDir,
+      factoryRoot,
+      baseUrl,
+      invokeAgent: makeAgentStub({
+        stepsRun: 1,
+        alreadyFiled: [],
+        findings: [],
+        errors: {},
+      }),
+      runWalkthroughScript: async () => ({
+        ok: true,
+        stepsRun: 1,
+        screenshotsCount: 1,
+        errors: [],
+        warnings: [],
+        durationMs: 100,
+        outDir,
+        manifestPath: join(outDir, "manifest.json"),
+      }),
+    });
+
+    // No findings — the 5× GET on a route-visit is filtered out.
+    expect(output.findings).toHaveLength(0);
+    expect(output.ok).toBe(true);
+  });
+
   it("captures bug-094-shape finding end-to-end (canonical empirical motivator)", async () => {
     // Mirrors bug-094: 6 DELETE requests for one click on book-detail's delete
     // button. The walkthrough-reviewer's evidence pipeline catches this.

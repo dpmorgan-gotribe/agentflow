@@ -166,6 +166,124 @@ function normalizeFinding(
 }
 
 /**
+ * feat-069 B.2 — deterministic duplicate-request detector.
+ *
+ * Reads the walkthrough's network.ndjson + manifest.json and emits
+ * synthetic findings for any interaction-step time window where a single
+ * URL fired ≥ 3 times. This catches the bug-094 class (multi-fetcher
+ * subscription producing N requests per single user trigger) WITHOUT
+ * depending on the LLM agent to notice the pattern in the log.
+ *
+ * Empirical motivator (2026-05-13 B.2 first run): reading-log-02's
+ * search-fill on `/books/seed-book-1` produced 4× GET /books?q=test+query
+ * + 2× GET /tags within 544ms — exactly the multi-subscriber pattern
+ * bug-094 surfaced from manual inspection. The LLM agent reviewed the
+ * network log but didn't surface this; the deterministic detector does.
+ *
+ * Tuning:
+ *  - Threshold ≥ 3 (under that = legitimate retry or React StrictMode 2×)
+ *  - Skip /_next/ asset bundles (legitimate page-load multiplication)
+ *  - Severity: ≥ 6 → P0 (matches bug-094's 6×); 3-5 → P1
+ *  - Only checked on interaction steps (route-visits naturally fan out)
+ */
+function detectDuplicateRequestPatterns(args: {
+  projectDir: string;
+}): WalkthroughFinding[] {
+  const outDir = join(args.projectDir, WALKTHROUGH_OUT_DIR);
+  const networkPath = join(outDir, "network.ndjson");
+  const manifestPath = join(outDir, "manifest.json");
+  if (!existsSync(networkPath) || !existsSync(manifestPath)) return [];
+
+  let networkLines: Array<{
+    kind: string;
+    ts: number;
+    method?: string;
+    url?: string;
+    status?: number;
+  }> = [];
+  try {
+    const raw = readFileSync(networkPath, "utf8");
+    networkLines = raw
+      .split("\n")
+      .filter((l) => l.length > 0)
+      .map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch {
+          return null;
+        }
+      })
+      .filter((l): l is NonNullable<typeof l> => l !== null);
+  } catch {
+    return [];
+  }
+
+  let manifest: { steps?: Array<Record<string, unknown>> };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch {
+    return [];
+  }
+  const steps = Array.isArray(manifest.steps) ? manifest.steps : [];
+
+  const findings: WalkthroughFinding[] = [];
+  for (const step of steps) {
+    const kind = typeof step.kind === "string" ? step.kind : "route-visit";
+    // Only check interaction steps — route-visits naturally trigger N
+    // requests (data load + analytics + asset chunks).
+    if (kind === "route-visit") continue;
+    const tsBefore = typeof step.tsBefore === "number" ? step.tsBefore : null;
+    const tsAfter = typeof step.tsAfter === "number" ? step.tsAfter : null;
+    if (tsBefore === null || tsAfter === null) continue;
+
+    const stepReqs = networkLines.filter(
+      (l) =>
+        l.kind === "request" &&
+        typeof l.ts === "number" &&
+        l.ts >= tsBefore &&
+        l.ts <= tsAfter &&
+        typeof l.url === "string" &&
+        // Strip Next.js asset bundles — legitimate page-load fanout, not
+        // an interaction-handler bug.
+        !l.url.includes("/_next/") &&
+        // Strip font / google-fonts requests for the same reason.
+        !l.url.includes("fonts.googleapis.com") &&
+        !l.url.includes("fonts.gstatic.com"),
+    );
+    if (stepReqs.length === 0) continue;
+
+    // Bucket by method + path (strip origin).
+    const counts = new Map<string, number>();
+    for (const r of stepReqs) {
+      const path = (r.url ?? "").replace(/^https?:\/\/[^/]+/, "");
+      const key = `${r.method ?? "GET"} ${path}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    for (const [key, count] of counts) {
+      if (count < 3) continue;
+      const stepIdx =
+        typeof step.step === "number" ? step.step : findings.length + 1;
+      const url = typeof step.url === "string" ? step.url : "(unknown)";
+      const windowMs = tsAfter - tsBefore;
+      findings.push({
+        id: `walkthrough-deterministic-${stepIdx}-${key.replace(/[^a-z0-9]/gi, "-").slice(0, 30)}`,
+        step: stepIdx,
+        element: `${kind} on ${url}`,
+        observation: `Single ${kind} interaction produced ${count} \`${key}\` requests within ${windowMs}ms (expected 1). Indicates multi-fetcher subscription, missing useCallback memoization, useEffect-without-deps, or duplicate component rendering — the empirical pattern bug-094 surfaced from manual inspection.`,
+        expected: "One request per user interaction.",
+        category: "duplicate-request",
+        severity: count >= 6 ? "P0" : "P1",
+        evidence: [
+          `network.ndjson time-window ${tsBefore}-${tsAfter} (step ${stepIdx})`,
+          `count: ${count}× ${key}`,
+        ],
+      });
+    }
+  }
+  return findings;
+}
+
+/**
  * Read the agent's review.json + normalize findings into the
  * WalkthroughReviewOutput shape. Returns a degraded output on read/parse
  * failure (empty findings + an error entry).
@@ -428,13 +546,30 @@ export async function runWalkthroughReview(
   // Step 3: read the agent's review.json (even on agent-failure — it might
   // have written partial output before erroring).
   const review = readAgentReview(reviewJsonPath);
+
+  // Step 4: deterministic duplicate-request detection (feat-069 B.2). The
+  // LLM agent occasionally misses cross-step pattern recognition; the
+  // deterministic detector guarantees bug-094-class catches regardless of
+  // agent attention. Merge results, dedup by (step, category) tuple.
+  const deterministicFindings = detectDuplicateRequestPatterns({
+    projectDir: ctx.projectDir,
+  });
+  const allFindings: WalkthroughFinding[] = [...review.findings];
+  for (const det of deterministicFindings) {
+    const duplicate = allFindings.some(
+      (existing) =>
+        existing.step === det.step && existing.category === det.category,
+    );
+    if (!duplicate) allFindings.push(det);
+  }
+
   const errors: Record<string, string> = { ...agentErrors, ...review.errors };
-  const ok = review.findings.length === 0 && Object.keys(errors).length === 0;
+  const ok = allFindings.length === 0 && Object.keys(errors).length === 0;
 
   const out: WalkthroughReviewOutput = {
     ok,
     stepsRun: scriptOut.stepsRun,
-    findings: review.findings,
+    findings: allFindings,
     alreadyFiled: review.alreadyFiled.length
       ? review.alreadyFiled
       : alreadyFiledUpstream,
