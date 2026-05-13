@@ -2509,6 +2509,271 @@ describe("dispatchAgentsForBug — bug-082 unverified-completion guard", () => {
   });
 });
 
+// feat-071 Phase B (2026-05-13) — cluster-bugs-pre-dispatch wiring tests.
+// Pure clusterBugs() coverage lives in tests/cluster-bugs.test.ts; THIS
+// block exercises the LOOP plumbing: cluster pass at iteration top + skip
+// filter for tagged members + on-completion propagation + on-failure
+// fallback. Set ctx.clusterThreshold to a small value so the test fixtures
+// can synthesize clusters with realistic bug counts.
+describe("feat-071 Phase B — cluster-bugs wiring", () => {
+  function makeParityBug(id: string, screen: string): BugEntry {
+    return {
+      id,
+      iteration: 1,
+      source: "visual-parity",
+      severity: "P0",
+      summary: `parity divergence on ${screen}`,
+      parity: {
+        screen,
+        pattern: "pixel-systemic-divergence",
+        detail: {},
+      },
+      correlatedOrphanPath: null,
+      owningFeature: null,
+      affectsFiles: [`apps/web/components/${screen}.tsx`],
+      agentSequence: ["bug-fixer"],
+      status: "pending",
+      attempts: 0,
+      maxAttempts: 3,
+      flapResets: 0,
+      resolvedInIteration: null,
+      bugPlanPath: null,
+      errorLog: [],
+      failureClass: null,
+      clusterParent: null,
+      clusterMembers: null,
+    };
+  }
+
+  it("synthesizes a cluster parent + tags members at iteration top when threshold met", async () => {
+    // Author 4 same-tuple parity bugs + set threshold=3 → synth parent.
+    const bugs = Array.from({ length: 4 }, (_, i) =>
+      makeParityBug(`bug-parity-cluster-${i}`, "home"),
+    );
+    writeBugsYamlDoc(bugs);
+    // Stub agent that immediately fails — we only care about the cluster
+    // mechanics, not the agent invocation outcome.
+    const invoke: InvokeAgentFn = async (args) => ({
+      taskStatus: Object.fromEntries(
+        args.tasks.map((t) => [t.id, "failed"] as const),
+      ),
+      errors: {},
+      costUsd: 0,
+    });
+    await runFixBugsLoop(
+      makeCtx(invoke, cleanVerify, {
+        clusterThreshold: 3,
+        iterationCap: 1,
+      }),
+    );
+    const doc = readBugsYamlDoc();
+    // Should now have 5 bugs: 4 original + 1 synthesized parent.
+    expect(doc.bugs).toHaveLength(5);
+    const parent = doc.bugs.find((b) => b.clusterMembers !== null);
+    expect(parent).toBeDefined();
+    expect(parent!.clusterMembers).toHaveLength(4);
+    expect(parent!.agentSequence).toEqual(["systemic-fixer"]);
+    expect(parent!.parity?.pattern).toBe("clustered-systemic-divergence");
+    // All 4 members have clusterParent set to the parent's id.
+    const members = doc.bugs.filter((b) =>
+      b.id.startsWith("bug-parity-cluster-"),
+    );
+    expect(members).toHaveLength(4);
+    for (const m of members) {
+      expect(m.clusterParent).toBe(parent!.id);
+    }
+  });
+
+  it("dispatch filter skips bugs with clusterParent set — only parent dispatches", async () => {
+    const bugs = Array.from({ length: 4 }, (_, i) =>
+      makeParityBug(`bug-parity-skip-${i}`, "home"),
+    );
+    writeBugsYamlDoc(bugs);
+    // Track which bug ids the agent is invoked against.
+    const invocations: string[] = [];
+    const invoke: InvokeAgentFn = async (args) => {
+      for (const t of args.tasks) invocations.push(t.id);
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "failed"] as const),
+        ),
+        errors: {},
+        costUsd: 0,
+      };
+    };
+    await runFixBugsLoop(
+      makeCtx(invoke, cleanVerify, {
+        clusterThreshold: 3,
+        iterationCap: 1,
+      }),
+    );
+    // ONE dispatch invocation: only the cluster parent. The 4 members were
+    // filtered out by `clusterParent !== null`. Task ids are
+    // <bug-id>-<agent> shape so match the prefix.
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]).toMatch(
+      /^bug-parity-clustered-home-.*-systemic-fixer$/,
+    );
+  });
+
+  it("parent completion → members flip to completed on next iteration", async () => {
+    const bugs = Array.from({ length: 4 }, (_, i) =>
+      makeParityBug(`bug-parity-resolve-${i}`, "home"),
+    );
+    writeBugsYamlDoc(bugs);
+    gitInit(); // need real git for bug-082 source-change guard
+    let agentCallNum = 0;
+    const invoke: InvokeAgentFn = async (args) => {
+      agentCallNum += 1;
+      // Cluster parent dispatches first. Make a real commit touching one
+      // of the affectsFiles (union) so the bug-082/bug-093 guard accepts.
+      if (agentCallNum === 1) {
+        makeRealCommit(
+          "apps/web/components/home.tsx",
+          "export const Home = () => <div>fixed</div>;",
+        );
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0,
+      };
+    };
+    await runFixBugsLoop(
+      makeCtx(invoke, cleanVerify, {
+        clusterThreshold: 3,
+        iterationCap: 2,
+      }),
+    );
+    const doc = readBugsYamlDoc();
+    // Parent + all 4 members → completed.
+    const parent = doc.bugs.find((b) => b.clusterMembers !== null);
+    expect(parent!.status).toBe("completed");
+    const members = doc.bugs.filter((b) =>
+      b.id.startsWith("bug-parity-resolve-"),
+    );
+    expect(members).toHaveLength(4);
+    for (const m of members) {
+      expect(m.status).toBe("completed");
+      expect(m.resolvedInIteration).toBeGreaterThan(0);
+    }
+  });
+
+  it("parent failure → members revert clusterParent:null (dispatch individually next iter)", async () => {
+    const bugs = Array.from({ length: 4 }, (_, i) =>
+      makeParityBug(`bug-parity-revert-${i}`, "home"),
+    );
+    writeBugsYamlDoc(bugs);
+    let invocationCount = 0;
+    const invoke: InvokeAgentFn = async (args) => {
+      invocationCount += 1;
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "failed"] as const),
+        ),
+        errors: Object.fromEntries(
+          args.tasks.map(
+            (t) =>
+              [
+                t.id,
+                `synthetic failure variant ${Math.random().toString(36).slice(2, 10)}`,
+              ] as const,
+          ),
+        ),
+        costUsd: 0,
+      };
+    };
+    const result = await runFixBugsLoop(
+      makeCtx(invoke, cleanVerify, {
+        clusterThreshold: 3,
+        iterationCap: 5,
+      }),
+    );
+    void result;
+    const doc = readBugsYamlDoc();
+    const parent = doc.bugs.find((b) => b.clusterMembers !== null);
+    void invocationCount;
+    expect(parent!.status).toBe("failed");
+    const members = doc.bugs.filter((b) =>
+      b.id.startsWith("bug-parity-revert-"),
+    );
+    // Members reverted: clusterParent:null + errorLog gained the fallback
+    // marker. Status may be `failed` (if individual dispatch then also
+    // exhausted) or `pending` (still iterating individually). Both are
+    // acceptable; the load-bearing assertion is the clusterParent reset.
+    for (const m of members) {
+      expect(m.clusterParent).toBeNull();
+      expect(m.errorLog.join(" ")).toMatch(/cluster-fallback/);
+    }
+  });
+
+  it("below threshold → no cluster synthesized; bugs dispatch individually", async () => {
+    // 2 bugs of same tuple but threshold=3 → no cluster.
+    const bugs = [
+      makeParityBug("bug-parity-below-0", "home"),
+      makeParityBug("bug-parity-below-1", "home"),
+    ];
+    writeBugsYamlDoc(bugs);
+    const invocations: string[] = [];
+    const invoke: InvokeAgentFn = async (args) => {
+      for (const t of args.tasks) invocations.push(t.id);
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "failed"] as const),
+        ),
+        errors: {},
+        costUsd: 0,
+      };
+    };
+    await runFixBugsLoop(
+      makeCtx(invoke, cleanVerify, {
+        clusterThreshold: 3,
+        iterationCap: 1,
+      }),
+    );
+    const doc = readBugsYamlDoc();
+    // No new parent synthesized.
+    expect(doc.bugs).toHaveLength(2);
+    for (const b of doc.bugs) {
+      expect(b.clusterMembers).toBeNull();
+      expect(b.clusterParent).toBeNull();
+    }
+    // Both bugs dispatched individually. Task ids are <bug-id>-<agent>;
+    // extract bug-id prefix for the assertion.
+    const dispatchedBugIds = invocations
+      .map((t) => t.replace(/-bug-fixer$/, ""))
+      .sort();
+    expect(dispatchedBugIds).toEqual([
+      "bug-parity-below-0",
+      "bug-parity-below-1",
+    ]);
+  });
+
+  // Reused helpers from the bug-082 block (must live in the bug-082 describe
+  // scope OR a parent scope; here we duplicate the minimal git setup).
+  function gitInit(): void {
+    execSync("git init -b master", { cwd: projectRoot });
+    execSync("git config user.email test@test.local", { cwd: projectRoot });
+    execSync("git config user.name test", { cwd: projectRoot });
+    writeFileSync(join(projectRoot, "seed.txt"), "seed");
+    execSync("git add seed.txt && git commit -m init", { cwd: projectRoot });
+  }
+  function makeRealCommit(relPath: string, content: string): string {
+    const abs = join(projectRoot, relPath);
+    mkdirSync(join(abs, ".."), { recursive: true });
+    writeFileSync(abs, content);
+    execSync(`git add ${relPath} && git commit -m "test commit"`, {
+      cwd: projectRoot,
+    });
+    return execSync("git rev-parse HEAD", {
+      cwd: projectRoot,
+      encoding: "utf8",
+    }).trim();
+  }
+});
+
 // bug-091 (2026-05-13) — protected-files guard. Agents in the /fix-bugs loop
 // dispatch chain (bug-fixer / systemic-fixer) have unrestricted Write/Edit
 // permissions and occasionally delete load-bearing config files (most

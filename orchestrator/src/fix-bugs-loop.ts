@@ -18,6 +18,7 @@ import {
 } from "@repo/orchestrator-contracts";
 import { buildBugContextEnvelope } from "./bug-fix-context.js";
 import type { BudgetTracker } from "./budget-tracker.js";
+import { clusterBugs } from "./cluster-bugs.js";
 import type { BuildToSpecVerifyContext } from "./build-to-spec-verify.js";
 import type { InvokeAgentFn } from "./feature-graph.js";
 import { seedWorktree } from "./invoke-agent.js";
@@ -178,6 +179,29 @@ export interface FixBugsLoopContext {
    * 1 of 22".
    */
   enableClassBatchedDispatch?: boolean;
+  /**
+   * feat-071 (2026-05-13) — cluster-bugs-pre-dispatch threshold. When set,
+   * each iteration runs a clustering pass at top: N>threshold same-tuple
+   * `(source, parity.pattern, parity.screen)` bugs fold into a synthesized
+   * `clustered-systemic-divergence` parent that dispatches to systemic-fixer
+   * ONCE. Member bugs get tagged with `clusterParent: <parent-id>` and the
+   * normal dispatch filter skips them while the parent runs.
+   *
+   * Empirical motivator: 17+ same-screen perceptual-divergence bugs on a
+   * single tags-manage screen in reading-log-02 /fix-bugs 2026-05-13 — all
+   * one root cause. Sequential: ~17 × 5-6 min = ~90 min. Clustered: one
+   * systemic-fixer dispatch ~8-10 min. ~9× speedup at scale.
+   *
+   * Default undefined = clustering OFF (safe; pre-feat-071 behavior).
+   * Operator opt-in via env `FIX_BUGS_CLUSTER_THRESHOLD=N` resolved by the
+   * caller (typically `cli-runner.ts`) and passed in here.
+   *
+   * Phase A (shipped 2026-05-13) — pure clusterBugs() + schema additions.
+   * Phase B (this) — wires the cluster pass into the loop; on parent
+   * resolution, members flip to completed; on parent failure, members
+   * clear clusterParent and dispatch individually next iteration.
+   */
+  clusterThreshold?: number;
 }
 
 /** Internal: filesystem helpers, injectable for tests via FixBugsLoopContext extras. */
@@ -2004,6 +2028,123 @@ function inferFailureClassFromErrorLog(
 }
 
 /**
+ * feat-071 Phase B — cluster pass applied at iteration top.
+ *
+ * Runs clusterBugs() over the current pending list. For each synthesized
+ * parent:
+ *  - If the parent already exists in doc.bugs (re-entry from a previous
+ *    iteration that didn't complete clean), skip — don't re-synthesize.
+ *  - Otherwise add the parent to doc.bugs[] + tag the named members with
+ *    `clusterParent`.
+ *
+ * Writes the mutated bugs.yaml ONCE if any change was made.
+ *
+ * Returns the (possibly mutated) doc.
+ */
+function applyClusterPass(
+  doc: BugsYaml,
+  threshold: number,
+  bugsYamlPath: string,
+): BugsYaml {
+  // Only cluster pending bugs that aren't already cluster members or
+  // parents AND haven't previously fallen back from a failed cluster.
+  // The cluster-fallback errorLog marker is set by
+  // propagateClusterResolutions when a parent fails — those members
+  // dispatch individually and must NOT be re-clustered next iteration
+  // (which would defeat the fallback mechanism and cycle indefinitely).
+  const candidates = doc.bugs.filter(
+    (b) =>
+      b.status === "pending" &&
+      b.clusterParent === null &&
+      b.clusterMembers === null &&
+      !b.errorLog.some((e) => e.includes("[cluster-fallback]")),
+  );
+  if (candidates.length < threshold) return doc;
+  const { clusters, individuals } = clusterBugs(candidates, { threshold });
+  if (clusters.length === 0) return doc;
+
+  // Build a lookup of the tagged members so we can mirror the
+  // `clusterParent` assignment back onto the original doc.bugs entries.
+  const taggedMemberIdToParent = new Map<string, string>();
+  for (const m of individuals) {
+    if (m.clusterParent !== null) {
+      taggedMemberIdToParent.set(m.id, m.clusterParent);
+    }
+  }
+
+  // Mutate doc.bugs in place: tag members + append new parents.
+  let mutated = false;
+  for (const b of doc.bugs) {
+    const parentId = taggedMemberIdToParent.get(b.id);
+    if (parentId !== undefined && b.clusterParent !== parentId) {
+      b.clusterParent = parentId;
+      mutated = true;
+    }
+  }
+  for (const parent of clusters) {
+    if (!doc.bugs.find((b) => b.id === parent.id)) {
+      doc.bugs.push(parent);
+      mutated = true;
+    }
+  }
+  if (mutated) writeBugsYaml(bugsYamlPath, doc);
+  return doc;
+}
+
+/**
+ * feat-071 Phase B — cluster-resolution propagation. Walks doc.bugs for
+ * cluster parents and flips their members' status accordingly:
+ *  - Parent `completed` → members flip to `completed`, resolvedInIteration
+ *    set to the current iteration. Member's clusterParent stays set for
+ *    audit traceability.
+ *  - Parent `failed` → members get `clusterParent` cleared so the next
+ *    iteration dispatches them individually. Member status stays
+ *    `pending`. Parent failureClass propagates to the cluster-summary
+ *    errorLog of each member (operator-debug visibility).
+ *
+ * No-op for parents still pending / in-progress.
+ *
+ * Writes bugs.yaml ONCE per iteration when any propagation happened.
+ */
+function propagateClusterResolutions(
+  doc: BugsYaml,
+  iteration: number,
+  bugsYamlPath: string,
+): { resolved: string[]; reverted: string[] } {
+  const resolved: string[] = [];
+  const reverted: string[] = [];
+  const parents = doc.bugs.filter(
+    (b) => b.clusterMembers !== null && b.clusterMembers.length > 0,
+  );
+  let mutated = false;
+  for (const parent of parents) {
+    if (parent.status === "completed") {
+      for (const m of doc.bugs) {
+        if (m.clusterParent === parent.id && m.status !== "completed") {
+          m.status = "completed";
+          m.resolvedInIteration = iteration;
+          resolved.push(m.id);
+          mutated = true;
+        }
+      }
+    } else if (parent.status === "failed") {
+      for (const m of doc.bugs) {
+        if (m.clusterParent === parent.id) {
+          m.clusterParent = null;
+          m.errorLog.push(
+            `[cluster-fallback] parent ${parent.id} failed (failureClass=${parent.failureClass ?? "unknown"}); dispatching individually next iteration`,
+          );
+          reverted.push(m.id);
+          mutated = true;
+        }
+      }
+    }
+  }
+  if (mutated) writeBugsYaml(bugsYamlPath, doc);
+  return { resolved, reverted };
+}
+
+/**
  * The main loop. See plan §Phase B for the spec; this implementation
  * matches the pseudocode there with the worktree-lifecycle decisions
  * called out in the file-level docstring above.
@@ -2081,10 +2222,27 @@ export async function runFixBugsLoop(
   for (let i = 0; i < iterationCap; i++) {
     iteration = doc.iteration;
     const iterationStartCost = totalCostUsd;
+
+    // feat-071 Phase B — cluster pass at iteration top. When enabled,
+    // bugs whose (source, parity.pattern, parity.screen) tuple appears
+    // ≥ threshold times fold into a synthesized parent that dispatches
+    // ONCE to systemic-fixer instead of N × bug-fixer. Members get
+    // tagged with `clusterParent` so the dispatch filter below skips
+    // them while the parent runs. On parent completion the loop walks
+    // members + flips them to completed; on parent failure it clears
+    // `clusterParent` so the next iteration dispatches them
+    // individually.
+    if (ctx.clusterThreshold !== undefined) {
+      doc = applyClusterPass(doc, ctx.clusterThreshold, bugsYamlPath);
+    }
+
     // Pick pending OR in-progress (resumed mid-attempt) bugs whose
     // attempts haven't hit their cap. Treat in-progress as pending: the
     // prior attempt either crashed or was killed mid-flight, so we get a
     // fresh attempt subject to the same cap.
+    //
+    // feat-071 Phase B — additionally skip bugs with `clusterParent`
+    // set; their parent handles dispatch.
     //
     // feat-073 — when ctx.roundConfig is set, additionally filter to bugs
     // that match this round's class (bugMatchesRound). Bugs in other
@@ -2093,7 +2251,8 @@ export async function runFixBugsLoop(
       .filter(
         (b) =>
           (b.status === "pending" || b.status === "in-progress") &&
-          (b.attempts ?? 0) < b.maxAttempts,
+          (b.attempts ?? 0) < b.maxAttempts &&
+          b.clusterParent === null,
       )
       .filter((b) =>
         ctx.roundConfig
@@ -2620,6 +2779,16 @@ export async function runFixBugsLoop(
       post: doc,
       maxFlapResets,
     });
+
+    // feat-071 Phase B — propagate cluster resolutions. Walks doc.bugs
+    // for cluster parents whose status flipped this iteration:
+    //   parent.completed → members.status = completed (with iteration tag)
+    //   parent.failed    → members.clusterParent = null (dispatch next iter)
+    // No-op when clustering disabled or no clusters synthesized.
+    if (ctx.clusterThreshold !== undefined) {
+      propagateClusterResolutions(doc, iteration, bugsYamlPath);
+    }
+
     const remainingPending = doc.bugs.filter(
       (b) => b.status === "pending",
     ).length;
