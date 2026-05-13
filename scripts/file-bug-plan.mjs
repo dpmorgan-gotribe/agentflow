@@ -138,6 +138,15 @@ function stableSlugFor(violation) {
       .replace(/-+$/, "");
     return `perceptual-${slugify(violation.screen)}-${elementSlug || "element"}`;
   }
+  // feat-069 — walkthrough finding slug = (step, element) tuple. The step
+  // anchor + element name combine to a stable id so a re-run of the
+  // walkthrough produces the same id + dedup fires across iterations.
+  if (violation.kind === "walkthrough-finding") {
+    const elementSlug = slugify(violation.element)
+      .slice(0, 30)
+      .replace(/-+$/, "");
+    return `walkthrough-step-${violation.step}-${elementSlug || "element"}`;
+  }
   // orphan-route
   return `orphan-route-${slugify(violation.routePattern ?? violation.path)}`;
 }
@@ -779,6 +788,69 @@ function perceptualFindingBody(v) {
   return lines.join("\n");
 }
 
+// ─── feat-069: walkthroughFindingBody template ───────────────────────────
+//
+// Tier 5 AI walkthrough behavioral review produces step-level findings about
+// interaction behavior (duplicate-request, no-op-control, broken-nav, etc.)
+// that static perceptual review (Tier 4) misses. Each finding becomes one
+// bug; the body surfaces the step + observation + evidence references so
+// the bug-fixer can locate screenshots / network log / console log without
+// re-running the walkthrough.
+function walkthroughFindingBody(v) {
+  const lines = [];
+  lines.push(`# Walkthrough finding at step ${v.step}: \`${v.element}\``);
+  lines.push("");
+  lines.push(
+    "AI walkthrough behavioral review (Tier 5) found an interaction-level issue that the static perceptual review (Tier 4) didn't catch.",
+  );
+  lines.push("");
+  lines.push("## Observation");
+  lines.push("");
+  lines.push(v.observation);
+  lines.push("");
+  lines.push("## Discrepancy");
+  lines.push("");
+  lines.push("| | Value |");
+  lines.push("| --- | --- |");
+  lines.push(`| **Step** | ${v.step} |`);
+  lines.push(`| **Element** | ${v.element} |`);
+  if (v.category) lines.push(`| **Category** | ${v.category} |`);
+  if (v.expected) lines.push(`| **Expected** | ${v.expected} |`);
+  lines.push(`| **Severity** | ${v.severity ?? "P1"} |`);
+  lines.push("");
+  if (Array.isArray(v.evidence) && v.evidence.length > 0) {
+    lines.push("## Evidence");
+    lines.push("");
+    for (const e of v.evidence) {
+      lines.push(`- \`${e}\``);
+    }
+    lines.push("");
+  }
+  lines.push("## References");
+  lines.push("");
+  lines.push(
+    `- Walkthrough manifest: \`docs/build-to-spec/walkthrough/manifest.json\``,
+  );
+  lines.push(
+    `- Network log: \`docs/build-to-spec/walkthrough/network.ndjson\``,
+  );
+  lines.push(
+    `- Console log: \`docs/build-to-spec/walkthrough/console.ndjson\``,
+  );
+  lines.push(
+    `- Walkthrough review JSON: \`docs/build-to-spec/walkthrough/review.json\``,
+  );
+  lines.push("");
+  lines.push("## Validation");
+  lines.push("");
+  lines.push(
+    "Re-run `/build-to-spec-verify`; walkthrough review should no longer surface this finding at step `" +
+      v.step +
+      "`. (Other behavioral findings may persist — they file as separate bugs.)",
+  );
+  return lines.join("\n");
+}
+
 // ─── feat-026 Phase A: bugs.yaml writer ───────────────────────────────────
 //
 // In addition to writing the standalone bug-NNN-*.md plan, the verifier
@@ -800,6 +872,7 @@ function bugSourceFor(violation) {
   if (violation.kind === "dev-server-compile") return "dev-server-compile";
   if (violation.kind === "parity-divergence") return "visual-parity";
   if (violation.kind === "perceptual-finding") return "perceptual-divergence";
+  if (violation.kind === "walkthrough-finding") return "walkthrough-divergence";
   return "reachability-orphan"; // both orphan-component + orphan-route
 }
 
@@ -1070,6 +1143,19 @@ function defaultAgentSequence(violation, tier = "web-frontend-builder") {
       if (isLikelyElementNameCategory) return ["systemic-fixer"];
       return ["bug-fixer"];
     }
+    // feat-069 (2026-05-13) — walkthrough-divergence routing.
+    // Behavioral findings vary in scope:
+    //   - duplicate-request (bug-094 class) — bug-fixer (often a single hook /
+    //     useEffect / component issue)
+    //   - no-op-control — bug-fixer (single handler wiring)
+    //   - broken-navigation — bug-fixer (route / link issue) unless category
+    //     indicates cross-page; default bug-fixer
+    //   - keyboard-nav-skip — bug-fixer (focus / tabIndex on one component)
+    //   - feedback-missing — bug-fixer (single error-handling site)
+    // v1: all walkthrough findings → bug-fixer. Empirical signal can refine
+    // routing later (mirroring bug-087/088's perceptual evolution).
+    case "walkthrough-divergence":
+      return ["bug-fixer"];
     // bug-085 (2026-05-12) — pattern-aware routing for visual-parity bugs.
     // Empirical motivator: reading-log-02 /fix-bugs 2026-05-12 — 5 of 7 failed
     // bugs were visual-parity `layout-regrouping`. bug-fixer's smallest-diff
@@ -1264,6 +1350,15 @@ function buildBugEntry({
           primaryCause: "perceptual-divergence",
           perceptual: { category: violation.category },
         };
+      } else if (violation.kind === "walkthrough-finding") {
+        // feat-069 (2026-05-13) — walkthrough-divergence routing. All
+        // walkthrough findings route to bug-fixer in v1 (per
+        // defaultAgentSequence's case branch). Empirical signal can
+        // refine to systemic-fixer later if behavioral findings have
+        // a cross-file root-cause pattern.
+        violationForRouting = {
+          primaryCause: "walkthrough-divergence",
+        };
       } else if (violation.kind === "flow-failure" && !violation.primaryCause) {
         // Flow-failure with no upstream classification — default to the
         // flow-execution-failure cause class so bug-fixer routing fires.
@@ -1385,6 +1480,22 @@ function buildBugEntry({
     if (violation.category !== undefined)
       perceptual.category = violation.category;
     entry.perceptual = perceptual;
+  } else if (violation.kind === "walkthrough-finding") {
+    // feat-069 — surface the AI walkthrough agent's structured finding
+    // so the dispatched bug-fixer can locate the screenshots / network
+    // / console evidence directly from bugs.yaml without re-running the
+    // walkthrough script.
+    const walkthrough = {
+      step: violation.step,
+      element: violation.element,
+      observation: violation.observation,
+      evidence: Array.isArray(violation.evidence) ? violation.evidence : [],
+    };
+    if (violation.expected !== undefined)
+      walkthrough.expected = violation.expected;
+    if (violation.category !== undefined)
+      walkthrough.category = violation.category;
+    entry.walkthrough = walkthrough;
   }
   return entry;
 }
@@ -1493,6 +1604,14 @@ function summaryFor(violation) {
       );
     }
     return `Perceptual: ${violation.element} on ${violation.screen}`.slice(
+      0,
+      200,
+    );
+  }
+  if (violation.kind === "walkthrough-finding") {
+    // feat-069 — behavioral finding from the AI walkthrough. The
+    // observation is the primary signal; step + element are anchors.
+    return `Walkthrough step ${violation.step} (${violation.element}): ${violation.observation}`.slice(
       0,
       200,
     );
@@ -1659,6 +1778,8 @@ export async function fileBugPlan({
     body = parityDivergenceBody(violation);
   } else if (violation.kind === "perceptual-finding") {
     body = perceptualFindingBody(violation);
+  } else if (violation.kind === "walkthrough-finding") {
+    body = walkthroughFindingBody(violation);
   } else if (violation.kind === "orphan-component") {
     body = orphanComponentBody(violation);
   } else {

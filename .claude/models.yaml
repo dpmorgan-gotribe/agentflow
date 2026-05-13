@@ -47,6 +47,15 @@ agents:
   # Also pinned in FACTORY_DEFAULT_AGENT_TIERS so project-level YAMLs
   # don't need to repeat this (matches bug-fixer / systemic-fixer pattern).
   perceptual-reviewer: { tier: building, effort: medium }
+  # feat-069 (2026-05-13) — walkthrough-reviewer is the Tier 5 AI walkthrough
+  # behavioral agent. ONE invocation per fix-loop iteration; reads the
+  # Playwright walkthrough's evidence bundle (screenshots + network log +
+  # console log) and emits behavioral findings. tier:building (Sonnet)
+  # for same vision + cross-step reasoning reasons as perceptual.
+  # effort:medium with maxTurns:4 frontmatter gives the agent room for
+  # the larger evidence bundle (~24 screenshots vs perceptual's 2) without
+  # wandering. Projected ~$0.05-0.10 per walkthrough.
+  walkthrough-reviewer: { tier: building, effort: medium }
 
 # Budget overrides. Leave empty to inherit.
 # budget:

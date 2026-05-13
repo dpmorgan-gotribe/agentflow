@@ -16,7 +16,14 @@ import {
   runPerceptualReview,
   perceptualReviewToViolations,
 } from "./perceptual-review.js";
-import type { PerceptualReviewOutput } from "@repo/orchestrator-contracts";
+import {
+  runWalkthroughReview,
+  walkthroughReviewToViolations,
+} from "./walkthrough-review.js";
+import type {
+  PerceptualReviewOutput,
+  WalkthroughReviewOutput,
+} from "@repo/orchestrator-contracts";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -143,6 +150,19 @@ export interface BuildToSpecVerifyContext {
    * inject canned findings without making real LLM calls.
    */
   perceptualReview?: typeof import("./perceptual-review.js").runPerceptualReview;
+  /**
+   * feat-069 — when false, skip the Tier 5 AI walkthrough behavioral review.
+   * Default true; the walkthrough is a no-op when round 5 isn't in enabledTiers
+   * OR when invokeAgent is not provided OR when the walkthrough script
+   * produces zero screenshots.
+   */
+  runWalkthrough?: boolean;
+  /**
+   * feat-069 — test seam replacing the walkthrough-review wrapper. Defaults
+   * to `runWalkthroughReview` from `./walkthrough-review.js`. Tests stub to
+   * inject canned findings without making real LLM / Playwright calls.
+   */
+  walkthroughReview?: typeof import("./walkthrough-review.js").runWalkthroughReview;
   /**
    * bug-091 follow-up — test seam replacing the dev-server pre-boot. Defaults
    * to `bootDevServer` from `./dev-server.js`. Tests stub to skip the actual
@@ -769,18 +789,10 @@ export async function runBuildToSpecVerify(
     }
   }
 
-  // ── bug-071 fix: teardown the shared dev-server now that runFlows AND
-  // ── parityVerify have both consumed it. ─────────────────────────────
-  if (sharedDevServerHandle) {
-    try {
-      teardownDevServer(sharedDevServerHandle);
-    } catch (err) {
-      warnings.push(
-        `dev-server teardown threw (orphan processes possible): ${(err as Error).message}`,
-      );
-    }
-    sharedDevServerHandle = null;
-  }
+  // ── bug-071 + feat-069: defer dev-server teardown until ALL consumers
+  // ── have run. The walkthrough script (Tier 5) is the third consumer
+  // ── (after runFlows + parityVerify). Teardown moves to AFTER the
+  // ── walkthrough block below. ────────────────────────────────────────
 
   // Auto-file ONE bug per (screen, pattern) parity divergence — the
   // divergences are already merged by `mergeByScreenPattern` inside
@@ -874,6 +886,103 @@ export async function runBuildToSpecVerify(
     );
   }
 
+  // feat-069 — Tier 5 AI walkthrough behavioral review. Runs AFTER perceptual
+  // (Tier 4) so the walkthrough-reviewer can see + dedup against parity +
+  // perceptual findings.
+  let walkthrough: WalkthroughReviewOutput | undefined;
+  let walkthroughCost = 0;
+  const tier5Gated = ctx.enabledTiers !== undefined && !ctx.enabledTiers.has(5);
+  if (tier5Gated) {
+    warnings.push(
+      "walkthrough-review skipped: Tier 5 not in enabledTiers (round-state gate; feat-073)",
+    );
+  }
+  if (
+    !tier5Gated &&
+    ctx.runWalkthrough !== false &&
+    ctx.invokeAgent &&
+    sharedDevServerHandle
+  ) {
+    const walkthroughRunner = ctx.walkthroughReview ?? runWalkthroughReview;
+    try {
+      walkthrough = await walkthroughRunner({
+        projectDir,
+        factoryRoot,
+        baseUrl: sharedDevServerHandle.baseUrl,
+        ...(parity ? { parity } : {}),
+        ...(perceptual ? { perceptual } : {}),
+        invokeAgent: ctx.invokeAgent,
+        ...(ctx.pipelineRunId !== undefined
+          ? { pipelineRunId: ctx.pipelineRunId }
+          : {}),
+      });
+      for (const w of walkthrough.warnings) warnings.push(`walkthrough: ${w}`);
+      walkthroughCost = walkthrough.costUsd;
+    } catch (err) {
+      warnings.push(`walkthrough-review threw: ${(err as Error).message}`);
+    }
+  } else if (!tier5Gated && ctx.runWalkthrough !== false && !ctx.invokeAgent) {
+    warnings.push(
+      "walkthrough-review skipped: invokeAgent not provided (verifier called without orchestrator dispatch plumbing)",
+    );
+  } else if (
+    !tier5Gated &&
+    ctx.runWalkthrough !== false &&
+    !sharedDevServerHandle
+  ) {
+    warnings.push(
+      "walkthrough-review skipped: no dev-server pre-boot handle (sharedDevServerHandle not available)",
+    );
+  }
+
+  // ── feat-069: dev-server teardown moved here, AFTER walkthrough (Tier 5).
+  // ── All three consumers (runFlows + parityVerify + walkthrough) have now
+  // ── consumed the shared handle; safe to tear down. ────────────────────
+  if (sharedDevServerHandle) {
+    try {
+      teardownDevServer(sharedDevServerHandle);
+    } catch (err) {
+      warnings.push(
+        `dev-server teardown threw (orphan processes possible): ${(err as Error).message}`,
+      );
+    }
+    sharedDevServerHandle = null;
+  }
+
+  // Auto-file ONE bug per walkthrough finding. Each maps 1:1 to a
+  // walkthrough-divergence bug plan + bugs.yaml entry via fileBugPlan.
+  if (ctx.autoFileBugPlans !== false && walkthrough) {
+    const fileBugPlanWalk = ctx.fileBugPlan ?? defaultFileBugPlanResolver();
+    const violations = walkthroughReviewToViolations(walkthrough);
+    for (const v of violations) {
+      try {
+        const violationPayload: Record<string, unknown> = {
+          kind: "walkthrough-finding" as const,
+          step: v.step,
+          element: v.element,
+          observation: v.observation,
+          severity: v.severity,
+          evidence: v.evidence,
+        };
+        if (v.expected !== undefined) violationPayload.expected = v.expected;
+        if (v.category !== undefined) violationPayload.category = v.category;
+        const args: Parameters<typeof fileBugPlanWalk>[0] = {
+          projectDir,
+          violation: violationPayload as unknown as BugPlanViolation,
+        };
+        if (ctx.pipelineRunId !== undefined)
+          args.pipelineRunId = ctx.pipelineRunId;
+        if (ctx.iteration !== undefined) args.iteration = ctx.iteration;
+        const { planId } = await fileBugPlanWalk(args);
+        bugPlansFiled.push(planId);
+      } catch (err) {
+        warnings.push(
+          `file-bug-plan failed for walkthrough step ${v.step}/${v.element}: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
   // Auto-file ONE bug per perceptual finding. Like parity bugs, each maps
   // 1:1 to a bug plan + bugs.yaml entry via fileBugPlan.
   if (ctx.autoFileBugPlans !== false && perceptual) {
@@ -916,12 +1025,14 @@ export async function runBuildToSpecVerify(
 
   const parityOk = parity ? parity.divergences.length === 0 : true;
   const perceptualOk = perceptual ? perceptual.ok : true;
+  const walkthroughOk = walkthrough ? walkthrough.ok : true;
   const ok =
     orphanComponents.length === 0 &&
     orphanRoutes.length === 0 &&
     flows.failed.length === 0 &&
     parityOk &&
-    perceptualOk;
+    perceptualOk &&
+    walkthroughOk;
 
   const output: BuildToSpecVerifyOutputType = {
     ok,
@@ -934,8 +1045,10 @@ export async function runBuildToSpecVerify(
     flows,
     ...(parity ? { parity } : {}),
     ...(perceptual ? { perceptual } : {}),
+    ...(walkthrough ? { walkthrough } : {}),
     bugPlansFiled,
-    costUsd: perceptualCost, // feat-068: perceptual is the only LLM dispatch
+    // feat-068+069: perceptual + walkthrough are the LLM dispatches; sum both.
+    costUsd: perceptualCost + walkthroughCost,
     durationMs: Date.now() - startedAt,
     warnings,
   };

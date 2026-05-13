@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ParityVerifyOutputSchema } from "./parity-verify.js";
 import { PerceptualReviewOutputSchema } from "./perceptual-review.js";
+import { WalkthroughReviewOutputSchema } from "./walkthrough-review.js";
 
 /**
  * `/build-to-spec-verify` output contract — feat-022.
@@ -288,6 +289,10 @@ export const BuildToSpecVerifyOutput = z.object({
   // Optional; absent when ctx.runPerceptual:false OR when parity didn't
   // produce per-screen PNGs for the runner to compare.
   perceptual: PerceptualReviewOutputSchema.optional(),
+  // feat-069 (2026-05-13) — Tier 5 AI walkthrough behavioral review sub-report.
+  // Optional; absent when tier 5 not in enabledTiers OR when ctx.runWalkthrough:false
+  // OR when the walkthrough script produced 0 screenshots (cascade-skip).
+  walkthrough: WalkthroughReviewOutputSchema.optional(),
   bugPlansFiled: z.array(z.string()).default([]),
   costUsd: z.number().nonnegative(),
   durationMs: z.number().int().nonnegative(),

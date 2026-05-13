@@ -52,6 +52,13 @@ export const AgentSequenceMember = z.enum([
   // NOT routable through agent_sequence (review is a verifier-side
   // step, not a fix-loop step).
   "perceptual-reviewer",
+  // feat-069 (2026-05-13) — Tier 5 AI walkthrough behavioral review agent.
+  // ONE invocation per fix-loop iteration. Consumes the walkthrough script's
+  // evidence bundle (screenshots + network log + console log) and emits
+  // structured behavioral findings. Read-only; dispatched directly by
+  // orchestrator/src/walkthrough-review.ts — NOT routable through
+  // agent_sequence.
+  "walkthrough-reviewer",
 ]);
 export type AgentSequenceMember = z.infer<typeof AgentSequenceMember>;
 
@@ -60,6 +67,7 @@ export const TaskAgent = z.enum([
   "web-frontend-builder",
   "mobile-frontend-builder",
   "perceptual-reviewer",
+  "walkthrough-reviewer",
   "tester",
   "reviewer",
   "security",

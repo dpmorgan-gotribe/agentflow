@@ -1323,8 +1323,9 @@ function bugPriorityComparator(a: BugEntry, b: BugEntry): number {
     "reachability-orphan": 2,
     "visual-parity": 3, // feat-028 — DOM-skeleton / computed-style mismatch
     "perceptual-divergence": 4, // feat-068 — vision-LLM finding (post-parity)
-    "flow-execution-failure": 5,
-    "pm-coverage-omission": 6,
+    "walkthrough-divergence": 5, // feat-069 — behavioral finding (post-perceptual)
+    "flow-execution-failure": 6,
+    "pm-coverage-omission": 7,
   };
   return sourceOrder[a.source] - sourceOrder[b.source];
 }
