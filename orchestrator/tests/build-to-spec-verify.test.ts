@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runBuildToSpecVerify } from "../src/build-to-spec-verify.js";
 import type {
   OrphanComponent,
@@ -1339,5 +1339,117 @@ describe("runBuildToSpecVerify — bug-078 pre-verify discriminator gate", () =>
       "utf8",
     );
     expect(after).toMatch(/^ENABLE_TEST_SEED=1$/m);
+  });
+});
+
+describe("runBuildToSpecVerify — bug-095 seed-baseline restore", () => {
+  it("hits POST /test/seed-baseline after runFlows when visual tiers will fire + backendUrl is set", async () => {
+    const fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+
+    const stubBootWithBackend = async () =>
+      ({
+        process: { kill: () => true } as never,
+        baseUrl: "http://localhost:3000",
+        backendUrl: "http://localhost:3001",
+        startedAtMs: Date.now(),
+      }) as never;
+
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      factoryRoot: "/factory",
+      runScript: async () => ({
+        stdout: JSON.stringify({
+          ok: true,
+          scannedFiles: 0,
+          orphanComponents: [],
+          orphanRoutes: [],
+          ignoredByAllowComment: [],
+          generatedFiles: ["apps/web/e2e/synthesized/flow-1.spec.ts"],
+        }),
+        stderr: "",
+        exitCode: 0,
+      }),
+      runFlows: async () => ({
+        ok: true,
+        flows: { passed: ["flow-1"], failed: [] },
+        warnings: [],
+      }),
+      runParity: false,
+      runPerceptual: true,
+      runWalkthrough: false,
+      perceptualReview: async () => ({
+        ok: true,
+        screensReviewed: 0,
+        screensSkipped: 0,
+        reviews: [],
+        warnings: [],
+        durationMs: 0,
+        costUsd: 0,
+      }),
+      bootDevServer: stubBootWithBackend,
+    });
+
+    const seedBaselineCalls = fetchSpy.mock.calls.filter(
+      ([url]) => typeof url === "string" && url.endsWith("/test/seed-baseline"),
+    );
+    expect(seedBaselineCalls).toHaveLength(1);
+    expect(seedBaselineCalls[0]![0]).toBe(
+      "http://localhost:3001/test/seed-baseline",
+    );
+    expect(seedBaselineCalls[0]![1]).toMatchObject({ method: "POST" });
+    expect(result.warnings?.join(" ")).toContain(
+      "bug-095: restored seed-baseline",
+    );
+
+    fetchSpy.mockRestore();
+  });
+
+  it("does NOT call seed-baseline when visual tiers are gated off", async () => {
+    const fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+
+    const stubBootWithBackend = async () =>
+      ({
+        process: { kill: () => true } as never,
+        baseUrl: "http://localhost:3000",
+        backendUrl: "http://localhost:3001",
+        startedAtMs: Date.now(),
+      }) as never;
+
+    await runBuildToSpecVerify({
+      projectDir,
+      factoryRoot: "/factory",
+      runScript: async () => ({
+        stdout: JSON.stringify({
+          ok: true,
+          scannedFiles: 0,
+          orphanComponents: [],
+          orphanRoutes: [],
+          ignoredByAllowComment: [],
+          generatedFiles: ["apps/web/e2e/synthesized/flow-1.spec.ts"],
+        }),
+        stderr: "",
+        exitCode: 0,
+      }),
+      runFlows: async () => ({
+        ok: true,
+        flows: { passed: ["flow-1"], failed: [] },
+        warnings: [],
+      }),
+      runParity: false,
+      runPerceptual: false,
+      runWalkthrough: false,
+      bootDevServer: stubBootWithBackend,
+    });
+
+    const seedBaselineCalls = fetchSpy.mock.calls.filter(
+      ([url]) => typeof url === "string" && url.endsWith("/test/seed-baseline"),
+    );
+    expect(seedBaselineCalls).toHaveLength(0);
+
+    fetchSpy.mockRestore();
   });
 });

@@ -1,21 +1,21 @@
 ---
 id: bug-095-in-loop-verifier-db-pollution
 type: bug
-status: draft
+status: completed
 author-agent: human
 created: 2026-05-13
 updated: 2026-05-13
-parent-plan: feat-066-fix-loop-effectiveness-v2 (v2-Phase-3 lead candidate)
+outcome: shipped — Option A (POST /test/seed-baseline between flow-execution and Tiers 4+5) landed in build-to-spec-verify.ts; visual-tier captures now happen against canonical seed state, not post-cleanup
+parent-plan: feat-066-fix-loop-effectiveness-v2 (v2-Phase-3)
 supersedes: null
 superseded-by: null
 branch: fix/in-loop-verifier-db-pollution
 affected-files:
   - orchestrator/src/build-to-spec-verify.ts
-  - scripts/run-synthesized-flows.mjs
-  - orchestrator/src/rounds-orchestrator.ts
+  - orchestrator/tests/build-to-spec-verify.test.ts
 feature-area: orchestrator/verifier-ordering
 priority: P0
-attempt-count: 0
+attempt-count: 1
 max-attempts: 5
 error-message: "rounds-orchestrator's mid-/fix-bugs re-verify runs flow-execution (which cleans DB tables to set up flow-specific seed state) BEFORE the perceptual + walkthrough tiers. Perceptual + walkthrough then capture a wiped DB state and file findings like 'book-detail returns 404', 'no API calls initiated', 'app renders broken error boundary' — all false-positive artefacts of the post-cleanup state."
 reproduction-steps: "1. Generate a project with full /start-build through to verifier. 2. Trigger /fix-bugs invocation that takes >1 round. 3. Observe rounds-orchestrator's outer-iteration-2+ verifier output: perceptual + walkthrough will surface findings consistent with empty-DB rendering even though the project's seed data exists in apps/api/db/seed.ts."
@@ -104,4 +104,25 @@ Recommended order: ship Option A first (single-line fix), then B (depends on bug
 
 ## Attempt Log
 
-<!-- Populated by executing agents. -->
+### 2026-05-13 — Option A shipped
+
+Inserted a `POST /test/seed-baseline` call in `orchestrator/src/build-to-spec-verify.ts` between the parity bug-plan filing block (~line 824) and the Tier 4 perceptual review block (~line 826). The call fires only when ALL of:
+
+- Visual tiers will fire (Tier 4 OR 5 is in `enabledTiers`, AND `runPerceptual !== false` OR `runWalkthrough !== false`)
+- `flowsRan === true` (the new hoisted flag tracking whether `runFlows` actually executed — so we don't waste an HTTP call when Tier 3 was gated off)
+- `sharedDevServerHandle?.backendUrl` is set (multi-tier project with Strategy-C backend)
+
+The endpoint is idempotent + 204-on-success. If absent (project without `/test/seed-baseline`) or fails, the call surfaces a soft warning and the verifier continues — Tier 4+5 just observe whatever state they find. Hard failure isn't appropriate because the absence is project-dependent.
+
+Tests added (`orchestrator/tests/build-to-spec-verify.test.ts`):
+
+- "hits POST /test/seed-baseline after runFlows when visual tiers will fire + backendUrl is set" — vi.spyOn(global, "fetch") confirms the URL + method, asserts the warning surfaces.
+- "does NOT call seed-baseline when visual tiers are gated off" — confirms the gate works (runPerceptual=false + runWalkthrough=false → 0 fetch calls).
+
+Hoisting note: introduced a `flowsRan` boolean at the wider function scope (line 487) and set `true` inside the executeFlows block right after `runFlows` resolves. Cleaner than expanding `runResult`'s scope to outside its conditional block.
+
+Options B + C from the plan body deferred: Option B (per-flow-spec teardown restores baseline in `afterAll`) requires bug-096 (apiBase regression) to land first since flow specs need to actually run end-to-end. Option C (split flow-execution into a separate verifier invocation) is architectural; defer until A+B prove insufficient.
+
+Suite: 36/36 build-to-spec-verify tests + 944/944 full orchestrator suite green.
+
+Empirical follow-up needed (next session against a fresh project): re-run /build-to-spec-verify on reading-log-02 and confirm perceptual + walkthrough no longer file "page returns 404" / "no API calls" findings post-fix.

@@ -483,6 +483,7 @@ export async function runBuildToSpecVerify(
   // (not a failure) so the verify stage stays soft-gated for v1.
   const flowsPassed: string[] = [];
   const flowsFailed: FlowFailure[] = [];
+  let flowsRan = false; // bug-095 — set true when runFlows actually executed
   if (ctx.executeFlows !== false && generatedFiles.length > 0) {
     let runResult: RunFlowsResult | null = null;
     try {
@@ -525,6 +526,7 @@ export async function runBuildToSpecVerify(
           });
         });
       runResult = await runFlows({ projectDir, factoryRoot });
+      flowsRan = true;
     } catch (err) {
       // feat-056 Gap A — runner crash classifies as runtime-error tool
       // failure → cascade-root bug filed by downstream pipeline.
@@ -820,6 +822,51 @@ export async function runBuildToSpecVerify(
           `file-bug-plan failed for parity ${div.screen}/${div.pattern}: ${(err as Error).message}`,
         );
       }
+    }
+  }
+
+  // ── bug-095: restore seed-baseline before Tier 4 + Tier 5 fire ─────────
+  // The flow-execution stage (Tier 3) runs Playwright specs whose beforeAll
+  // hits /test/cleanup to set up flow-specific seed state. By the time
+  // flow-execution returns, the DB is partially-wiped. If Tiers 4+5 capture
+  // their screenshots / network logs / agent reviews against THAT state,
+  // they observe "book detail returns 404", "no API calls initiated", etc.
+  // — all artefacts of post-cleanup state, NOT real product bugs.
+  //
+  // Empirical motivator: reading-log-02 /fix-bugs 2026-05-13. ~half of the
+  // rounds-orchestrator's in-loop verifier findings traced to this class.
+  //
+  // Fix: hit POST /test/seed-baseline (canonical Strategy-C primitive) to
+  // restore the read-only baseline before the visual tiers capture. The
+  // endpoint is idempotent + 204-on-success; if absent (no backend, or
+  // backend doesn't expose /test/seed-baseline), the call 404s and we log
+  // a soft warning. Either way the verifier continues.
+  const visualTiersWillFire =
+    (ctx.enabledTiers === undefined ||
+      ctx.enabledTiers.has(4) ||
+      ctx.enabledTiers.has(5)) &&
+    (ctx.runPerceptual !== false || ctx.runWalkthrough !== false);
+  if (visualTiersWillFire && flowsRan && sharedDevServerHandle?.backendUrl) {
+    const baselineUrl = `${sharedDevServerHandle.backendUrl.replace(/\/$/, "")}/test/seed-baseline`;
+    try {
+      const res = await fetch(baselineUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (res.ok) {
+        warnings.push(
+          `bug-095: restored seed-baseline at ${baselineUrl} (${res.status}) before Tier 4+5 capture`,
+        );
+      } else {
+        warnings.push(
+          `bug-095: seed-baseline restore at ${baselineUrl} returned ${res.status} — Tier 4+5 may observe post-cleanup DB state`,
+        );
+      }
+    } catch (err) {
+      warnings.push(
+        `bug-095: seed-baseline restore at ${baselineUrl} threw: ${(err as Error).message} — Tier 4+5 may observe post-cleanup DB state`,
+      );
     }
   }
 
