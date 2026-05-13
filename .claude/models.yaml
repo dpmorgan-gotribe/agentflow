@@ -38,6 +38,24 @@ agents:
   # exploration budget comes from agent frontmatter (maxTurns: 12) and
   # the 18-min stall cap in model-config.ts:DEFAULT_STALL_TIMEOUT_BY_AGENT.
   systemic-fixer: { tier: building, effort: medium }
+  # feat-068 (2026-05-12) — perceptual-reviewer is the Tier 4 vision-LLM
+  # agent. Per-screen mockup-vs-live comparison, structured-output JSON.
+  # tier:building resolves to Sonnet (vision-capable, ~5× cheaper than
+  # Opus on tier:planning); the task is pattern-recognition over images,
+  # not deep reasoning. effort:medium gives enough budget for image
+  # inputs + parity-context preload. ~$0.005-0.01 per screen.
+  # Also pinned in FACTORY_DEFAULT_AGENT_TIERS so project-level YAMLs
+  # don't need to repeat this (matches bug-fixer / systemic-fixer pattern).
+  perceptual-reviewer: { tier: building, effort: medium }
+  # feat-069 (2026-05-13) — walkthrough-reviewer is the Tier 5 AI walkthrough
+  # behavioral agent. ONE invocation per fix-loop iteration; reads the
+  # Playwright walkthrough's evidence bundle (screenshots + network log +
+  # console log) and emits behavioral findings. tier:building (Sonnet)
+  # for same vision + cross-step reasoning reasons as perceptual.
+  # effort:medium with maxTurns:4 frontmatter gives the agent room for
+  # the larger evidence bundle (~24 screenshots vs perceptual's 2) without
+  # wandering. Projected ~$0.05-0.10 per walkthrough.
+  walkthrough-reviewer: { tier: building, effort: medium }
 
 # Budget overrides. Leave empty to inherit.
 # budget:

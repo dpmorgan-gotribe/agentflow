@@ -130,6 +130,23 @@ function stableSlugFor(violation) {
       path.basename(violation.path, path.extname(violation.path));
     return `orphan-${slugify(name)}`;
   }
+  // feat-068 — perceptual finding slug = (screen, element) tuple so
+  // re-running the vision-LLM produces the same id and dedup fires.
+  if (violation.kind === "perceptual-finding") {
+    const elementSlug = slugify(violation.element)
+      .slice(0, 30)
+      .replace(/-+$/, "");
+    return `perceptual-${slugify(violation.screen)}-${elementSlug || "element"}`;
+  }
+  // feat-069 — walkthrough finding slug = (step, element) tuple. The step
+  // anchor + element name combine to a stable id so a re-run of the
+  // walkthrough produces the same id + dedup fires across iterations.
+  if (violation.kind === "walkthrough-finding") {
+    const elementSlug = slugify(violation.element)
+      .slice(0, 30)
+      .replace(/-+$/, "");
+    return `walkthrough-step-${violation.step}-${elementSlug || "element"}`;
+  }
   // orphan-route
   return `orphan-route-${slugify(violation.routePattern ?? violation.path)}`;
 }
@@ -714,6 +731,126 @@ function parityDivergenceBody(v) {
   return lines.join("\n");
 }
 
+// ─── feat-068: perceptualFindingBody template ────────────────────────────
+//
+// Tier 4 vision-LLM perceptual review produces element-level findings that
+// the structural+pixel parity verifier missed. Each finding becomes one
+// bug; the body surfaces the mockup-vs-actual delta in human-readable
+// form so a reviewer/operator can triage at a glance.
+function perceptualFindingBody(v) {
+  const lines = [];
+  lines.push(`# Perceptual finding on \`${v.screen}\`: \`${v.element}\``);
+  lines.push("");
+  lines.push(
+    "Visual-LLM perceptual review (Tier 4) found a discrepancy between the design mockup and the live build that the structural+pixel parity layer (Tier 3) didn't catch.",
+  );
+  lines.push("");
+  lines.push("## Discrepancy");
+  lines.push("");
+  lines.push("| | Value |");
+  lines.push("| --- | --- |");
+  lines.push(`| **Element** | ${v.element} |`);
+  if (v.category) lines.push(`| **Category** | ${v.category} |`);
+  if (v.mockupValue) lines.push(`| **Mockup shows** | ${v.mockupValue} |`);
+  if (v.actualValue) lines.push(`| **Live renders** | ${v.actualValue} |`);
+  if (v.description && !v.mockupValue && !v.actualValue) {
+    // Agent emitted a single description instead of split mockup/actual.
+    // Surface it as a single row so the operator + bug-fixer have context.
+    lines.push(`| **Description** | ${v.description} |`);
+  }
+  lines.push(`| **Severity** | ${v.severity ?? "P1"} |`);
+  lines.push("");
+  if (v.description && (v.mockupValue || v.actualValue)) {
+    // Both fields present — show description as supplementary context below.
+    lines.push("### Description");
+    lines.push("");
+    lines.push(v.description);
+    lines.push("");
+  }
+  lines.push("## References");
+  lines.push("");
+  lines.push(
+    `- Mockup PNG: \`docs/build-to-spec/pixel-diffs/${v.screen}.mockup.png\``,
+  );
+  lines.push(
+    `- Live PNG: \`docs/build-to-spec/pixel-diffs/${v.screen}.built.png\``,
+  );
+  lines.push(`- Mockup HTML: \`docs/screens/webapp/${v.screen}.html\``);
+  lines.push(
+    `- Per-screen perceptual JSON: \`docs/build-to-spec/perceptual/${v.screen}.json\``,
+  );
+  lines.push("");
+  lines.push("## Validation");
+  lines.push("");
+  lines.push(
+    "Re-run `/build-to-spec-verify`; perceptual review for this screen should no longer surface this element. (Other findings on the same screen may persist — they file as separate bugs.)",
+  );
+  return lines.join("\n");
+}
+
+// ─── feat-069: walkthroughFindingBody template ───────────────────────────
+//
+// Tier 5 AI walkthrough behavioral review produces step-level findings about
+// interaction behavior (duplicate-request, no-op-control, broken-nav, etc.)
+// that static perceptual review (Tier 4) misses. Each finding becomes one
+// bug; the body surfaces the step + observation + evidence references so
+// the bug-fixer can locate screenshots / network log / console log without
+// re-running the walkthrough.
+function walkthroughFindingBody(v) {
+  const lines = [];
+  lines.push(`# Walkthrough finding at step ${v.step}: \`${v.element}\``);
+  lines.push("");
+  lines.push(
+    "AI walkthrough behavioral review (Tier 5) found an interaction-level issue that the static perceptual review (Tier 4) didn't catch.",
+  );
+  lines.push("");
+  lines.push("## Observation");
+  lines.push("");
+  lines.push(v.observation);
+  lines.push("");
+  lines.push("## Discrepancy");
+  lines.push("");
+  lines.push("| | Value |");
+  lines.push("| --- | --- |");
+  lines.push(`| **Step** | ${v.step} |`);
+  lines.push(`| **Element** | ${v.element} |`);
+  if (v.category) lines.push(`| **Category** | ${v.category} |`);
+  if (v.expected) lines.push(`| **Expected** | ${v.expected} |`);
+  lines.push(`| **Severity** | ${v.severity ?? "P1"} |`);
+  lines.push("");
+  if (Array.isArray(v.evidence) && v.evidence.length > 0) {
+    lines.push("## Evidence");
+    lines.push("");
+    for (const e of v.evidence) {
+      lines.push(`- \`${e}\``);
+    }
+    lines.push("");
+  }
+  lines.push("## References");
+  lines.push("");
+  lines.push(
+    `- Walkthrough manifest: \`docs/build-to-spec/walkthrough/manifest.json\``,
+  );
+  lines.push(
+    `- Network log: \`docs/build-to-spec/walkthrough/network.ndjson\``,
+  );
+  lines.push(
+    `- Console log: \`docs/build-to-spec/walkthrough/console.ndjson\``,
+  );
+  lines.push(
+    `- Walkthrough review JSON: \`docs/build-to-spec/walkthrough/review.json\``,
+  );
+  lines.push("");
+  lines.push("## Validation");
+  lines.push("");
+  lines.push(
+    "Re-run `/build-to-spec-verify`; walkthrough review should no longer surface this finding at step `" +
+      v.step +
+      "`. (Other behavioral findings may persist — they file as separate bugs.)",
+  );
+  return lines.join("\n");
+}
+
 // ─── feat-026 Phase A: bugs.yaml writer ───────────────────────────────────
 //
 // In addition to writing the standalone bug-NNN-*.md plan, the verifier
@@ -734,6 +871,8 @@ function bugSourceFor(violation) {
   if (violation.kind === "runtime-error") return "runtime-error";
   if (violation.kind === "dev-server-compile") return "dev-server-compile";
   if (violation.kind === "parity-divergence") return "visual-parity";
+  if (violation.kind === "perceptual-finding") return "perceptual-divergence";
+  if (violation.kind === "walkthrough-finding") return "walkthrough-divergence";
   return "reachability-orphan"; // both orphan-component + orphan-route
 }
 
@@ -930,6 +1069,93 @@ function defaultAgentSequence(violation, tier = "web-frontend-builder") {
     case "step-transition":
     case "timeout-no-evidence":
       return ["bug-fixer"];
+    // bug-087 (2026-05-12) — category-aware routing for perceptual-
+    // divergence bugs (feat-068 Phase D 2.0 surfaced 80%+ failure rate at
+    // bug-fixer because most perceptual findings aren't smallest-diff-
+    // shaped). Mirrors bug-085's pattern-aware routing for visual-parity.
+    //
+    //   functional / runtime-error / state-routing / runtime /
+    //   missing-interactive-state  → operator-review (backend / data fix
+    //                                 — no source change can resolve
+    //                                 "page renders Book not found")
+    //
+    //   missing-element / missing-component / layout
+    //                              → systemic-fixer (cross-component
+    //                                 structural drift)
+    //
+    //   copy-mismatch / polish / branding / element-name categories /
+    //   no-category                → bug-fixer (default — element-level
+    //                                 / source-of-truth lookups)
+    case "perceptual-divergence": {
+      const category =
+        violation && violation.perceptual && violation.perceptual.category;
+      if (category === undefined || category === null) {
+        return ["bug-fixer"];
+      }
+      const OPERATOR_REVIEW_CATEGORIES = new Set([
+        "functional",
+        "runtime-error",
+        "runtime",
+        "state-routing",
+        "missing-interactive-state",
+      ]);
+      // bug-087 (2026-05-12) — project-agnostic bug-shape categories.
+      // These are abstract bug-classes the agent emits regardless of
+      // project domain. Always route to systemic-fixer.
+      const SYSTEMIC_FIXER_CATEGORIES = new Set([
+        "missing-element",
+        "missing-component",
+        "layout",
+        "structural",
+      ]);
+      // bug-fixer's lane: surface-level abstract categories.
+      const BUG_FIXER_ABSTRACT_CATEGORIES = new Set([
+        "copy-mismatch",
+        "polish",
+        "uncategorized",
+      ]);
+      if (OPERATOR_REVIEW_CATEGORIES.has(category)) return [];
+      if (SYSTEMIC_FIXER_CATEGORIES.has(category)) return ["systemic-fixer"];
+      if (BUG_FIXER_ABSTRACT_CATEGORIES.has(category)) return ["bug-fixer"];
+      // bug-088 (2026-05-12) — element-name heuristic. The vision-LLM
+      // routinely emits PROJECT-SPECIFIC category names (e.g. book-list-
+      // item, task-card, invoice-row, search, nav, branding) rather than
+      // a fixed abstract taxonomy. Hardcoding per-project element names
+      // doesn't scale.
+      //
+      // Empirical evidence (reading-log-02 2026-05-12): ALL element-name-
+      // categorized perceptual bugs that failed bug-fixer were structural
+      // cross-component drift. Project-agnostic heuristic: any
+      // kebab-case-or-single-word category that isn't in the explicit
+      // abstract-taxonomy sets is an element-name → route to systemic-fixer.
+      //
+      // Edge cases handled:
+      //   - "(no-category)" — has parens, regex fails → falls through to
+      //     bug-fixer (default).
+      //   - "Polish" / mixed-case — regex fails → bug-fixer.
+      //   - empty string — regex fails → bug-fixer.
+      //
+      // Future evolution: a `bugShape` field in the agent's output would
+      // make this explicit. Until then, the heuristic mirrors the
+      // empirical bug-shape signal.
+      const isLikelyElementNameCategory =
+        typeof category === "string" && /^[a-z]+(-[a-z]+)*$/.test(category);
+      if (isLikelyElementNameCategory) return ["systemic-fixer"];
+      return ["bug-fixer"];
+    }
+    // feat-069 (2026-05-13) — walkthrough-divergence routing.
+    // Behavioral findings vary in scope:
+    //   - duplicate-request (bug-094 class) — bug-fixer (often a single hook /
+    //     useEffect / component issue)
+    //   - no-op-control — bug-fixer (single handler wiring)
+    //   - broken-navigation — bug-fixer (route / link issue) unless category
+    //     indicates cross-page; default bug-fixer
+    //   - keyboard-nav-skip — bug-fixer (focus / tabIndex on one component)
+    //   - feedback-missing — bug-fixer (single error-handling site)
+    // v1: all walkthrough findings → bug-fixer. Empirical signal can refine
+    // routing later (mirroring bug-087/088's perceptual evolution).
+    case "walkthrough-divergence":
+      return ["bug-fixer"];
     // bug-085 (2026-05-12) — pattern-aware routing for visual-parity bugs.
     // Empirical motivator: reading-log-02 /fix-bugs 2026-05-12 — 5 of 7 failed
     // bugs were visual-parity `layout-regrouping`. bug-fixer's smallest-diff
@@ -1114,6 +1340,25 @@ function buildBugEntry({
               ? { pattern: violation.pattern }
               : undefined,
         };
+      } else if (violation.kind === "perceptual-finding") {
+        // bug-087 (2026-05-12) — preserve `category` through the remap so
+        // defaultAgentSequence's perceptual-divergence branch can route
+        // by category (functional → operator-review, missing-element →
+        // systemic-fixer, default → bug-fixer). Mirrors bug-085's
+        // pattern-preservation for visual-parity.
+        violationForRouting = {
+          primaryCause: "perceptual-divergence",
+          perceptual: { category: violation.category },
+        };
+      } else if (violation.kind === "walkthrough-finding") {
+        // feat-069 (2026-05-13) — walkthrough-divergence routing. All
+        // walkthrough findings route to bug-fixer in v1 (per
+        // defaultAgentSequence's case branch). Empirical signal can
+        // refine to systemic-fixer later if behavioral findings have
+        // a cross-file root-cause pattern.
+        violationForRouting = {
+          primaryCause: "walkthrough-divergence",
+        };
       } else if (violation.kind === "flow-failure" && !violation.primaryCause) {
         // Flow-failure with no upstream classification — default to the
         // flow-execution-failure cause class so bug-fixer routing fires.
@@ -1215,6 +1460,42 @@ function buildBugEntry({
       pattern: violation.pattern,
       detail: violation.detail,
     };
+  } else if (violation.kind === "perceptual-finding") {
+    // feat-068 — surface the vision-LLM's structured finding so the
+    // dispatched bug-fixer can read the exact mockup-vs-actual delta
+    // directly from bugs.yaml.
+    // feat-068 followup — mockupValue/actualValue now optional (agent
+    // sometimes emits a single `description` instead). category is a
+    // bug-class hint from the agent.
+    const perceptual = {
+      screen: violation.screen,
+      element: violation.element,
+    };
+    if (violation.mockupValue !== undefined)
+      perceptual.mockupValue = violation.mockupValue;
+    if (violation.actualValue !== undefined)
+      perceptual.actualValue = violation.actualValue;
+    if (violation.description !== undefined)
+      perceptual.description = violation.description;
+    if (violation.category !== undefined)
+      perceptual.category = violation.category;
+    entry.perceptual = perceptual;
+  } else if (violation.kind === "walkthrough-finding") {
+    // feat-069 — surface the AI walkthrough agent's structured finding
+    // so the dispatched bug-fixer can locate the screenshots / network
+    // / console evidence directly from bugs.yaml without re-running the
+    // walkthrough script.
+    const walkthrough = {
+      step: violation.step,
+      element: violation.element,
+      observation: violation.observation,
+      evidence: Array.isArray(violation.evidence) ? violation.evidence : [],
+    };
+    if (violation.expected !== undefined)
+      walkthrough.expected = violation.expected;
+    if (violation.category !== undefined)
+      walkthrough.category = violation.category;
+    entry.walkthrough = walkthrough;
   }
   return entry;
 }
@@ -1302,6 +1583,35 @@ function summaryFor(violation) {
     if (d.styleDrift.length) counts.push(`${d.styleDrift.length} styleDrift`);
     const tail = counts.length ? ` (${counts.join(", ")})` : "";
     return `Parity ${violation.pattern} on ${violation.screen}${tail}`.slice(
+      0,
+      200,
+    );
+  }
+  if (violation.kind === "perceptual-finding") {
+    // feat-068 followup — handle the optional mockupValue/actualValue case.
+    // Prefer the mockup-vs-actual split when present; fall back to
+    // description; finally fall back to element-only.
+    if (violation.mockupValue && violation.actualValue) {
+      return `Perceptual: ${violation.element} on ${violation.screen} — mockup: ${violation.mockupValue}; actual: ${violation.actualValue}`.slice(
+        0,
+        200,
+      );
+    }
+    if (violation.description) {
+      return `Perceptual: ${violation.element} on ${violation.screen} — ${violation.description}`.slice(
+        0,
+        200,
+      );
+    }
+    return `Perceptual: ${violation.element} on ${violation.screen}`.slice(
+      0,
+      200,
+    );
+  }
+  if (violation.kind === "walkthrough-finding") {
+    // feat-069 — behavioral finding from the AI walkthrough. The
+    // observation is the primary signal; step + element are anchors.
+    return `Walkthrough step ${violation.step} (${violation.element}): ${violation.observation}`.slice(
       0,
       200,
     );
@@ -1466,6 +1776,10 @@ export async function fileBugPlan({
     body = runtimeErrorBody(violation, { dependsOnBugId });
   } else if (violation.kind === "parity-divergence") {
     body = parityDivergenceBody(violation);
+  } else if (violation.kind === "perceptual-finding") {
+    body = perceptualFindingBody(violation);
+  } else if (violation.kind === "walkthrough-finding") {
+    body = walkthroughFindingBody(violation);
   } else if (violation.kind === "orphan-component") {
     body = orphanComponentBody(violation);
   } else {

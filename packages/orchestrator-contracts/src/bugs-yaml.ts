@@ -32,6 +32,8 @@ export const BugSourceSchema = z.enum([
   "runtime-error", // feat-027 runtime-error capture (console / page / network)
   "dev-server-compile", // feat-027 Next.js dev-server overlay (cascade root-cause)
   "visual-parity", // feat-028 ParityVerify (DOM-skeleton + computed-style audit)
+  "perceptual-divergence", // feat-068 vision-LLM perceptual review (Tier 4)
+  "walkthrough-divergence", // feat-069 AI walkthrough behavioral review (Tier 5)
   "pm-coverage-omission", // feat-023 brief-coverage gate (rare; usually fails earlier)
 ]);
 export type BugSource = z.infer<typeof BugSourceSchema>;
@@ -141,6 +143,77 @@ export const BugParityContextSchema = z.object({
 export type BugParityContext = z.infer<typeof BugParityContextSchema>;
 
 /**
+ * Source-specific context for a perceptual-divergence bug (feat-068).
+ * Vision-LLM observed one visible element-level discrepancy between the
+ * mockup and the live build. The agent's structured output is preserved
+ * here so the bug-fixer / systemic-fixer can read the exact mockup-vs-
+ * actual delta from bugs.yaml without re-running the vision-LLM call.
+ */
+export const BugPerceptualContextSchema = z.object({
+  /** Mockup screen-id (matches the parity context's screen field). */
+  screen: z.string().min(1),
+  /** Brief element identifier — e.g. "Pencil edit button on book card". */
+  element: z.string().min(1),
+  /**
+   * What the mockup shows for that element. Optional — agents may roll
+   * mockup+actual into a single `description` field instead. When present,
+   * pairs with `actualValue` for the bug-body's mockup-vs-actual table.
+   */
+  mockupValue: z.string().optional(),
+  /** What the live build renders. Optional, see `mockupValue`. */
+  actualValue: z.string().optional(),
+  /**
+   * Free-text description of the discrepancy. Fallback when the agent
+   * didn't split into mockupValue/actualValue. Rendered as the primary
+   * bug-body diagnostic when present.
+   */
+  description: z.string().optional(),
+  /**
+   * Bug-class hint from the agent (e.g. "content-missing", "branding",
+   * "polish", "state-routing"). Free-form; downstream clusterer +
+   * routing consume.
+   */
+  category: z.string().optional(),
+});
+export type BugPerceptualContext = z.infer<typeof BugPerceptualContextSchema>;
+
+/**
+ * Source-specific context for a walkthrough-divergence bug (feat-069).
+ * AI walkthrough agent observed a BEHAVIORAL issue at one (or more) step
+ * of the Playwright-driven multi-step user journey. Captures the step
+ * number + observation + evidence references so the bug-fixer can locate
+ * the screenshot / network log / console log without re-running the
+ * walkthrough.
+ */
+export const BugWalkthroughContextSchema = z.object({
+  /** 1-indexed step in the walkthrough where the issue manifested. */
+  step: z.number().int().min(1),
+  /**
+   * Short symbolic label for the element / interaction. Example:
+   * "delete-button on book-detail", "theme-toggle on settings".
+   */
+  element: z.string().min(1),
+  /** What the agent observed (the behavioral issue). */
+  observation: z.string().min(1),
+  /** What should have happened (mockup-derived or generic). Optional. */
+  expected: z.string().optional(),
+  /**
+   * Bug-class hint emitted by the agent. e.g. "duplicate-request",
+   * "no-op-control", "broken-navigation", "keyboard-nav-skip",
+   * "feedback-missing". Free-form.
+   */
+  category: z.string().optional(),
+  /**
+   * Evidence references — paths into the walkthrough's artefact directory.
+   * Examples: "screenshot:books-list-step-3.png", "network:1778-...-1779-...",
+   * "console:step-3-pageerror". Propagated to the bug-fixer's pre-loaded
+   * context so the agent can locate evidence.
+   */
+  evidence: z.array(z.string()).default([]),
+});
+export type BugWalkthroughContext = z.infer<typeof BugWalkthroughContextSchema>;
+
+/**
  * One bug entry. `iteration` records when the verifier first detected it;
  * `attempts` is the per-bug attempt counter the loop respects. Either
  * `flow` or `orphan` is populated (matching `source`); the other is
@@ -157,7 +230,9 @@ export type BugParityContext = z.infer<typeof BugParityContextSchema>;
 export const BugEntrySchema = z.object({
   id: z
     .string()
-    .regex(/^bug-(flow|orphan|coverage|runtime|compile|parity)-[a-z0-9-]+$/),
+    .regex(
+      /^bug-(flow|orphan|coverage|runtime|compile|parity|perceptual|walkthrough)-[a-z0-9-]+$/,
+    ),
   iteration: z.number().int().min(1),
   source: BugSourceSchema,
   severity: BugSeveritySchema.default("P0"),
@@ -170,6 +245,17 @@ export const BugEntrySchema = z.object({
   // schema-modeled so the fix-bugs loop can group same-pattern bugs
   // for batched dispatch.
   parity: BugParityContextSchema.optional(),
+  // feat-068 (2026-05-12) — Tier 4 vision-LLM perceptual review observation.
+  // Present iff `source === "perceptual-divergence"`. The agent's structured
+  // output is captured here so downstream bug-fixer dispatch can read the
+  // exact mockup-vs-actual delta without re-running vision-LLM.
+  perceptual: BugPerceptualContextSchema.optional(),
+  // feat-069 (2026-05-13) — Tier 5 AI walkthrough behavioral observation.
+  // Present iff `source === "walkthrough-divergence"`. Captures the step
+  // number + observation + evidence refs from the walkthrough-reviewer
+  // agent's output so the bug-fixer can locate screenshots / network /
+  // console logs without re-running the walkthrough.
+  walkthrough: BugWalkthroughContextSchema.optional(),
 
   // Correlation (set when verifier matches a flow failure to an orphan)
   correlatedOrphanPath: z.string().nullable().default(null),
@@ -255,6 +341,8 @@ export function defaultAgentSequenceForSource(
     case "runtime-error":
     case "dev-server-compile":
     case "visual-parity":
+    case "perceptual-divergence":
+    case "walkthrough-divergence":
     case "pm-coverage-omission":
       return ["web-frontend-builder", "tester", "reviewer"] as const;
   }

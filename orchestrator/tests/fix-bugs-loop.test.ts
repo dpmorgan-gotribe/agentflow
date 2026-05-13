@@ -2387,3 +2387,820 @@ describe("dispatchAgentsForBug — bug-082 unverified-completion guard", () => {
     expect(result.bugsResolved).toEqual(["bug-orphan-nogit"]);
   });
 });
+
+// bug-091 (2026-05-13) — protected-files guard. Agents in the /fix-bugs loop
+// dispatch chain (bug-fixer / systemic-fixer) have unrestricted Write/Edit
+// permissions and occasionally delete load-bearing config files (most
+// empirically: apps/web/postcss.config.mjs, reopening bug-077's Tailwind
+// pipeline gap). The verifyProtectedFiles call inserted between dispatch
+// and closePerBugWorktree catches the violation BEFORE the merge cascade,
+// so the bad commit never reaches fix/bugs-yaml-iter.
+describe("bug-091 — protected-files guard", () => {
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString();
+  }
+
+  function setupRepoWithProtectedFiles(): {
+    repoRoot: string;
+    fixupWorktreePath: string;
+    cleanup: () => void;
+  } {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bug-091-repo-"));
+    git(repoRoot, "init -q -b master");
+    git(repoRoot, "config user.email test@example.com");
+    git(repoRoot, "config user.name Test");
+    git(repoRoot, "config commit.gpgsign false");
+    writeFileSync(join(repoRoot, "README.md"), "v1\n");
+
+    // .claude/hooks scaffolding seedWorktree expects.
+    const hooksDir = join(repoRoot, ".claude", "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    for (const h of [
+      "block-dangerous.sh",
+      "detect-loop.mjs",
+      "enforce-boundaries.sh",
+      "validate-brief.mjs",
+    ]) {
+      writeFileSync(join(hooksDir, h), "#!/bin/sh\n");
+    }
+
+    // Protected-file scaffolding — bug-091's invariants need a baseline of
+    // protected files seeded so the guard's "happy state" is the post-
+    // setup state. The dispatched invokeAgent in each test mutates ONE
+    // file from this baseline.
+    const seed = (rel: string, content = "// scaffold\n"): void => {
+      const abs = join(repoRoot, rel);
+      mkdirSync(join(repoRoot, rel.split("/").slice(0, -1).join("/")), {
+        recursive: true,
+      });
+      writeFileSync(abs, content);
+    };
+    seed("apps/web/postcss.config.mjs");
+    seed("apps/web/tailwind.config.ts");
+    seed("apps/web/next.config.ts");
+    seed("apps/web/vitest.config.ts");
+    seed("apps/web/tsconfig.json", "{}\n");
+    seed("apps/web/package.json", "{}\n");
+    seed("apps/api/package.json", "{}\n");
+    seed("package.json", "{}\n");
+    seed("pnpm-workspace.yaml");
+    seed("scripts/dev.mjs");
+    seed("packages/ui-kit/package.json", "{}\n");
+    seed("packages/ui-kit/tsconfig.json", "{}\n");
+    seed(
+      "packages/ui-kit/src/styles/globals.css",
+      `@tailwind base;\n@tailwind components;\n@tailwind utilities;\nbody{margin:0}\n`,
+    );
+
+    git(repoRoot, "add -A");
+    git(repoRoot, 'commit -q -m "initial scaffold"');
+
+    const fixupWorktreePath = join(repoRoot, ".claude", "worktrees", "fixup");
+    mkdirSync(join(repoRoot, ".claude", "worktrees"), { recursive: true });
+    git(repoRoot, `worktree add "${fixupWorktreePath}" -b fix/bugs-yaml-iter`);
+
+    return {
+      repoRoot,
+      fixupWorktreePath,
+      cleanup: () => rmSync(repoRoot, { recursive: true, force: true }),
+    };
+  }
+
+  let stderrCaptured: string[];
+  let origStderrWrite: typeof process.stderr.write;
+
+  beforeEach(() => {
+    stderrCaptured = [];
+    origStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      stderrCaptured.push(typeof chunk === "string" ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stderr.write;
+  });
+
+  afterEach(() => {
+    process.stderr.write = origStderrWrite;
+  });
+
+  it("rejects a dispatch that deletes apps/web/postcss.config.mjs and skips the merge cascade", async () => {
+    const { repoRoot, cleanup } = setupRepoWithProtectedFiles();
+    try {
+      const bug = makeBug({
+        id: "bug-parity-postcss-delete",
+        agentSequence: ["bug-fixer"],
+      });
+      const projectBugsYaml = join(repoRoot, "docs", "bugs.yaml");
+      mkdirSync(join(repoRoot, "docs"), { recursive: true });
+      writeFileSync(
+        projectBugsYaml,
+        yaml.dump({
+          version: "1.0",
+          generated_at: new Date().toISOString(),
+          project_name: "test-project",
+          source_run_id: "run-test-091",
+          iteration: 1,
+          iteration_cap: 1,
+          bugs: [bug],
+        } satisfies BugsYaml),
+      );
+
+      // The agent dispatch DELETES the protected postcss config (the
+      // bug-077 regression empirical motivator). It reports success +
+      // commits the deletion — exactly the shape that historically
+      // landed on fix/bugs-yaml-iter undetected. We stage ONLY the
+      // protected-file deletion (not `git add -A`) so seedWorktree's
+      // untracked .claude/settings.json + apps/*/.env.local files don't
+      // sweep into the commit and trip the merge cascade independently.
+      const invokeAgent: InvokeAgentFn = async (a) => {
+        const cwd = a.cwd as string;
+        execSync(`git rm -q apps/web/postcss.config.mjs`, { cwd });
+        execSync(
+          `git commit -q -m "fix: drop postcss.config.mjs" --no-verify`,
+          {
+            cwd,
+          },
+        );
+        return {
+          stage: a.agent,
+          taskStatus: { [`${bug.id}-${a.agent}`]: "completed" },
+          taskRetryRequests: {},
+          errors: {},
+          costUsd: 0.01,
+          durationMs: 1,
+        };
+      };
+
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      // Bug must be reported failed; the deletion must NOT have landed on
+      // master (the loop's end-of-run closeFixupWorktree tears down the
+      // fixup worktree directory, so we assert against master at repoRoot).
+      expect(result.bugsResolved).toEqual([]);
+      expect(result.bugsFailed.length + result.bugsRemaining.length).toBe(1);
+
+      // Stderr must surface the bug-091 violation.
+      const allStderr = stderrCaptured.join("");
+      expect(allStderr).toMatch(/dispatch violated protected files/);
+      expect(allStderr).toMatch(/protected-files-violation/);
+      expect(allStderr).toContain("apps/web/postcss.config.mjs");
+
+      // Master must NOT have the deletion — the merge cascade was skipped
+      // so the violating per-bug commit never reached fix/bugs-yaml-iter,
+      // and therefore couldn't propagate to master.
+      expect(existsSync(join(repoRoot, "apps/web/postcss.config.mjs"))).toBe(
+        true,
+      );
+
+      // Errorlog on the bug must have the violation entry threaded in
+      // so the next retry's pre-loaded context surfaces WHY the prior
+      // attempt was rejected.
+      const finalDoc = yaml.load(
+        readFileSync(projectBugsYaml, "utf8"),
+      ) as BugsYaml;
+      const finalBug = finalDoc.bugs.find((b) => b.id === bug.id);
+      expect(finalBug?.errorLog ?? []).toContainEqual(
+        expect.stringContaining("[protected-files-violation]"),
+      );
+      expect(finalBug?.errorLog ?? []).toContainEqual(
+        expect.stringContaining("apps/web/postcss.config.mjs"),
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("rejects a dispatch that strips @tailwind directives from globals.css (missing-content invariant)", async () => {
+    const { repoRoot, cleanup } = setupRepoWithProtectedFiles();
+    try {
+      const bug = makeBug({
+        id: "bug-parity-tailwind-strip",
+        agentSequence: ["systemic-fixer"],
+      });
+      const projectBugsYaml = join(repoRoot, "docs", "bugs.yaml");
+      mkdirSync(join(repoRoot, "docs"), { recursive: true });
+      writeFileSync(
+        projectBugsYaml,
+        yaml.dump({
+          version: "1.0",
+          generated_at: new Date().toISOString(),
+          project_name: "test-project",
+          source_run_id: "run-test-091",
+          iteration: 1,
+          iteration_cap: 1,
+          bugs: [bug],
+        } satisfies BugsYaml),
+      );
+
+      // The agent strips the @tailwind directives (the OTHER bug-077
+      // regression motif — file present but emptied). The deletion
+      // wouldn't trip a presence check; the content-invariant catches it.
+      // Stage ONLY this file — see test 1's note on seedWorktree leftovers.
+      const invokeAgent: InvokeAgentFn = async (a) => {
+        const cwd = a.cwd as string;
+        writeFileSync(
+          join(cwd, "packages/ui-kit/src/styles/globals.css"),
+          `body { margin: 0; }\n`,
+        );
+        execSync(`git add packages/ui-kit/src/styles/globals.css`, { cwd });
+        execSync(`git commit -q -m "fix: trim globals.css" --no-verify`, {
+          cwd,
+        });
+        return {
+          stage: a.agent,
+          taskStatus: { [`${bug.id}-${a.agent}`]: "completed" },
+          taskRetryRequests: {},
+          errors: {},
+          costUsd: 0.01,
+          durationMs: 1,
+        };
+      };
+
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      expect(result.bugsResolved).toEqual([]);
+      const allStderr = stderrCaptured.join("");
+      expect(allStderr).toMatch(/dispatch violated protected files/);
+      expect(allStderr).toContain("packages/ui-kit/src/styles/globals.css");
+      expect(allStderr).toContain("@tailwind");
+
+      // Master's globals.css must STILL contain the directives — the
+      // violating per-bug commit didn't reach fix/bugs-yaml-iter and
+      // therefore didn't propagate to master.
+      const masterGlobalsCss = readFileSync(
+        join(repoRoot, "packages/ui-kit/src/styles/globals.css"),
+        "utf8",
+      );
+      expect(masterGlobalsCss).toContain("@tailwind base");
+      expect(masterGlobalsCss).toContain("@tailwind components");
+      expect(masterGlobalsCss).toContain("@tailwind utilities");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("allows a benign dispatch (no protected-file mutation) to merge normally — regression baseline", async () => {
+    const { repoRoot, cleanup } = setupRepoWithProtectedFiles();
+    try {
+      const bug = makeBug({
+        id: "bug-parity-benign",
+        agentSequence: ["bug-fixer"],
+      });
+      const projectBugsYaml = join(repoRoot, "docs", "bugs.yaml");
+      mkdirSync(join(repoRoot, "docs"), { recursive: true });
+      writeFileSync(
+        projectBugsYaml,
+        yaml.dump({
+          version: "1.0",
+          generated_at: new Date().toISOString(),
+          project_name: "test-project",
+          source_run_id: "run-test-091",
+          iteration: 1,
+          iteration_cap: 1,
+          bugs: [bug],
+        } satisfies BugsYaml),
+      );
+
+      // The agent makes a benign edit that doesn't touch any protected
+      // file — the guard must let this through cleanly. Stage ONLY this
+      // file — see test 1's note on seedWorktree leftovers.
+      const invokeAgent: InvokeAgentFn = async (a) => {
+        const cwd = a.cwd as string;
+        writeFileSync(join(cwd, "apps/web/src-fix.txt"), "fix landed\n");
+        execSync(`git add apps/web/src-fix.txt`, { cwd });
+        execSync(`git commit -q -m "fix: benign source edit" --no-verify`, {
+          cwd,
+        });
+        return {
+          stage: a.agent,
+          taskStatus: { [`${bug.id}-${a.agent}`]: "completed" },
+          taskRetryRequests: {},
+          errors: {},
+          costUsd: 0.01,
+          durationMs: 1,
+        };
+      };
+
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      // Bug resolved cleanly.
+      expect(result.bugsResolved).toEqual(["bug-parity-benign"]);
+      expect(result.status).toBe("clean");
+
+      // No violation in stderr (only LF→CRLF git warnings are expected).
+      const allStderr = stderrCaptured.join("");
+      expect(allStderr).not.toMatch(/dispatch violated protected files/);
+
+      // The benign change landed on master (the loop's mergeFirst=true
+      // on status:"clean" merges fix/bugs-yaml-iter back to master before
+      // tearing down the fixup worktree).
+      expect(existsSync(join(repoRoot, "apps/web/src-fix.txt"))).toBe(true);
+      // Protected files still intact on master.
+      expect(existsSync(join(repoRoot, "apps/web/postcss.config.mjs"))).toBe(
+        true,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+// bug-089 (2026-05-13) — auto-merge robustness. When the fix-bugs loop
+// reaches "clean" and tries to `git merge fix/bugs-yaml-iter → master`,
+// dirty working-tree files in projectRoot can block the merge. Pre-fix
+// behavior: silent single-line WARNING, loop reports "clean" anyway,
+// operator sees stale master with no visible failure signal.
+//
+// Phase A: status flips to "auto-merge-failed" + loud multi-line stderr
+//          summary + autoMergeBlockers names the files.
+// Phase B: when ALL blockers match the safe-reset whitelist
+//          (synthesized E2E specs / .claude/models.yaml / prisma DB files /
+//          .env), reset them + retry merge once.
+describe("bug-089 — auto-merge silent fail", () => {
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString();
+  }
+
+  function setupRepoWithFixupCommit(args: {
+    /** Files to ADD on the fixup branch (paths relative to projectRoot). */
+    fixupAdds: Record<string, string>;
+  }): {
+    repoRoot: string;
+    fixupWorktreePath: string;
+    cleanup: () => void;
+  } {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bug-089-repo-"));
+    git(repoRoot, "init -q -b master");
+    git(repoRoot, "config user.email test@example.com");
+    git(repoRoot, "config user.name Test");
+    git(repoRoot, "config commit.gpgsign false");
+
+    // Initial commit on master with just README + .claude/hooks scaffold
+    // (seedWorktree requires the hooks dir).
+    writeFileSync(join(repoRoot, "README.md"), "master v1\n");
+    const hooksDir = join(repoRoot, ".claude", "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    for (const h of [
+      "block-dangerous.sh",
+      "detect-loop.mjs",
+      "enforce-boundaries.sh",
+      "validate-brief.mjs",
+    ]) {
+      writeFileSync(join(hooksDir, h), "#!/bin/sh\n");
+    }
+    git(repoRoot, "add -A");
+    git(repoRoot, 'commit -q -m "initial"');
+
+    // Create fixup worktree on a new branch starting at master HEAD.
+    const fixupWorktreePath = join(repoRoot, ".claude", "worktrees", "fixup");
+    mkdirSync(join(repoRoot, ".claude", "worktrees"), { recursive: true });
+    git(repoRoot, `worktree add "${fixupWorktreePath}" -b fix/bugs-yaml-iter`);
+
+    // Add commit on fixup branch (inside the fixup worktree) — these
+    // are the "fixes" that need to merge back to master at close-out.
+    for (const [rel, content] of Object.entries(args.fixupAdds)) {
+      const abs = join(fixupWorktreePath, rel);
+      mkdirSync(
+        join(fixupWorktreePath, rel.split("/").slice(0, -1).join("/")),
+        {
+          recursive: true,
+        },
+      );
+      writeFileSync(abs, content);
+      git(fixupWorktreePath, `add ${rel.replace(/\\/g, "/")}`);
+    }
+    git(fixupWorktreePath, 'commit -q -m "fix-loop result"');
+
+    return {
+      repoRoot,
+      fixupWorktreePath,
+      cleanup: () => rmSync(repoRoot, { recursive: true, force: true }),
+    };
+  }
+
+  /** Seed bugs.yaml with a single ALREADY-COMPLETED bug so runFixBugsLoop
+   * has nothing pending → exits as "clean" → close-out fires. */
+  function seedCompletedBugYaml(repoRoot: string): string {
+    const path = join(repoRoot, "docs", "bugs.yaml");
+    mkdirSync(join(repoRoot, "docs"), { recursive: true });
+    writeFileSync(
+      path,
+      yaml.dump({
+        version: "1.0",
+        generated_at: new Date().toISOString(),
+        project_name: "test-project",
+        source_run_id: "run-test-089",
+        iteration: 1,
+        iteration_cap: 1,
+        bugs: [
+          makeBug({
+            id: "bug-parity-already-done",
+            agentSequence: ["bug-fixer"],
+            status: "completed",
+            resolvedInIteration: 1,
+          }),
+        ],
+      } satisfies BugsYaml),
+    );
+    return path;
+  }
+
+  let stderrCaptured: string[];
+  let origStderrWrite: typeof process.stderr.write;
+
+  beforeEach(() => {
+    stderrCaptured = [];
+    origStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+      stderrCaptured.push(typeof chunk === "string" ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stderr.write;
+  });
+
+  afterEach(() => {
+    process.stderr.write = origStderrWrite;
+  });
+
+  it("clean tree → merge succeeds → status:clean + master has fixup commit + branch deleted", async () => {
+    const { repoRoot, cleanup } = setupRepoWithFixupCommit({
+      fixupAdds: { "apps/web/fix-marker.ts": "// fix landed\n" },
+    });
+    try {
+      const projectBugsYaml = seedCompletedBugYaml(repoRoot);
+      const invokeAgent: InvokeAgentFn = async () => ({
+        taskStatus: {},
+        errors: {},
+        costUsd: 0,
+      });
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      expect(result.status).toBe("clean");
+      expect(result.autoMergeBlockers).toBeUndefined();
+
+      // Master HEAD now contains the fixup commit's file.
+      expect(existsSync(join(repoRoot, "apps/web/fix-marker.ts"))).toBe(true);
+
+      // fix/bugs-yaml-iter branch was deleted after successful merge.
+      const branchList = execSync("git branch --list fix/bugs-yaml-iter", {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      expect(branchList.trim()).toBe("");
+
+      // No "AUTO-MERGE FAILED" banner in stderr.
+      const allStderr = stderrCaptured.join("");
+      expect(allStderr).not.toMatch(/AUTO-MERGE FAILED/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("whitelist blocker (.claude/models.yaml dirty) → Phase B resets + retries + status:clean", async () => {
+    // The fixup branch adds .claude/models.yaml. The working tree has the
+    // SAME file as untracked dirt that would be overwritten by merge.
+    // Both branches add the file = merge tries to bring it in. Working
+    // tree untracked file blocks. .claude/models.yaml is whitelisted →
+    // recovery rm's the untracked + retries.
+    const { repoRoot, cleanup } = setupRepoWithFixupCommit({
+      fixupAdds: { ".claude/models.yaml": "version: '1.0'\nfixup-content\n" },
+    });
+    try {
+      // Seed the SAME path in projectRoot as untracked dirt.
+      writeFileSync(
+        join(repoRoot, ".claude/models.yaml"),
+        "version: '1.0'\nlocal-dirt\n",
+      );
+
+      const projectBugsYaml = seedCompletedBugYaml(repoRoot);
+      const invokeAgent: InvokeAgentFn = async () => ({
+        taskStatus: {},
+        errors: {},
+        costUsd: 0,
+      });
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      expect(result.status).toBe("clean");
+      expect(result.autoMergeBlockers).toBeUndefined();
+
+      // Master now has the fixup version of .claude/models.yaml (not the
+      // pre-merge "local-dirt" working-tree version).
+      const finalContent = readFileSync(
+        join(repoRoot, ".claude/models.yaml"),
+        "utf8",
+      );
+      expect(finalContent).toContain("fixup-content");
+      expect(finalContent).not.toContain("local-dirt");
+
+      // Stderr surfaces the recovery (not the failure banner).
+      const allStderr = stderrCaptured.join("");
+      expect(allStderr).toMatch(/auto-merge recovered/);
+      expect(allStderr).toContain(".claude/models.yaml");
+      expect(allStderr).not.toMatch(/AUTO-MERGE FAILED/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("non-whitelist blocker (apps/web/src/wip.tsx dirty) → status:auto-merge-failed + blockers populated + loud stderr", async () => {
+    const { repoRoot, cleanup } = setupRepoWithFixupCommit({
+      fixupAdds: { "apps/web/src/wip.tsx": "// fixup wants this\n" },
+    });
+    try {
+      // Seed the same path as untracked operator WIP in projectRoot.
+      mkdirSync(join(repoRoot, "apps/web/src"), { recursive: true });
+      writeFileSync(
+        join(repoRoot, "apps/web/src/wip.tsx"),
+        "// operator WIP — must not be overwritten\n",
+      );
+
+      const projectBugsYaml = seedCompletedBugYaml(repoRoot);
+      const invokeAgent: InvokeAgentFn = async () => ({
+        taskStatus: {},
+        errors: {},
+        costUsd: 0,
+      });
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      // bug-089 Phase A — status flips to auto-merge-failed.
+      expect(result.status).toBe("auto-merge-failed");
+      expect(result.autoMergeBlockers).toBeDefined();
+      expect(result.autoMergeBlockers).toContain("apps/web/src/wip.tsx");
+
+      // Operator WIP is preserved (not overwritten).
+      const wipContent = readFileSync(
+        join(repoRoot, "apps/web/src/wip.tsx"),
+        "utf8",
+      );
+      expect(wipContent).toContain("operator WIP");
+
+      // Loud stderr banner present.
+      const allStderr = stderrCaptured.join("");
+      expect(allStderr).toMatch(/AUTO-MERGE FAILED/);
+      expect(allStderr).toContain("fix/bugs-yaml-iter");
+      expect(allStderr).toContain("apps/web/src/wip.tsx");
+      expect(allStderr).toMatch(/git stash -u/);
+      expect(allStderr).toMatch(/git merge --no-ff/);
+
+      // The fixup branch is PRESERVED (not deleted) so operator can recover.
+      const branchList = execSync("git branch --list fix/bugs-yaml-iter", {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      expect(branchList.trim()).toContain("fix/bugs-yaml-iter");
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+// bug-092 (2026-05-13) — mergeFirst gate too restrictive on partial-success.
+// Pre-bug-092 gate was `status === "clean"`; partial-success runs (some bugs
+// resolved + some failed → status flips to "all-bugs-failed" or
+// "iteration-cap-hit") stranded the resolved fixes on fix/bugs-yaml-iter.
+// New gate: merge whenever ANY bug resolved this run.
+describe("bug-092 — mergeFirst on partial success", () => {
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString();
+  }
+
+  function setupCleanRepo(): { repoRoot: string; cleanup: () => void } {
+    const repoRoot = mkdtempSync(join(tmpdir(), "bug-092-repo-"));
+    git(repoRoot, "init -q -b master");
+    git(repoRoot, "config user.email test@example.com");
+    git(repoRoot, "config user.name Test");
+    git(repoRoot, "config commit.gpgsign false");
+    writeFileSync(join(repoRoot, "README.md"), "master v1\n");
+    const hooksDir = join(repoRoot, ".claude", "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    for (const h of [
+      "block-dangerous.sh",
+      "detect-loop.mjs",
+      "enforce-boundaries.sh",
+      "validate-brief.mjs",
+    ]) {
+      writeFileSync(join(hooksDir, h), "#!/bin/sh\n");
+    }
+    git(repoRoot, "add -A");
+    git(repoRoot, 'commit -q -m "initial"');
+    return {
+      repoRoot,
+      cleanup: () => rmSync(repoRoot, { recursive: true, force: true }),
+    };
+  }
+
+  it("partial success (1 resolved + 1 failed) → mergeFirst fires + master advances + status:all-bugs-failed", async () => {
+    const { repoRoot, cleanup } = setupCleanRepo();
+    try {
+      const bugA = makeBug({
+        id: "bug-parity-resolves-fine",
+        agentSequence: ["bug-fixer"],
+        maxAttempts: 1,
+      });
+      const bugB = makeBug({
+        id: "bug-parity-always-fails",
+        agentSequence: ["bug-fixer"],
+        maxAttempts: 1,
+      });
+      const projectBugsYaml = join(repoRoot, "docs", "bugs.yaml");
+      mkdirSync(join(repoRoot, "docs"), { recursive: true });
+      writeFileSync(
+        projectBugsYaml,
+        yaml.dump({
+          version: "1.0",
+          generated_at: new Date().toISOString(),
+          project_name: "test-project",
+          source_run_id: "run-test-092",
+          iteration: 1,
+          iteration_cap: 1,
+          bugs: [bugA, bugB],
+        } satisfies BugsYaml),
+      );
+
+      // Agent for bug-A commits a real fix → resolves. Agent for bug-B
+      // returns failure (taskOutcomes: failed) → bug burns its one attempt
+      // → transitionFailedDispatch returns "failed" (attempts >= maxAttempts)
+      // → bug.status = "failed" definitively.
+      const invokeAgent: InvokeAgentFn = async (a) => {
+        const cwd = a.cwd as string;
+        const bugId = a.tasks[0]!.id.replace(/-bug-fixer$/, "");
+        if (bugId === "bug-parity-resolves-fine") {
+          writeFileSync(
+            join(cwd, "fixed-by-bug-A.txt"),
+            "bug-A landed cleanly\n",
+          );
+          execSync("git add fixed-by-bug-A.txt", { cwd });
+          execSync('git commit -q -m "fix: resolve bug-A" --no-verify', {
+            cwd,
+          });
+          return {
+            stage: a.agent,
+            taskStatus: { [a.tasks[0]!.id]: "completed" },
+            taskRetryRequests: {},
+            errors: {},
+            costUsd: 0.01,
+            durationMs: 1,
+          };
+        }
+        // bug-B path: report failed (no commit).
+        return {
+          stage: a.agent,
+          taskStatus: { [a.tasks[0]!.id]: "failed" },
+          taskRetryRequests: {},
+          errors: { [a.tasks[0]!.id]: "synthetic test failure" },
+          costUsd: 0.01,
+          durationMs: 1,
+        };
+      };
+
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      // Loop terminates "all-bugs-failed" because bug-B is definitively failed
+      // (no pending remaining). But bug-A resolved, so master should advance.
+      expect(result.status).toBe("all-bugs-failed");
+      expect(result.bugsResolved).toContain("bug-parity-resolves-fine");
+      expect(result.bugsFailed).toContain("bug-parity-always-fails");
+
+      // bug-092 — the merge attempt fired (mergeFirst=true via the new
+      // anyResolved gate) and succeeded. Master HEAD advanced to include
+      // bug-A's fix commit.
+      expect(existsSync(join(repoRoot, "fixed-by-bug-A.txt"))).toBe(true);
+
+      // fix/bugs-yaml-iter was deleted post-successful merge (closeFixupWorktree
+      // branch -D path). This is the proof that mergeOutcome === "merged".
+      const branchList = execSync("git branch --list fix/bugs-yaml-iter", {
+        cwd: repoRoot,
+        encoding: "utf8",
+      });
+      expect(branchList.trim()).toBe("");
+
+      // status is "all-bugs-failed" (bug-B failed) but autoMergeBlockers is
+      // undefined (the merge SUCCEEDED — partial progress landed). That's
+      // the proper signal pattern: status reports loop terminal state +
+      // autoMergeBlockers is the merge-attempt outcome.
+      expect(result.autoMergeBlockers).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("zero resolved (all failed) → mergeFirst stays false + master unchanged + fix branch preserved", async () => {
+    // Regression-baseline: when NO bugs resolved, the new gate must still
+    // skip the merge (no point merging an empty fixup branch).
+    const { repoRoot, cleanup } = setupCleanRepo();
+    try {
+      const masterShaBefore = git(repoRoot, "rev-parse HEAD").trim();
+      const bugA = makeBug({
+        id: "bug-parity-only-fails",
+        agentSequence: ["bug-fixer"],
+        maxAttempts: 1,
+      });
+      const projectBugsYaml = join(repoRoot, "docs", "bugs.yaml");
+      mkdirSync(join(repoRoot, "docs"), { recursive: true });
+      writeFileSync(
+        projectBugsYaml,
+        yaml.dump({
+          version: "1.0",
+          generated_at: new Date().toISOString(),
+          project_name: "test-project",
+          source_run_id: "run-test-092",
+          iteration: 1,
+          iteration_cap: 1,
+          bugs: [bugA],
+        } satisfies BugsYaml),
+      );
+
+      const invokeAgent: InvokeAgentFn = async (a) => ({
+        stage: a.agent,
+        taskStatus: { [a.tasks[0]!.id]: "failed" },
+        taskRetryRequests: {},
+        errors: { [a.tasks[0]!.id]: "synthetic failure" },
+        costUsd: 0.01,
+        durationMs: 1,
+      });
+
+      const ctx = makeCtx(invokeAgent, cleanVerify, {
+        projectRoot: repoRoot,
+        bugsYamlPath: projectBugsYaml,
+        skipWorktreeManagement: false,
+        maxConcurrent: 2,
+        iterationCap: 1,
+      });
+
+      const result = await runFixBugsLoop(ctx);
+
+      expect(result.status).toBe("all-bugs-failed");
+      expect(result.bugsResolved).toEqual([]);
+      expect(result.bugsFailed).toContain("bug-parity-only-fails");
+
+      // Master unchanged (nothing to merge).
+      const masterShaAfter = git(repoRoot, "rev-parse HEAD").trim();
+      expect(masterShaAfter).toBe(masterShaBefore);
+    } finally {
+      cleanup();
+    }
+  });
+});

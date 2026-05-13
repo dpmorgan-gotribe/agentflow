@@ -90,6 +90,17 @@
 - Attempt 5: STOP and escalate
 - NEVER exceed 5 attempts on the same error
 
+## Test Policy (NON-NEGOTIABLE)
+
+- **No test rot.** When any test fails — yours, mine, pre-existing — it must be fixed before the work that surfaces it is considered done. Do not leave broken tests in the suite.
+- This applies regardless of whether the failure is "caused by my change" or "predated my branch." If the suite is red, we fix it.
+- **The default fix is to fix the TEST, not the production code.** A test failing usually means the test's expectation has drifted from the production code's evolving intent; the production code was working correctly until the test caught up. Reach for production-code changes ONLY when you have strong evidence the production code is genuinely wrong AND the test is correctly describing intended behavior.
+- **Changing production code to "make a test pass" is dangerous.** It can break working features by chasing a test whose expectation was authored against an outdated spec. Before touching production code, you must (a) understand the intent the test was originally encoding, (b) confirm the current production behavior diverges from that intent (not just from the test's literal assertion), (c) confirm the divergence is a real bug, not a deliberate evolution. If unsure, fix the test or escalate to /plan-investigation — never assume the test is right.
+- Acceptable resolutions, in preference order: (1) fix the test if its assertion has drifted from intent or its setup is missing recent context (most common); (2) delete the test if the behavior it covered has been deliberately removed AND no other coverage replaces it; (3) fix the production code ONLY when you can prove the test correctly describes intended behavior that the implementation no longer delivers (rare, requires evidence — see /plan-bug if in doubt).
+- Unacceptable: marking tests `.skip`, commenting them out, or adding "pre-existing rot" notes that defer the fix indefinitely.
+- The retry-cap (attempt 5 escalate) still applies per individual test. If a single test resists 5 fix attempts, escalate to investigation — don't just leave it red.
+- Rationale: red tests are noise that hides new regressions and erodes trust in the signal. But the inverse — production code being silently broken in pursuit of a green suite — is worse. Bias toward fixing the test; only touch production code when you have evidence-of-bug.
+
 ## Output Contracts
 
 - UI Designer writes HTML to files, returns only status

@@ -333,19 +333,23 @@ describe("runSynthesizedFlows — dev server lifecycle", () => {
       })) as unknown as typeof import("node:child_process").spawn;
 
     // Use a tight 50ms timeout + 1ms poll interval so the polling loop
-    // exits in a few millis instead of 60s.
+    // exits in a few millis instead of 60s. NOTE: do NOT pass
+    // baseUrlOverride — that branch hardcodes a 10s wait (line 187 of
+    // run-synthesized-flows.mjs), ignoring devServerTimeoutMs. The spawn
+    // path (no baseUrlOverride, no webServer block in playwright.config)
+    // respects the configurable timeout, which is what this test exercises.
     const result = await runSynthesizedFlows({
       projectDir,
       spawnFn,
       spawnSyncFn: noopSpawnSync,
       httpGet: httpGetFail,
-      baseUrlOverride: "http://localhost:3000",
       pollIntervalMs: 1,
       devServerTimeoutMs: 50,
     });
 
     expect(result.ok).toBe(false);
     expect(result.reason).toBe("dev-server-not-ready");
+    // The baseUrl comes from playwright.config.ts (http://localhost:3000).
     expect(result.remediation).toContain("http://localhost:3000");
   });
 
@@ -369,12 +373,16 @@ describe("runSynthesizedFlows — dev server lifecycle", () => {
       });
     }) as unknown as typeof import("node:child_process").spawn;
 
+    // NOTE: omit baseUrlOverride. With it set, the runner SKIPS the
+    // internal dev-server spawn (it trusts the caller's pre-booted server),
+    // so there's no devProc to teardown + spawnSync never fires. The test's
+    // intent is to verify teardown uses taskkill ON the spawned dev-server,
+    // which only exists when we go through the spawn path.
     await runSynthesizedFlows({
       projectDir,
       spawnFn,
       spawnSyncFn,
       httpGet: httpGetOk,
-      baseUrlOverride: "http://localhost:3000",
     });
 
     // On Windows, teardown calls taskkill via spawnSync. On POSIX, it uses
@@ -977,7 +985,12 @@ describe("runSynthesizedFlows — JSON reporter parsing edge cases", () => {
       baseUrlOverride: "http://localhost:3000",
     });
 
-    expect(result.ok).toBe(true); // no failed flows
+    // bug-052 (2026-05-03) evolution: "specs generated + 0 results + suspiciously
+    // short total run" is now a hard signal (runner-failed-to-start), not a
+    // silent ok-with-warning. The test name's "gracefully" intent (= "no crash")
+    // is preserved — the function returns a structured failure result instead.
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("playwright-runner-failed-to-start");
     expect(result.flows.passed).toEqual([]);
     expect(result.warnings.join(" ")).toContain("playwright");
   });

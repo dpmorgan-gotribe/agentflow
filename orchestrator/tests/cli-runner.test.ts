@@ -309,6 +309,7 @@ describe("runCli — live Mode B (feature-graph)", () => {
         projectName: "alpha",
         resumeFeatureGraph: true,
         invokeAgentOverride: invokeAgent,
+        skipBuildToSpecVerify: true,
       },
       factoryRoot,
     );
@@ -636,6 +637,7 @@ describe("runCli — bugs.yaml lifecycle (--bugs-yaml-mode)", () => {
         resumeFeatureGraph: true,
         bugsYamlMode: "fresh",
         invokeAgentOverride: invokeAgent,
+        skipBuildToSpecVerify: true,
       },
       factoryRoot,
     );
@@ -727,6 +729,7 @@ describe("runCli — bugs.yaml lifecycle (--bugs-yaml-mode)", () => {
         resumeFeatureGraph: true,
         bugsYamlMode: "append",
         invokeAgentOverride: invokeAgent,
+        skipBuildToSpecVerify: true,
       },
       factoryRoot,
     );
@@ -850,6 +853,7 @@ describe("runCli — bug-021 resume-aware hydration", () => {
         resumeFeatureGraph: true,
         pipelineRunId, // matches the on-disk state dir
         invokeAgentOverride: invokeAgent,
+        skipBuildToSpecVerify: true,
         // bug-054: gate-6 default flipped — auto-merge is now default behavior;
         // requirePrReview=false (omitted) means no gate-6 wait. Resume-path
         // correctness is independent of gate-6 routing.
@@ -948,6 +952,7 @@ describe("runCli — bug-021 resume-aware hydration", () => {
         resumeFeatureGraph: true,
         pipelineRunId,
         invokeAgentOverride: invokeAgent,
+        skipBuildToSpecVerify: true,
       },
       factoryRoot,
     );

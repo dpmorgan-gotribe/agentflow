@@ -645,6 +645,22 @@ async function defaultCompareScreen({
   // context envelope can pre-load it for systemic-fixer dispatches.
   let pixelDivergences: ParityDivergence[] = [];
   if (builtPng && mockupPng) {
+    // feat-068 (2026-05-12) — ALWAYS persist mockup.png + built.png per
+    // screen, not just when pixel-diff fires. Tier 4 (perceptual-review)
+    // needs to inspect parity-clean screens too, since the 95% target
+    // gap is screens that look fine to parity but have visual issues.
+    // Idempotent overwrites; trivial disk cost.
+    const diffDir = join(projectDir, "docs", "build-to-spec", "pixel-diffs");
+    try {
+      mkdirSync(diffDir, { recursive: true });
+      writeFileSync(join(diffDir, `${screen.id}.mockup.png`), mockupPng);
+      writeFileSync(join(diffDir, `${screen.id}.built.png`), builtPng);
+    } catch (err) {
+      computedStyleWarnings.push(
+        `parity: PNG persist failed for ${screen.id}: ${(err as Error).message}`,
+      );
+    }
+
     try {
       const { auditAndClassifyPixels } = await import("./audit-pixel-diff.js");
       const pixelResult = auditAndClassifyPixels({

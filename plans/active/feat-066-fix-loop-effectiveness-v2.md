@@ -195,3 +195,36 @@ Before archiving feat-066:
 See `plans/active/investigate-026-timeout-no-evidence-bug-fixer-stalls.md`. 30-min time-box; question: why do `timeout-no-evidence` bug-fixer dispatches systematically stall while other classes succeed? Investigation will produce a recommendation pointing at one of (A) enrich envelope, (B) capture artefacts at synthesizer emit time, (C) reroute to diagnostic-fixer, (D) accept-as-low-confidence operator-review-only.
 
 feat-066 epic remains in-progress pending investigation result + decision on whether to ship Phase 3-7 (feat-068 vision-LLM, feat-069 AI walkthrough, feat-071 cluster-bugs, feat-072 class-batched re-enable) or whether investigate-026's recommendation closes the gap to the ≥95% production target without further phases.
+
+### Phase 2 of the v2-epic shipped — 2026-05-13
+
+(Note: "v2 epic Phase 2" ≠ feat-066's original "Phase 2 pixel-diff". The v2 epic renumbered its own phases: v2-Phase-1 = correctness infrastructure ship 2026-05-12; v2-Phase-2 = feat-069 AI walkthrough ship 2026-05-13.)
+
+Shipped on `feat/vision-llm-perceptual-review`:
+
+- `12aa669` v2-Phase-1 — bug-091 protected-files guard
+- `e096be7` v2-Phase-1 — bug-089 auto-merge silent fail
+- `aef062b` v2-Phase-1 — bug-090 verifier dedicated worktree
+- `e8f000d` v2-Phase-1 — bug-092 mergeFirst on partial success
+- `d82eefb` v2-Phase-2 — feat-069 Phase 1 (B.1 AI walkthrough route sweep)
+- `05fb83e` v2-Phase-2 — feat-069 Phase B.2 (interaction sweep + dup-detector)
+- `1ebb687` v2-Phase-2 — feat-069 Phase B.3 (confirm-dialog + render-aware poll)
+
+**Empirical validation surface (2026-05-13, reading-log-02):**
+
+- `/build-to-spec-verify` full 6-tier run with invokeAgent wired: $1.50, 15.6 min, 37 bug plans filed (16 from Tiers 4+5 newly active). 4 walkthrough findings + 13 perceptual findings + 16 carryover.
+- Operator triage filtered 8 confident-pollution bugs (DB-wiped-before-perceptual artifacts); manually filed `bug-delete-content-type-400` from the walkthrough's empirically-validated finding.
+- `/fix-bugs reading-log-02 --max-concurrent=3`: $26.55, 5/5 iterations, status `clean`, 0 pending bugs remaining. 9 of 91 bugs `failed` (4 pollution, 4 already-resolved, 1 tooling-infrastructure — none real product defects per post-run triage).
+- Manual site verification: all 5 acceptance criteria pass (add book / edit-persist / search-filter / empty state / delete-with-confirm). DELETE returns 204, GET returns 404 — the `bug-delete-content-type-400` fix that ONLY feat-069's walkthrough Tier 5 could detect ships green.
+
+**v2 epic Phase 3 candidates** (deferred for next session):
+
+1. **In-loop verifier DB pollution** (P0) — rounds-orchestrator's mid-loop re-verify runs flow-execution (cleans DB tables) BEFORE perceptual + walkthrough tiers. Causes ~half the noise in /fix-bugs runs. New bug plan filed 2026-05-13.
+2. **`bug-052` apiBase env regression** (P0) — synthesized flow specs hit :3000 instead of :3001 even with the bug-052 absolute-URL fix in place. New bug plan filed 2026-05-13.
+3. **Scaffold `.env.example` ships with `ENABLE_TEST_SEED=0`** (P0) — verifier pre-flight rejects on contact; needed manual `=1` fix today. Scaffold-side issue; new bug plan filed 2026-05-13.
+4. **bug-093 source-change-gaming** (P0) — pre-existing draft. Companion to #1.
+5. **feat-071 cluster-bugs-pre-dispatch** (P1) — pre-existing draft. Once findings are honest (post-#1), batching kicks in for big cost wins.
+6. **bugs.yaml `failureClass` field** — operator-side triage tool surfaced from today's 9-failed-bug experience.
+7. **bug-094 — superseded** today by `bug-delete-content-type-400` (project-side); moved to `plans/superseded/`. No further action on this hypothesis.
+
+Epic status: shipping v2-Phase-1 + v2-Phase-2 closes the ≥95% production target's biggest gaps (correctness infrastructure + behavioral detection). v2-Phase-3 is polish + cost-reduction, not gap-closure.

@@ -460,6 +460,262 @@ describe("fileBugPlan — feat-058 + feat-062 + feat-064 trimmed agentSequence p
     expect(doc.bugs[0]?.agentSequence).toEqual(["systemic-fixer"]);
   });
 
+  it("feat-068: perceptual-finding without category → primaryCause=perceptual-divergence → [bug-fixer] (default)", async () => {
+    // Tier 4 vision-LLM finding files as a perceptual-finding violation. The
+    // call-site synthesizes primaryCause:perceptual-divergence. With no
+    // category (or unrecognized category), routing defaults to bug-fixer.
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "book-detail",
+        element: "Pencil edit button on book card",
+        mockupValue: "outline-style pencil icon, 20px",
+        actualValue: "filled pencil icon, 16px with text label",
+        severity: "P1" as const,
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as {
+      bugs: Array<{
+        agentSequence: string[];
+        source: string;
+        perceptual?: { screen: string; element: string };
+      }>;
+    };
+    expect(doc.bugs[0]?.source).toBe("perceptual-divergence");
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
+    expect(doc.bugs[0]?.perceptual?.screen).toBe("book-detail");
+    expect(doc.bugs[0]?.perceptual?.element).toBe(
+      "Pencil edit button on book card",
+    );
+  });
+
+  it("bug-087: category=functional → [] (operator-review, backend/data fix required)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "books-list-empty",
+        element: "Built screenshot shows populated state, not empty state",
+        severity: "P0" as const,
+        category: "functional",
+        description: "page-state routing renders wrong screen",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual([]);
+  });
+
+  it("bug-087: category=runtime-error → [] (operator-review)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "book-detail",
+        element: "Runtime '1 error' badge visible in header",
+        severity: "P0" as const,
+        category: "runtime-error",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual([]);
+  });
+
+  it("bug-087: category=missing-element → [systemic-fixer] (cross-component structural drift)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "books-list",
+        element: "Reading Log brand logo and label absent from header",
+        severity: "P0" as const,
+        category: "missing-element",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["systemic-fixer"]);
+  });
+
+  it("bug-087: category=copy-mismatch → [bug-fixer] (single-element source-of-truth lookup)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "books-list",
+        element: "Search bar placeholder text differs from spec",
+        severity: "P1" as const,
+        category: "copy-mismatch",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
+  });
+
+  it("bug-088: category=book-list-item → [systemic-fixer] (element-name structural drift)", async () => {
+    // Empirical motivator: 5 book-list-item findings on the books-list screen
+    // all failed bug-fixer post-bug-087 — they share a single root cause
+    // (book-list-item primitive restructure: covers + badges + dates + tags).
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "books-list",
+        element: "Book cover thumbnails are initials avatars, not cover art",
+        severity: "P0" as const,
+        category: "book-list-item",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["systemic-fixer"]);
+  });
+
+  it("bug-088: category=search → [systemic-fixer] (search-bar component restructure)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "books-list",
+        element: "Search bar narrow + left-aligned instead of wide + centered",
+        severity: "P0" as const,
+        category: "search",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["systemic-fixer"]);
+  });
+
+  it("bug-088: category=nav → [systemic-fixer]", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "books-list",
+        element: "Nav item count badges missing",
+        severity: "P0" as const,
+        category: "nav",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["systemic-fixer"]);
+  });
+
+  it("bug-088 (project-agnostic): novel kebab-case category from a DIFFERENT project → [systemic-fixer] via element-name heuristic", async () => {
+    // bug-088's heuristic must generalize across projects. A category like
+    // `task-card` (kanban) or `invoice-row` (finance app) — never seen on
+    // reading-log-02 — should still route to systemic-fixer because the
+    // empirical bug-shape signal for element-name categories is "structural".
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "kanban-board",
+        element: "task-card lacks priority indicator + tags row",
+        severity: "P0" as const,
+        category: "task-card", // ← brand-new category, never hardcoded
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["systemic-fixer"]);
+  });
+
+  it("bug-088 (heuristic edge case): '(no-category)' placeholder → [bug-fixer] (regex fails on parens)", async () => {
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "home",
+        element: "Some bug without category",
+        severity: "P1" as const,
+        category: "(no-category)",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
+  });
+
+  it("bug-088: category=copy-mismatch STAYS at [bug-fixer] (source-of-truth lookups)", async () => {
+    // Regression-preserve: copy-mismatch is bug-fixer's lane (single-element
+    // text changes from a known design source).
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "books-list",
+        element: "Search bar placeholder differs from spec",
+        severity: "P1" as const,
+        category: "copy-mismatch",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
+  });
+
+  it("bug-087: category=unrecognized-future-value → [bug-fixer] (safe default)", async () => {
+    // Forward-compat: when the agent emits a category we don't have in
+    // either routing set, fall back to bug-fixer (conservative — won't
+    // block dispatch, won't waste systemic-fixer).
+    const { fileBugPlan } = await importHelper();
+    await fileBugPlan({
+      projectDir,
+      violation: {
+        kind: "perceptual-finding" as const,
+        screen: "settings",
+        element: "Some future category emitted by an evolved agent",
+        severity: "P2" as const,
+        category: "some-new-category-2027",
+      },
+      iteration: 1,
+    });
+    const doc = yaml.load(
+      readFileSync(join(projectDir, "docs/bugs.yaml"), "utf8"),
+    ) as { bugs: Array<{ agentSequence: string[] }> };
+    expect(doc.bugs[0]?.agentSequence).toEqual(["bug-fixer"]);
+  });
+
   it("bug-086: pixel-minor-divergence stays at [bug-fixer] (deferred to Phase A.2 / Phase B drift-threshold)", async () => {
     // bug-086 Phase A.1 deliberately holds pixel-minor at bug-fixer — at low
     // drift counts these are trivial per-element nudges. Phase A.2 (route all

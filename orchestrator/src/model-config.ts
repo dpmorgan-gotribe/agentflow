@@ -143,6 +143,22 @@ const FACTORY_DEFAULT_AGENT_TIERS: Record<
   // the 18-min stall cap below provide the budget for cross-file
   // exploration; the tier itself doesn't need to differ.
   "systemic-fixer": { tier: "building", effort: "medium" },
+  // perceptual-reviewer — Tier 4 vision-LLM agent (feat-068). Per-screen
+  // mockup-vs-live image comparison + structured-output findings.
+  // tier:building resolves to Sonnet (vision-capable, ~5× cheaper than
+  // Opus); the task is pattern-recognition over images, not deep
+  // reasoning. effort:medium gives enough budget for image inputs +
+  // parity-context preload without wasting it on reasoning depth.
+  "perceptual-reviewer": { tier: "building", effort: "medium" },
+  // walkthrough-reviewer — Tier 5 AI walkthrough behavioral agent (feat-069).
+  // ONE invocation per fix-loop iteration; reads N screenshots + network
+  // log + console log as a coherent journey + emits behavioral findings.
+  // tier:building (Sonnet) — same rationale as perceptual: image-pattern
+  // recognition + cross-step reasoning, NOT deep multi-step logic. The
+  // cross-step reasoning needs slightly more headroom than perceptual's
+  // per-screen pattern-matching, so effort:medium with the maxTurns:4 cap
+  // in the frontmatter is the right shape.
+  "walkthrough-reviewer": { tier: "building", effort: "medium" },
 };
 
 const DEFAULT_STALL_TIMEOUT_BY_AGENT: Record<string, number | null> = {
@@ -171,6 +187,16 @@ const DEFAULT_STALL_TIMEOUT_BY_AGENT: Record<string, number | null> = {
   // bug-077-class work; 18 gives ~50% headroom for the long tail without
   // letting the agent wander past the bug-fixer's failure-mode budget.
   "systemic-fixer": 18 * 60 * 1000,
+  // feat-068 (2026-05-12) — perceptual-reviewer is a 3-turn read+write
+  // agent: read mockup + live PNGs, write findings JSON, return outcome.
+  // 5-minute cap is generous — typical wall-clock per screen is ~30-60s.
+  "perceptual-reviewer": 5 * 60 * 1000,
+  // feat-069 (2026-05-13) — walkthrough-reviewer reads N screenshots +
+  // network/console NDJSON logs in one pass and emits behavioral findings.
+  // More turns (4 vs 3) + larger evidence bundle → 8-minute cap. Empirically
+  // a 24-step walkthrough with 24 PNGs + ~200 network events + ~10 console
+  // events should resolve in 2-4 min; 8 gives 2× headroom.
+  "walkthrough-reviewer": 8 * 60 * 1000,
 };
 
 /**

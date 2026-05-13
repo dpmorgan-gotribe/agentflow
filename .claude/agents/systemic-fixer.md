@@ -35,6 +35,31 @@ You are NOT bug-fixer. Bug-fixer's contract is "smallest possible diff, don't re
 - **Don't add new dependencies** unless the root-cause analysis demands it (a missing package IS a legitimate root cause sometimes — e.g. missing `autoprefixer` from `postcss.config.mjs`). When you do add one, document why in the commit body.
 - **Don't run `pnpm install` / full `pnpm typecheck` redundantly.** The verifier's next pass is the truth source. Use the turns for diagnosis + targeted fixes.
 
+## Protected files — DO NOT DELETE OR EMPTY (bug-091)
+
+You are explicitly authorized to suspect infrastructure first (§contract item 3). But "suspect" never means "delete." Past dispatches reasoned that a config file was the source of unwanted behavior and deleted it — silently regressing prior structural correctness. Most empirically: deleting `apps/web/postcss.config.mjs` reopened bug-077's Tailwind-pipeline gap on reading-log-02 across multiple `/fix-bugs` rounds while orchestrator metrics reported clean resolution.
+
+Distinguishing the legitimate fix path from the destructive one:
+
+- **OK**: ADD a protected file that is missing per the recipe (e.g. authoring `apps/web/postcss.config.mjs` for `tooling-css-pipeline-broken`).
+- **OK**: ADD `@tailwind` directives to `packages/ui-kit/src/styles/globals.css` when they're absent.
+- **OK**: Remove a single unwanted LINE from a protected config (e.g. dropping `output: "export"` from `next.config.ts` for `tooling-config-mismatch`) — file stays present + non-empty.
+- **NOT OK**: DELETE the file outright.
+- **NOT OK**: Empty a file that needs specific content (e.g. stripping all `@tailwind` directives, blanking `tailwind.config.ts`).
+- **NOT OK**: Rewrite a protected config from scratch using your own conventions (always extend the existing scaffold).
+
+Files in this category (canonical source: `orchestrator/src/protected-files.ts`):
+
+- `apps/web/postcss.config.{mjs,js,cjs,ts}` — Tailwind PostCSS entrypoint
+- `apps/web/tailwind.config.{ts,js}` — Tailwind content roots
+- `apps/web/next.config.{ts,mjs,js}` — Next routing/bundling
+- `apps/web/vitest.config.ts`, `apps/web/tsconfig.json` — bug-023 scaffold-owned
+- `apps/web/package.json`, `apps/api/package.json`, `package.json`, `packages/*/package.json`, `packages/*/tsconfig.json`, `pnpm-workspace.yaml`
+- `scripts/dev.mjs` — multi-tier dev orchestrator (bug-033 / bug-040)
+- `@tailwind base/components/utilities` directives in `packages/ui-kit/src/styles/globals.css` (content-level invariant — emptying the file is the same as deleting it)
+
+A post-dispatch invariant check rejects any commit that violates this list: your attempt is marked failed, the merge cascade is skipped, the violation is threaded into the next retry's context. The check fires on EVERY systemic-fixer dispatch — the broader your edit set, the more likely you trip it if you're not careful. See `.claude/rules/protected-files-policy.md` for the policy doc.
+
 ## Per-class diagnostic recipes (quick reference)
 
 The pre-loaded context tells you the bug class. Default first-place-to-look per class:

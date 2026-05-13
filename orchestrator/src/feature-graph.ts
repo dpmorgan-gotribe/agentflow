@@ -21,6 +21,7 @@ import {
   type FixBugsLoopContext,
   type FixBugsLoopResult,
 } from "./fix-bugs-loop.js";
+import { runRoundsOrchestrator } from "./rounds-orchestrator.js";
 import { waitForGateDecision } from "./gate-server-lifecycle.js";
 import {
   type CommitResult,
@@ -243,6 +244,14 @@ export interface FeatureGraphContext {
    * assert dispatch routing without running real agents.
    */
   runFixBugsLoop?: (ctx: FixBugsLoopContext) => Promise<FixBugsLoopResult>;
+  /**
+   * feat-073 — opt out of the rounds-orchestration wrapper. Default true
+   * (rounds-orchestration ON). Tests that stub `runFixBugsLoop` to
+   * assert specific inner-loop behavior set this false to bypass the
+   * outer state machine and call the inner loop directly. Production
+   * runs (cli-runner.ts) leave undefined → rounds-orchestration fires.
+   */
+  useRoundsOrchestration?: boolean;
   /**
    * feat-024 Phase A — progress checkpoint tracker. Default: a real
    * tracker that writes `feature-graph-progress.json` on every state
@@ -1754,6 +1763,9 @@ export async function runFeatureGraph(
         autoFileBugPlans: true,
         pipelineRunId: ctx.pipelineRunId,
         iteration: 1,
+        // feat-068 — thread invokeAgent so build-to-spec-verify can dispatch
+        // the perceptual-reviewer agent (Tier 4 vision-LLM detection).
+        invokeAgent: ctx.invokeAgent,
       };
       if (ctx.factoryRoot !== undefined)
         verifyArgs.factoryRoot = ctx.factoryRoot;
@@ -1810,6 +1822,13 @@ export async function runFeatureGraph(
     const fixRunner = ctx.runFixBugsLoop ?? defaultRunFixBugsLoop;
     const factoryRootForLoop = ctx.factoryRoot ?? process.cwd();
     try {
+      // feat-073 — wrap the inner fix-bugs-loop in the rounds orchestrator
+      // (outer loop / state machine). The wrapper reads bugs.yaml to derive
+      // the current round, scopes the inner loop's pendingThisIter filter
+      // by round, gates expensive verify tiers on round-state, and handles
+      // round-promotion / demotion across iterations. Falls through to the
+      // legacy path when ctx.useRoundsOrchestration is explicitly false
+      // (test seam for the pre-feat-073 single-loop behavior).
       const loopCtx: FixBugsLoopContext = {
         projectRoot: ctx.projectRoot,
         pipelineRunId: ctx.pipelineRunId,
@@ -1841,7 +1860,32 @@ export async function runFeatureGraph(
         enableClassBatchedDispatch:
           process.env.FIX_BUGS_ENABLE_CLASS_BATCHING === "1",
       };
-      bugLoopResult = await fixRunner(loopCtx);
+      // feat-073 — opt into rounds-orchestration unless explicitly opted
+      // out (test seam). When useRoundsOrchestration === false, fall
+      // through to the legacy direct fixRunner(loopCtx) path so the
+      // existing feature-graph test suite (which stubs runFixBugsLoop)
+      // keeps working without round-state file-reads.
+      if (ctx.useRoundsOrchestration === false) {
+        bugLoopResult = await fixRunner(loopCtx);
+      } else {
+        const roundsResult = await runRoundsOrchestrator({
+          ...loopCtx,
+          runFixBugsLoopFn: fixRunner,
+        });
+        bugLoopResult = {
+          status:
+            roundsResult.status === "clean" ? "clean" : "iteration-cap-hit",
+          iterationsRun: roundsResult.rounds.length,
+          bugsResolved: roundsResult.rounds.flatMap((r) => r.bugsResolved),
+          bugsFailed: roundsResult.rounds.flatMap((r) => r.bugsFailed),
+          bugsRemaining: [],
+          totalCostUsd: roundsResult.totalCostUsd,
+          iterationLog: [],
+          ...(roundsResult.finalVerify
+            ? { finalVerify: roundsResult.finalVerify }
+            : {}),
+        };
+      }
       totalCostUsd += bugLoopResult.totalCostUsd;
       // Status resolution per plan §Phase C:
       //   clean         → flip status back to "completed"

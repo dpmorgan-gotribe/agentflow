@@ -53,6 +53,7 @@ function makeCtx(
     runFixBugsLoop: (
       ctx: import("../src/fix-bugs-loop.js").FixBugsLoopContext,
     ) => Promise<import("../src/fix-bugs-loop.js").FixBugsLoopResult>;
+    useRoundsOrchestration: boolean;
   }> = {},
 ) {
   return {
@@ -90,6 +91,11 @@ function makeCtx(
     // exercise the loop opt in via `skipFixBugsLoop: false` + a stub
     // `runFixBugsLoop`.
     skipFixBugsLoop: overrides.skipFixBugsLoop ?? true,
+    // feat-073 — default-OFF rounds-orchestration in tests. The wrapper's
+    // own behavior is covered in rounds-orchestrator.test.ts; here we want
+    // the legacy direct-runFixBugsLoop path so existing test stubs continue
+    // to assert their pre-feat-073 expectations.
+    useRoundsOrchestration: false,
     ...(overrides.runFixBugsLoop !== undefined
       ? { runFixBugsLoop: overrides.runFixBugsLoop }
       : {}),
@@ -2017,6 +2023,9 @@ describe("runFeatureGraph — feat-026 fix-bugs-loop wiring", () => {
         skipBuildToSpecVerify: false,
         runBuildToSpecVerify: verifyWithBugs,
         skipFixBugsLoop: false,
+        // feat-073 — bypass rounds-orchestration to test legacy direct
+        // inner-loop assertions (bugsRemaining, status shapes).
+        useRoundsOrchestration: false,
         runFixBugsLoop: async () => ({
           status: "iteration-cap-hit",
           iterationsRun: 5,
@@ -2040,6 +2049,8 @@ describe("runFeatureGraph — feat-026 fix-bugs-loop wiring", () => {
         skipBuildToSpecVerify: false,
         runBuildToSpecVerify: verifyWithBugs,
         skipFixBugsLoop: false,
+        // feat-073 — bypass rounds-orchestration; assert legacy status shape.
+        useRoundsOrchestration: false,
         runFixBugsLoop: async () => ({
           status: "all-bugs-failed",
           iterationsRun: 3,
@@ -2124,6 +2135,8 @@ describe("runFeatureGraph — feat-026 fix-bugs-loop wiring", () => {
           warnings: ["soft failure"],
         }),
         skipFixBugsLoop: false,
+        // feat-073 — bypass rounds-orchestration; assert legacy direct call.
+        useRoundsOrchestration: false,
         runFixBugsLoop: async () => {
           loopCalled += 1;
           return {

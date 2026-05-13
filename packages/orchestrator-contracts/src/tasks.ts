@@ -45,6 +45,20 @@ export const AgentSequenceMember = z.enum([
   // clustered-systemic-divergence). Higher turn budget + multi-file
   // edit authority. See feat-066 v2 Phase 5.
   "systemic-fixer",
+  // feat-068 (2026-05-12) — Tier 4 vision-LLM perceptual review agent.
+  // ONE invocation per screen per fix-loop iteration. Compares mockup PNG
+  // vs live PNG, emits structured findings. Read-only; produces no diffs.
+  // Dispatched directly by orchestrator/src/perceptual-review.ts —
+  // NOT routable through agent_sequence (review is a verifier-side
+  // step, not a fix-loop step).
+  "perceptual-reviewer",
+  // feat-069 (2026-05-13) — Tier 5 AI walkthrough behavioral review agent.
+  // ONE invocation per fix-loop iteration. Consumes the walkthrough script's
+  // evidence bundle (screenshots + network log + console log) and emits
+  // structured behavioral findings. Read-only; dispatched directly by
+  // orchestrator/src/walkthrough-review.ts — NOT routable through
+  // agent_sequence.
+  "walkthrough-reviewer",
 ]);
 export type AgentSequenceMember = z.infer<typeof AgentSequenceMember>;
 
@@ -52,6 +66,8 @@ export const TaskAgent = z.enum([
   "backend-builder",
   "web-frontend-builder",
   "mobile-frontend-builder",
+  "perceptual-reviewer",
+  "walkthrough-reviewer",
   "tester",
   "reviewer",
   "security",
