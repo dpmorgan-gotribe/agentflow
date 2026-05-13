@@ -338,6 +338,24 @@ export const BugEntrySchema = z.object({
    * `FailureClassSchema` for taxonomy + operator-triage motivation.
    */
   failureClass: FailureClassSchema.nullable().default(null),
+
+  /**
+   * feat-071 — cluster-bugs-pre-dispatch. When set, this bug is a member
+   * of a synthesized cluster parent identified by the named bug-id. The
+   * dispatch path skips members while the parent runs; on parent resolution
+   * the loop walks bugs with matching `clusterParent` and flips them to
+   * `completed`. On parent failure the loop clears the `clusterParent`
+   * field so the next iteration dispatches them individually.
+   */
+  clusterParent: z.string().nullable().default(null),
+
+  /**
+   * feat-071 — present only on synthesized cluster parents. Lists the
+   * member bug-ids that this cluster represents. The fix-loop reads it
+   * to flip member statuses on parent resolution. Null on non-cluster
+   * bugs.
+   */
+  clusterMembers: z.array(z.string()).nullable().default(null),
 });
 export type BugEntry = z.infer<typeof BugEntrySchema>;
 
