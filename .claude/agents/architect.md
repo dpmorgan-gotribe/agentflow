@@ -135,6 +135,10 @@ After writing all outputs, verify:
     cp $template <projectDir>/scripts/dev.mjs
     ```
     On auto-fix, append the path to `scaffoldedFiles[]` in the return JSON (see below) so the orchestrator can surface it.
+14. **bug-097 — `ENABLE_TEST_SEED=1` invariant on backend `.env.example`**: when `tooling.stack.backend_framework` is non-null (any Strategy-C backend stack: node-fastify, node-trpc-nest, python-fastapi), `<projectDir>/apps/api/.env.example` MUST contain the literal line `ENABLE_TEST_SEED=1`. The architect-skill §7b template already emits this line; this self-verify is the mechanical guard that it survived edits.
+    - If the file is MISSING the line entirely → AUTO-FIX by appending `ENABLE_TEST_SEED=1` with the canonical comment block (architect §7b template body) to the `OPTIONAL` group. Append the path to `scaffoldedFiles[]`.
+    - If the file contains `ENABLE_TEST_SEED=0` → HARD-FAIL. The dev verifier's Strategy-C pre-flight discriminator rejects this state (bug-080) — emitting it ships a project that immediately blocks at /build-to-spec-verify. Bug-097 motivator: reading-log-02 2026-05-13 shipped with `=0`, blocking the verifier on contact. The architect must NEVER emit `=0`; production overrides come from the deployment env, not the example template.
+    - Grep pattern for the check: `^ENABLE_TEST_SEED=(0|1)$` in `apps/api/.env.example`. Exactly one match expected, with value `1`.
 
 ## Return JSON
 

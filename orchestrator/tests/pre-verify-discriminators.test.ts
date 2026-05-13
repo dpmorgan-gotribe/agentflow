@@ -205,20 +205,30 @@ describe("testSeedContractDiscriminator", () => {
     expect(testSeedContractDiscriminator(projectDir)).toBeNull();
   });
 
-  it("fires P0 when .env.example has ENABLE_TEST_SEED=0 (bug-080 case)", () => {
+  it("auto-fixes ENABLE_TEST_SEED=0 → =1 in place and returns null (bug-097)", () => {
     writeFile("apps/api/.env.example", "PORT=3001\nENABLE_TEST_SEED=0\n");
     const r = testSeedContractDiscriminator(projectDir);
-    expect(r?.pattern).toBe("tooling-test-seed-contract-broken");
-    expect(r?.severity).toBe("P0");
-    expect(r?.detail).toContain("=0");
+    expect(r).toBeNull(); // auto-fixed, no bug filed
+    const after = require("node:fs").readFileSync(
+      `${projectDir}/apps/api/.env.example`,
+      "utf8",
+    );
+    expect(after).toMatch(/^ENABLE_TEST_SEED=1$/m);
+    expect(after).not.toMatch(/^ENABLE_TEST_SEED=0$/m);
   });
 
-  it("fires P2 when ENABLE_TEST_SEED line is missing entirely", () => {
+  it("auto-fixes missing ENABLE_TEST_SEED line by appending =1 (bug-097)", () => {
     writeFile("apps/api/.env.example", "PORT=3001\nDATABASE_URL=file:./x.db\n");
     const r = testSeedContractDiscriminator(projectDir);
-    expect(r?.pattern).toBe("tooling-test-seed-contract-broken");
-    expect(r?.severity).toBe("P2");
-    expect(r?.label).toContain("missing");
+    expect(r).toBeNull(); // auto-fixed, no bug filed
+    const after = require("node:fs").readFileSync(
+      `${projectDir}/apps/api/.env.example`,
+      "utf8",
+    );
+    expect(after).toMatch(/^ENABLE_TEST_SEED=1$/m);
+    // Existing content preserved
+    expect(after).toContain("PORT=3001");
+    expect(after).toContain("DATABASE_URL=file:./x.db");
   });
 
   it("returns null when .env.example file does not exist", () => {
@@ -263,10 +273,12 @@ describe("runDiscriminators", () => {
     writeFile("apps/api/.env.example", "PORT=3001\nENABLE_TEST_SEED=0\n");
     const hits = runDiscriminators(projectDir);
     const patterns = hits.map((h) => h.pattern).sort();
+    // bug-097: tooling-test-seed-contract-broken now auto-fixes silently
+    // (the canonical Strategy-C contract recovery has zero operator-judgment
+    // required, so the discriminator self-heals rather than blocking).
     expect(patterns).toEqual([
       "tooling-config-mismatch",
       "tooling-css-pipeline-broken",
-      "tooling-test-seed-contract-broken",
     ]);
   });
 

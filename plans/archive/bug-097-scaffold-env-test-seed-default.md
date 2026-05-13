@@ -1,21 +1,22 @@
 ---
 id: bug-097-scaffold-env-test-seed-default
 type: bug
-status: draft
+status: completed
 author-agent: human
 created: 2026-05-13
 updated: 2026-05-13
-parent-plan: feat-066-fix-loop-effectiveness-v2 (v2-Phase-3 lead candidate)
+outcome: shipped — root cause re-attributed (skill templates are correct; architect emit didn't follow) + defense-in-depth landed (architect self-verify step 14 + pre-verify discriminator auto-fix)
+parent-plan: feat-066-fix-loop-effectiveness-v2 (v2-Phase-3)
 supersedes: null
 superseded-by: null
 branch: fix/scaffold-env-test-seed-default
 affected-files:
-  - .claude/skills/agents/back-end/node-fastify/SKILL.md
-  - .claude/skills/agents/back-end/python-fastapi/SKILL.md
-  - .claude/skills/agents/back-end/node-trpc-nest/SKILL.md
+  - .claude/agents/architect.md
+  - orchestrator/src/pre-verify-discriminators.ts
+  - orchestrator/tests/pre-verify-discriminators.test.ts
 feature-area: stack-skills/scaffold-templates
 priority: P0
-attempt-count: 0
+attempt-count: 1
 max-attempts: 5
 error-message: "/build-to-spec-verify pre-flight discriminator rejects projects whose apps/api/.env.example sets ENABLE_TEST_SEED=0. The contract (.claude/rules/testing-policy.md Strategy-C) requires =1 in dev; production should override to =0. The scaffold templates ship the inverse default, so every fresh project gets pre-flight-blocked until manually patched."
 reproduction-steps: "1. /new-project foo --stack node-fastify (or python-fastapi or node-trpc-nest). 2. Run /analyze .. /architect .. through to /start-build verify. 3. Verifier pre-flight fails with 'pre-verify-discriminator: tooling-test-seed-contract-broken — apps/api/.env.example sets ENABLE_TEST_SEED=0'. Verifier files bug-091-compile-pre-verify-tooling-test-seed-contract-broken (project-side). Operator must manually edit apps/api/.env.example to =1 before re-running."
@@ -85,4 +86,21 @@ Plus regenerate any inline test fixtures that reference the templates.
 
 ## Attempt Log
 
-<!-- Populated by executing agents. -->
+### 2026-05-13 — root cause re-attributed + defense-in-depth shipped
+
+Initial bug-097 framing said "stack-skill templates ship `=0`". On inspection, all three backend stack-skill SKILL.md files explicitly require `=1` (node-fastify §3 step 4 line 232; python-fastapi §3 line 227; node-trpc-nest §3 line 212). The architect-skill template (`.claude/skills/architect/SKILL.md` line 254) also emits `=1` with a `NEVER ship this file with =0` comment. The templates are correct.
+
+The empirical bug is that reading-log-02's `.env.example` shipped with `=0` despite the correct templates — meaning either (a) the project was generated before the templates were updated, or (b) a downstream agent (post-architect) flipped it, or (c) the architect agent didn't follow its skill precisely on that specific run.
+
+Defense-in-depth landed:
+
+1. **Architect self-verify step 14** (`.claude/agents/architect.md`): when `backend_framework` is non-null, mechanically verify `apps/api/.env.example` matches `/^ENABLE_TEST_SEED=1$/m`. AUTO-FIX (append canonical comment block + `=1`) when missing; HARD-FAIL when explicitly `=0`. Prevents new projects from shipping wrong.
+
+2. **Pre-verify discriminator auto-fix** (`orchestrator/src/pre-verify-discriminators.ts`): when `testSeedContractDiscriminator` detects `=0` OR missing line, rewrites/appends in place and returns `null` (no bug filed). Emits a stderr warning so the operator sees the auto-fix happened. Heals existing projects already in the bad state.
+
+Tests updated to reflect new behavior:
+
+- `orchestrator/tests/pre-verify-discriminators.test.ts`: 2 tests rewritten to assert auto-fix (P0 + P2 cases). Added file-content assertions confirming the rewrite.
+- `orchestrator/tests/build-to-spec-verify.test.ts`: 1 test ("does NOT short-circuit on a P1/P2-only hit") rewritten — no longer expects a warning in `result.warnings`; instead asserts the file was modified to `=1`.
+
+Suite: 23/23 discriminator tests pass; 942/942 full orchestrator suite green.

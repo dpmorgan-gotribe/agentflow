@@ -1300,9 +1300,11 @@ describe("runBuildToSpecVerify — bug-078 pre-verify discriminator gate", () =>
     expect(runScriptCallCount).toBe(2); // reach + synth both ran
   });
 
-  it("does NOT short-circuit on a P1/P2-only hit (test-seed missing line)", async () => {
+  it("auto-fixes missing-line test-seed contract + does NOT short-circuit (bug-097)", async () => {
     // apps/api/ exists but .env.example doesn't have ENABLE_TEST_SEED line at
-    // all → P2 hit only. Verifier should still proceed.
+    // all. Per bug-097: the discriminator now AUTO-FIXES the file in place
+    // (appends the canonical =1 line) and returns null instead of filing a
+    // bug. The verifier proceeds normally.
     writeFile("apps/api/.env.example", "PORT=3001\n"); // no ENABLE_TEST_SEED line
 
     let runScriptCallCount = 0;
@@ -1328,10 +1330,14 @@ describe("runBuildToSpecVerify — bug-078 pre-verify discriminator gate", () =>
       runParity: false,
     });
 
-    // P2 hit logs a warning but doesn't short-circuit
+    // Auto-fix is silent in result.warnings (it goes to console.warn instead).
+    // Verifier proceeds: reach + synth both ran.
     expect(runScriptCallCount).toBe(2);
-    expect(result.warnings?.join(" ")).toContain(
-      "tooling-test-seed-contract-broken",
+    // Confirm the auto-fix actually rewrote the file.
+    const after = require("node:fs").readFileSync(
+      `${projectDir}/apps/api/.env.example`,
+      "utf8",
     );
+    expect(after).toMatch(/^ENABLE_TEST_SEED=1$/m);
   });
 });

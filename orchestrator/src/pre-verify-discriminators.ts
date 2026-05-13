@@ -18,7 +18,7 @@
  * null. No Playwright, no network — only `fs.existsSync` + `fs.readFileSync`.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 /**
@@ -204,6 +204,17 @@ function walkForDynamicSegment(dir: string, depth: number): boolean {
  * (or unset). Per the Strategy-C-test-seed-contract in testing-policy.md,
  * Playwright globalSetup + manual operator boots require these routes
  * registered. `=0` in `.env.example` is the canonical pre-bug-080 mistake.
+ *
+ * bug-097 (2026-05-13): when the discriminator detects `=0`, it now
+ * AUTO-FIXES the file in place (rewrites the line to `=1`) and emits a
+ * stderr warning instead of returning a hit. The empirical case
+ * (reading-log-02 2026-05-13) showed that having the verifier refuse on
+ * detection just blocks the operator behind a one-line edit they can't
+ * skip; auto-fix is strictly better because it's deterministic + the
+ * "edit `.env.example` to `=1`" instruction has zero operator-judgment
+ * required. The architect's self-verify (step 14, added bug-097) prevents
+ * the bad state from ever shipping in the first place; this is the
+ * defense-in-depth layer for projects already in the bad state.
  */
 export const testSeedContractDiscriminator: Discriminator = (projectDir) => {
   const apiDir = join(projectDir, "apps", "api");
@@ -228,40 +239,71 @@ export const testSeedContractDiscriminator: Discriminator = (projectDir) => {
   const linePresent = /^ENABLE_TEST_SEED\s*=/m.test(src);
 
   if (linePresent && !explicitZero) return null; // =1 (or other), assume OK
-  if (!linePresent && !explicitZero) {
-    // Line entirely missing. Per skill contract this is a bug — but a
-    // softer one because dev.mjs will default to "1" anyway. We still
-    // flag it because it violates the contract + future drift could
-    // re-introduce =0 silently.
-    return {
-      pattern: "tooling-test-seed-contract-broken",
-      severity: "P2",
-      label: "apps/api/.env.example missing ENABLE_TEST_SEED line",
-      detail:
-        `apps/api/ exists (Strategy C backend) but apps/api/.env.example ` +
-        `does not declare ENABLE_TEST_SEED. The skill contract (node-fastify/` +
-        `python-fastapi/node-trpc-nest §3 step 4) mandates this line with ` +
-        `value =1. Currently the dev.mjs default fills the gap, but operators ` +
-        `who manually create .env miss the documentation cue.`,
-      fix:
-        `Append to apps/api/.env.example: ` +
-        `\`ENABLE_TEST_SEED=1\` with a comment documenting the prod-default-OFF contract.`,
-      affectedFiles: ["apps/api/.env.example"],
-    };
+
+  // bug-097 auto-fix: rewrite or append to `=1` rather than refuse.
+  if (explicitZero) {
+    const fixed = src.replace(
+      /^ENABLE_TEST_SEED\s*=\s*0\b.*$/m,
+      "ENABLE_TEST_SEED=1",
+    );
+    try {
+      writeFileSync(envExample, fixed);
+      console.warn(
+        `[pre-verify-discriminator] AUTO-FIXED apps/api/.env.example: ENABLE_TEST_SEED=0 → =1 (bug-097). Per Strategy-C contract; production overrides via deployment env, not example template.`,
+      );
+    } catch (err) {
+      // Fallthrough to bug-filing if the write fails (read-only fs etc.)
+      return {
+        pattern: "tooling-test-seed-contract-broken",
+        severity: "P0",
+        label: "apps/api/.env.example sets ENABLE_TEST_SEED=0",
+        detail:
+          `apps/api/.env.example contains \`ENABLE_TEST_SEED=0\`. Auto-fix ` +
+          `attempted and failed: ${err instanceof Error ? err.message : String(err)}. ` +
+          `Per the Strategy-C-test-seed-contract this MUST be \`=1\` in dev.`,
+        fix: `Edit apps/api/.env.example: change \`ENABLE_TEST_SEED=0\` to \`=1\`.`,
+        affectedFiles: ["apps/api/.env.example"],
+      };
+    }
+    return null; // Healed; pre-flight passes.
   }
 
-  return {
-    pattern: "tooling-test-seed-contract-broken",
-    severity: "P0",
-    label: "apps/api/.env.example sets ENABLE_TEST_SEED=0",
-    detail:
-      `apps/api/.env.example contains \`ENABLE_TEST_SEED=0\`. Per the ` +
-      `Strategy-C-test-seed-contract this MUST be \`=1\` in dev; otherwise ` +
-      `POST /test/seed*, /test/cleanup, /test/seed-baseline all 404 + ` +
-      `Playwright globalSetup fails. See bug-080.`,
-    fix: `Edit apps/api/.env.example: change \`ENABLE_TEST_SEED=0\` to \`=1\`.`,
-    affectedFiles: ["apps/api/.env.example"],
-  };
+  // Line entirely missing. Per skill contract this is a bug — but a
+  // softer one because dev.mjs will default to "1" anyway. AUTO-FIX
+  // appends the canonical line + comment block (bug-097).
+  if (!linePresent) {
+    const appended =
+      src.replace(/\s*$/, "") +
+      "\n\n# E2E test-seed gating. Required `=1` in dev per Strategy-C\n" +
+      "# test-seed contract (.claude/rules/testing-policy.md) so the\n" +
+      "# verifier pre-flight passes + Playwright globalSetup can call\n" +
+      "# /test/seed-baseline. Production should override to `=0`.\n" +
+      "ENABLE_TEST_SEED=1\n";
+    try {
+      writeFileSync(envExample, appended);
+      console.warn(
+        `[pre-verify-discriminator] AUTO-FIXED apps/api/.env.example: appended missing ENABLE_TEST_SEED=1 (bug-097).`,
+      );
+    } catch (err) {
+      return {
+        pattern: "tooling-test-seed-contract-broken",
+        severity: "P2",
+        label: "apps/api/.env.example missing ENABLE_TEST_SEED line",
+        detail:
+          `apps/api/ exists (Strategy C backend) but apps/api/.env.example ` +
+          `does not declare ENABLE_TEST_SEED. Auto-fix attempted and failed: ` +
+          `${err instanceof Error ? err.message : String(err)}.`,
+        fix:
+          `Append to apps/api/.env.example: ` +
+          `\`ENABLE_TEST_SEED=1\` with a comment documenting the prod-default-OFF contract.`,
+        affectedFiles: ["apps/api/.env.example"],
+      };
+    }
+    return null; // Healed.
+  }
+
+  // Unreachable defensive path — both flags false above.
+  return null;
 };
 
 // ─── Registry + entry-point ────────────────────────────────────────────────
