@@ -55,6 +55,46 @@ export const BugStatusSchema = z.enum([
 ]);
 export type BugStatus = z.infer<typeof BugStatusSchema>;
 
+/**
+ * Failure-cause taxonomy. Set when a bug's status transitions to `failed`
+ * so operators can triage en-masse without reading every plan body.
+ *
+ * Motivator: reading-log-02 /fix-bugs run 2026-05-13 produced 9 distinct
+ * failed bugs, ALL with byte-identical `error_stall_timeout: wall-clock-
+ * 900000ms` errorLog entries. Post-run triage classified them as:
+ *  - 4 pollution (false-positive, caused by in-loop verifier DB cleanup
+ *    artefacts)
+ *  - 4 stale-observation (was real at file time, now resolved by other
+ *    fixes mid-loop)
+ *  - 1 scaffold-blocker (tooling/verifier-infrastructure, not a product
+ *    defect)
+ *
+ * The operator triage took ~30 min reading 9 plans. With this field set
+ * during escalation, the same triage would have been a single
+ * `node -e "yaml.load(...).bugs.filter(b => b.failureClass === 'false-positive')"`
+ * pass — seconds.
+ *
+ * `convergence-no-progress` is the default when the convergence detector
+ * (`bug-073`) fires on byte-identical error logs — meaning the bug-fixer
+ * couldn't make progress between 2 attempts and the loop escalated to
+ * `failed` instead of exhausting `maxAttempts`. Specific subclasses
+ * (false-positive / stale-observation / scaffold-blocker) are set by
+ * operator triage post-loop OR by future automated classifiers; the
+ * loop itself only sets the default.
+ */
+export const FailureClassSchema = z.enum([
+  "convergence-no-progress",
+  "max-attempts-exhausted",
+  "unverified-completion",
+  "wall-clock-timeout",
+  "flap-cap-exhausted",
+  "false-positive",
+  "stale-observation",
+  "scaffold-blocker",
+  "unfixable-by-agent",
+]);
+export type FailureClass = z.infer<typeof FailureClassSchema>;
+
 /** Severity tier — verifier emits all bugs as P0 in v1; field exists for future tuning. */
 export const BugSeveritySchema = z.enum(["P0", "P1", "P2"]);
 export type BugSeverity = z.infer<typeof BugSeveritySchema>;
@@ -292,6 +332,12 @@ export const BugEntrySchema = z.object({
   // Cross-references
   bugPlanPath: z.string().nullable().default(null), // plans/active/bug-NNN-...md
   errorLog: z.array(z.string()).default([]), // append per attempt
+
+  /**
+   * Set when status transitions to `failed`; null otherwise. See
+   * `FailureClassSchema` for taxonomy + operator-triage motivation.
+   */
+  failureClass: FailureClassSchema.nullable().default(null),
 });
 export type BugEntry = z.infer<typeof BugEntrySchema>;
 

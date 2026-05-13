@@ -215,6 +215,10 @@ describe("runFixBugsLoop — per-bug attempt cap", () => {
     expect(doc.bugs[0]!.attempts).toBe(3);
     expect(doc.bugs[0]!.status).toBe("failed");
     expect(doc.bugs[0]!.errorLog.length).toBeGreaterThanOrEqual(3);
+    // bug-failureClass (v2-Phase-3): maxAttempts-cap escalations default
+    // to `max-attempts-exhausted` when no wall-clock/unverified marker
+    // appears in the errorLog tail.
+    expect(doc.bugs[0]!.failureClass).toBe("max-attempts-exhausted");
   });
 
   it("bug-073 Phase B: convergence detector escalates on identical consecutive errorLog entries", async () => {
@@ -256,6 +260,10 @@ describe("runFixBugsLoop — per-bug attempt cap", () => {
     const lastEntry = doc.bugs[0]!.errorLog.at(-1) ?? "";
     expect(lastEntry).toMatch(/bug-073-convergence-detector/);
     expect(lastEntry).toMatch(/byte-identical/);
+    // bug-failureClass (v2-Phase-3): convergence detector escalations get
+    // the `convergence-no-progress` class so operator triage can filter
+    // these en-masse without reading errorLog per-bug.
+    expect(doc.bugs[0]!.failureClass).toBe("convergence-no-progress");
   });
 
   it("bug-073 Phase B: convergence detector matches near-identical entries (first-200-char prefix)", async () => {

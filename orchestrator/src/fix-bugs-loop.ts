@@ -1801,6 +1801,7 @@ function applyFlappingDetection(args: {
       b.flapResets = (b.flapResets ?? 0) + 1;
       if (b.flapResets >= args.maxFlapResets) {
         b.status = "failed";
+        b.failureClass = "flap-cap-exhausted";
         b.errorLog.push(
           `flapping-detector: bug reappeared ${b.flapResets} times across iterations; escalating to failed`,
         );
@@ -1889,14 +1890,45 @@ function transitionFailedDispatch(bug: BugEntry): "failed" | "pending" {
       `[bug-073-convergence-detector] ${conv.reason} — escalating to failed without exhausting maxAttempts cap (saved ${bug.maxAttempts - bug.attempts} retry slot${bug.maxAttempts - bug.attempts === 1 ? "" : "s"})`,
     );
     bug.status = "failed";
+    // bug-failureClass (v2-Phase-3) — convergence detector tripped on
+    // byte-identical errors across attempts. Operator triage can downgrade
+    // to a more specific class (false-positive / stale-observation / etc.)
+    // if post-run inspection reveals the underlying cause.
+    bug.failureClass = "convergence-no-progress";
     return "failed";
   }
   if (bug.attempts >= bug.maxAttempts) {
     bug.status = "failed";
+    // bug-failureClass — exhausted retry cap. Most-recent errorLog entry
+    // suggests the specific failure mode; classifier below picks the best
+    // match from the errorLog tail.
+    bug.failureClass = inferFailureClassFromErrorLog(bug.errorLog);
     return "failed";
   }
   bug.status = "pending";
   return "pending";
+}
+
+/**
+ * Classify a `failed`-bound bug into the most-specific FailureClass we can
+ * derive from its errorLog tail. Picks the LAST entry that matches a known
+ * signature; falls back to `max-attempts-exhausted` when nothing matches.
+ *
+ * Operator triage can downgrade to `false-positive` / `stale-observation`
+ * / `scaffold-blocker` / `unfixable-by-agent` post-run when reviewing the
+ * live site reveals the real cause. The loop only sets mechanically-
+ * detectable classes here.
+ */
+function inferFailureClassFromErrorLog(
+  errorLog: string[],
+): import("@repo/orchestrator-contracts").FailureClass {
+  // Walk newest → oldest so the most-recent classification wins.
+  for (let i = errorLog.length - 1; i >= 0; i--) {
+    const entry = errorLog[i] ?? "";
+    if (entry.includes("unverified-completion")) return "unverified-completion";
+    if (entry.includes("wall-clock")) return "wall-clock-timeout";
+  }
+  return "max-attempts-exhausted";
 }
 
 /**
