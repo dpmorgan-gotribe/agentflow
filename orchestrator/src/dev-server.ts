@@ -200,6 +200,38 @@ export function spawnDevServer(
  *   - `uvicorn api.main:app --app-dir src` (not `python -m api`) — works
  *     with src/ layout projects without requiring `pip install -e`
  */
+/**
+ * bug-104 (2026-05-13): build the env object for the spawned backend
+ * dev-server. Extracted as a pure helper so tests can verify the env-spread
+ * order without actually spawning a child process.
+ *
+ * Order matters. Pre-bug-104 the order was
+ * `{ ENABLE_TEST_SEED: "1", ...defaults, ...process.env, PORT }`. When the
+ * operator's shell had `ENABLE_TEST_SEED` set to a different value (or when
+ * an outer ancestor process leaked an empty string), `...process.env`
+ * clobbered the orchestrator's `=1` intent. Empirical case: reading-log-02
+ * verifier run 2026-05-13 (b18vw2rdn) — bug-095's POST /test/seed-baseline
+ * returned 404 because the spawned Fastify process didn't register
+ * /test/* routes despite the orchestrator's stated contract.
+ *
+ * The fix: place the test-seed contract keys AFTER process.env so they
+ * always win. Operator overrides for OTHER env vars (DATABASE_PATH,
+ * LOG_LEVEL) still take precedence — only the load-bearing-for-verifier
+ * keys are pinned.
+ */
+export function buildBackendSpawnEnv(
+  parentEnv: NodeJS.ProcessEnv,
+  port: number,
+): NodeJS.ProcessEnv {
+  return {
+    DATABASE_PATH: "./data/finance-track-test.db",
+    LOG_LEVEL: "warn",
+    ...parentEnv,
+    ENABLE_TEST_SEED: "1",
+    PORT: String(port),
+  };
+}
+
 export function spawnBackendDevServer(
   projectDir: string,
   port: number,
@@ -226,13 +258,7 @@ export function spawnBackendDevServer(
   // verify needs the same conventions.
   // Operator can still override via process.env.* (spread last in the runner
   // would precede; spread first here lets caller-overrides win).
-  const backendEnv = {
-    ENABLE_TEST_SEED: "1",
-    DATABASE_PATH: "./data/finance-track-test.db",
-    LOG_LEVEL: "warn",
-    ...process.env,
-    PORT: String(port),
-  };
+  const backendEnv = buildBackendSpawnEnv(process.env, port);
   const child = spawn(spec.cmd, spec.args, {
     cwd: spec.cwdRelativeToProject
       ? join(projectDir, spec.cwdRelativeToProject)

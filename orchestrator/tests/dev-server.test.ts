@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ChildProcess } from "node:child_process";
 import {
+  buildBackendSpawnEnv,
   resolveBackendPort,
   resolveBackendSpawnSpec,
   waitForDevServer,
@@ -447,5 +448,53 @@ describe("readPersistenceLayerSlug (bug-062)", () => {
     );
     const { readPersistenceLayerSlug } = await import("../src/dev-server.js");
     expect(readPersistenceLayerSlug(dir)).toBeNull();
+  });
+});
+
+// bug-104 (2026-05-13) — buildBackendSpawnEnv preserves test-seed contract
+// even when operator's shell tries to override. Pre-bug-104 the env-spread
+// order was `{ ENABLE_TEST_SEED: "1", ...defaults, ...process.env, PORT }`
+// — if process.env carried a different ENABLE_TEST_SEED value it clobbered
+// the orchestrator's `=1` intent. Empirical case: verifier b18vw2rdn
+// (2026-05-13) — bug-095's POST /test/seed-baseline returned 404 because
+// the spawned Fastify didn't register /test/* routes.
+describe("buildBackendSpawnEnv (bug-104)", () => {
+  it("preserves ENABLE_TEST_SEED=1 even when parent env carries =0", () => {
+    const env = buildBackendSpawnEnv(
+      { ENABLE_TEST_SEED: "0", SOME_OTHER_VAR: "x" },
+      3001,
+    );
+    expect(env.ENABLE_TEST_SEED).toBe("1");
+    expect(env.SOME_OTHER_VAR).toBe("x");
+  });
+
+  it("preserves ENABLE_TEST_SEED=1 even when parent env carries empty string", () => {
+    const env = buildBackendSpawnEnv({ ENABLE_TEST_SEED: "" }, 3001);
+    expect(env.ENABLE_TEST_SEED).toBe("1");
+  });
+
+  it("preserves ENABLE_TEST_SEED=1 when parent env is empty", () => {
+    const env = buildBackendSpawnEnv({}, 3001);
+    expect(env.ENABLE_TEST_SEED).toBe("1");
+  });
+
+  it("PORT is always the explicit port arg, even when parent env carries a different PORT", () => {
+    const env = buildBackendSpawnEnv({ PORT: "9999" }, 3001);
+    expect(env.PORT).toBe("3001");
+  });
+
+  it("operator can still override DATABASE_PATH + LOG_LEVEL via parent env", () => {
+    const env = buildBackendSpawnEnv(
+      { DATABASE_PATH: "/custom/path.db", LOG_LEVEL: "debug" },
+      3001,
+    );
+    expect(env.DATABASE_PATH).toBe("/custom/path.db");
+    expect(env.LOG_LEVEL).toBe("debug");
+  });
+
+  it("default DATABASE_PATH + LOG_LEVEL when parent env doesn't provide", () => {
+    const env = buildBackendSpawnEnv({}, 3001);
+    expect(env.DATABASE_PATH).toBe("./data/finance-track-test.db");
+    expect(env.LOG_LEVEL).toBe("warn");
   });
 });

@@ -847,7 +847,25 @@ export async function runBuildToSpecVerify(
       ctx.enabledTiers.has(5)) &&
     (ctx.runPerceptual !== false || ctx.runWalkthrough !== false);
   if (visualTiersWillFire && flowsRan && sharedDevServerHandle?.backendUrl) {
-    const baselineUrl = `${sharedDevServerHandle.backendUrl.replace(/\/$/, "")}/test/seed-baseline`;
+    const backendBase = sharedDevServerHandle.backendUrl.replace(/\/$/, "");
+    const healthUrl = `${backendBase}/health`;
+    const baselineUrl = `${backendBase}/test/seed-baseline`;
+
+    // bug-104 (2026-05-13): pre-flight health check distinguishes "API down"
+    // (connection-refused) from "API up but /test/* routes not registered"
+    // (404 from a Fastify process that didn't see ENABLE_TEST_SEED=1).
+    // Distinguishing helps debugging when bug-095's restore returns 404 —
+    // empirically observed in verifier b18vw2rdn (2026-05-13) where the
+    // operator's pre-existing API was on :3001 but its env didn't match
+    // the orchestrator's test-seed contract.
+    let healthOk: boolean | null = null;
+    try {
+      const healthRes = await fetch(healthUrl, { method: "GET" });
+      healthOk = healthRes.ok;
+    } catch {
+      healthOk = null; // connection refused → API not listening
+    }
+
     try {
       const res = await fetch(baselineUrl, {
         method: "POST",
@@ -858,14 +876,22 @@ export async function runBuildToSpecVerify(
         warnings.push(
           `bug-095: restored seed-baseline at ${baselineUrl} (${res.status}) before Tier 4+5 capture`,
         );
+      } else if (res.status === 404 && healthOk === true) {
+        warnings.push(
+          `bug-095: seed-baseline restore at ${baselineUrl} returned 404 but /health returned 200 — likely ENABLE_TEST_SEED env not propagated to spawned API (bug-104 class). Tier 4+5 will observe post-cleanup DB state.`,
+        );
+      } else if (res.status === 404 && healthOk === null) {
+        warnings.push(
+          `bug-095: seed-baseline restore at ${baselineUrl} returned 404 AND /health connection-refused — API is not listening at ${backendBase}. Possible orchestrator spawn failure. Tier 4+5 will observe post-cleanup DB state.`,
+        );
       } else {
         warnings.push(
-          `bug-095: seed-baseline restore at ${baselineUrl} returned ${res.status} — Tier 4+5 may observe post-cleanup DB state`,
+          `bug-095: seed-baseline restore at ${baselineUrl} returned ${res.status} (health=${healthOk}) — Tier 4+5 may observe post-cleanup DB state`,
         );
       }
     } catch (err) {
       warnings.push(
-        `bug-095: seed-baseline restore at ${baselineUrl} threw: ${(err as Error).message} — Tier 4+5 may observe post-cleanup DB state`,
+        `bug-095: seed-baseline restore at ${baselineUrl} threw: ${(err as Error).message} (health=${healthOk}) — Tier 4+5 may observe post-cleanup DB state`,
       );
     }
   }
