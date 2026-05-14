@@ -22,3 +22,6 @@
 20260511-130533-human-v2-phases-0-1-2-5-shipped-pixel-noise-found.md
 20260511-214104-human-bug-082-shipped-fix-loop-paused.md
 20260512-042354-human-v2-trio-shipped-and-empirically-validated.md
+20260512-205712-human-v2-near-shippable-rest-checkpoint.md
+20260513-074505-human-phase-1-shipped-and-empirically-validated.md
+20260514-025423-human-v2-phase-234-complete-gotribe-ready.md
