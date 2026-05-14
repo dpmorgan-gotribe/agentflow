@@ -334,6 +334,40 @@ A count of 0 on either grep is a feature-failing condition — the parity verifi
 - **Suspense for streaming.** Wrap slow server-fetches in `<Suspense fallback={<Skeleton />}>` and let Next stream progressively.
 - **`next/image` for ALL raster images.** Set explicit `width` + `height`. For hero imagery from Unsplash / picsum, include `unoptimized` only on external URLs where sizing is unknown.
 
+## 2c. AppShell layout invariants (bug-105 — preventive)
+
+When the project's `architecture.yaml` declares an AppShell-class layout (typical Strategy C / multi-tier project), the rendered AppShell MUST honor the following invariants regardless of what kit defaults produce. Empirical motivator: reading-log-02 manual session 2026-05-13 surfaced 5 distinct layout-invariant violations on a single screen (sidebar not full-height, topbar search not centered, Add-book button not right-aligned, no brand wordmark, no sidenav stats footer). Tier 3 + Tier 4 verifier layers can't catch these because the mockup template + the build BOTH render the kit-default → no drift → no finding. Prevention has to live in the builder's dispatch context.
+
+### Vertical (height) invariants
+
+- **Sidebar fills viewport height.** AppShellSidebar's outer container must have one of `min-h-dvh`, `min-h-screen`, `h-dvh`, `h-screen`. Default `<AppShell>` may render the sidebar at content-height; the explicit class is non-negotiable for apps shipping with persistent sidenav. Verify post-render: `getComputedStyle(sidebar).height` ≈ viewport height.
+- **Main content owns the scroll.** AppShellMain must be the scrollable container (`overflow-y-auto` + `h-dvh` minus header height). Page-bottom elements (pagination controls, footer rows, sidenav stats footer) stay reachable. Empirical: reading-log-02 missing pagination + sidenav stats reproduced when the main area didn't establish a scroll container — the elements rendered below the visible viewport with no scroll affordance.
+
+### Horizontal (width + slot allocation) invariants
+
+- **Topbar spans full viewport width.** AppShellHeader must be `w-full` AND span the entire horizontal viewport — NOT constrained by the sidebar's column. The kit's flex/grid layout typically puts the header above both columns; verify the header is the FIRST child of AppShell, not nested inside the content column.
+- **Topbar slot allocation** (left → center → right; use `flex items-center` with explicit slot widths):
+  - **LEFT slot**: brand wordmark + logo when the project has a brand identity. Check `docs/analysis/shared/styles.md` § Brand Context for the project's brand name + icon. When the screen template emits a brand element OR the brief specifies a brand identity, the builder MUST render it in the topbar's left slot. Default kit AppShellHeader may leave this slot empty — non-negotiable when brand exists.
+  - **CENTER slot**: primary search input when the screen has a search affordance (most list/dashboard views). Use `flex-1 flex justify-center` so the search element centers in the remaining space + grows responsively.
+  - **RIGHT slot**: primary CTA cluster (Add book / settings / profile / utility buttons). Use `flex items-center gap-2` + `shrink-0`. The CTA must sit at the topbar's right edge — flexbox `justify-end` won't suffice if the center slot's `flex-1` doesn't establish the right anchor.
+- **Sidebar width 240-280px typical.** Below 240px cramps nav labels (the `sidebar only 227px` empirical case); above 280px wastes content space. Set explicitly via Tailwind class (`w-60` / `w-64` / `w-72`) — don't rely on content-driven width.
+
+### Sidenav slot allocation
+
+- **Top slot**: brand identity (alternative to topbar-brand for icon-as-brand designs OR repeat the wordmark here for redundancy).
+- **Middle slot**: primary navigation items (Library / Tags / Settings / ...). Use `flex flex-col gap-1` with each item as a `<Link>` consuming kit's NavItem primitive (or equivalent).
+- **Bottom slot**: utility content — stats footer ("147 books / 23 finished this year"), version string, support link, settings shortcut. Use `mt-auto` on the bottom slot to push it to the sidebar's bottom edge (works because the sidebar is full-height — see vertical invariants above).
+
+### Self-verify (run BEFORE reporting AppShell-class task complete)
+
+1. **Sidebar full-height check**: in the rendered DOM, `document.querySelector('[data-kit-component="AppShellSidebar"]').getBoundingClientRect().height` ≥ `window.innerHeight - 1`. Reject the JSX if false.
+2. **Topbar full-width check**: `document.querySelector('[data-kit-component="AppShellHeader"]').getBoundingClientRect().width` ≥ `window.innerWidth - scrollbarWidth - 1`. Reject if the topbar is constrained to the content column.
+3. **Brand presence check**: if `docs/analysis/shared/styles.md` § Brand Context names a brand (e.g. "Reading Log"), grep the rendered DOM for the brand text in the topbar OR sidenav top slot. Reject if absent in both.
+4. **Sidenav bottom-slot check**: if any of the project's screen templates emit a sidenav bottom element (stats footer / utility row), grep the rendered DOM for that element. Reject if absent.
+5. **Center-slot search check**: if the screen template has a search input AND it's inside the topbar element, verify the search renders centered (not left- or right-aligned). Use `getBoundingClientRect()` against the topbar's center coordinate; tolerance ±10% of topbar width.
+
+If ANY invariant fails, the feature is NOT complete — re-author the JSX to honor the invariant before reporting `taskStatus: "completed"`. The kit defaults DON'T enforce these because the kit is style-agnostic; the application is responsible for declaring the layout shape it ships with.
+
 ## 3. Testing
 
 Binds to `feat-004-builder-tdd-hybrid` policy.

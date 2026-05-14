@@ -252,6 +252,23 @@ A count of 0 on either grep is a feature-failing condition — the parity verifi
 
 **Storage-key alignment:** the `STORAGE_KEY` constant MUST match the key your rune-based persisted store uses (whatever `localStorage.setItem(...)` call your `apps/web/src/lib/stores/index.ts` makes during hydration). Mismatch = seeded data sits in localStorage but the store reads from a different key + ignores it. Hardcode the key as a re-exportable constant from `apps/web/src/lib/stores/index.ts` so dev-seed.ts and the store agree on a single source of truth.
 
+## 2c. AppShell layout invariants (bug-105 — preventive)
+
+The same AppShell layout-invariant set defined in `.claude/skills/agents/front-end/react-next/SKILL.md` §2c applies VERBATIM to Svelte projects shipping an AppShell-class layout. Tailwind class names (`min-h-dvh`, `w-full`, `flex-1`, `mt-auto`) are framework-agnostic; only the JSX→Svelte syntax differs.
+
+Key invariants (full rationale + empirical motivator in the react-next skill):
+
+- **Sidebar fills viewport height** (`min-h-dvh` or `h-dvh` on AppShellSidebar root).
+- **Main content owns the scroll** (`overflow-y-auto` on AppShellMain).
+- **Topbar spans full viewport width** (`w-full`; NOT constrained by sidebar column).
+- **Topbar slot allocation**: LEFT = brand wordmark (when project has one), CENTER = primary search (`flex-1 flex justify-center`), RIGHT = CTA cluster (`flex items-center gap-2 shrink-0`).
+- **Sidebar width 240-280px** (explicit `w-60` / `w-64` / `w-72`).
+- **Sidenav bottom-slot** uses `mt-auto` for utility content (stats footer, version, support link).
+
+Self-verify checks (run BEFORE reporting AppShell-class task complete): sidebar full-height, topbar full-width, brand presence when brief specifies one, sidenav bottom-slot when screen template emits one, center-slot search centered. ANY invariant failure = re-author the markup; don't ship default-kit layout for AppShell-class projects.
+
+See react-next §2c for the full check list + DOM-query snippets.
+
 ## 3. Testing
 
 - **Test-file naming**: `src/lib/foo.ts` → `src/lib/foo.test.ts`; component `src/lib/components/Button.svelte` → `src/lib/components/Button.test.ts`.
