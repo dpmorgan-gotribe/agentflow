@@ -427,11 +427,18 @@ async function defaultCompareScreen({
   let mockupSnapshot: Record<string, Record<string, string>> = {};
   // feat-067 Phase B (2026-05-11) — capture PNG screenshots alongside the
   // existing HTML + computed-style snapshots so audit-pixel-diff can run
-  // a viewport-scope pixel comparison. Viewport-only (fullPage: false) to
-  // keep capture cost ~100ms per page; full-page screenshots are 5-10×
-  // larger + don't help v1 (whole-screen mismatches show at viewport
-  // scope). Behind-the-fold pixel-diff is deferred to a future Phase if
-  // specific bugs surface that require it.
+  // a pixel comparison.
+  //
+  // bug-099 (2026-05-13) — promoted to fullPage:true on both built +
+  // mockup. Empirical motivator: reading-log-02 user manual session
+  // surfaced 7 element absences on a single screen (pagination, sidenav
+  // tags list, sidenav stats footer, "last added" copy, etc.) that all
+  // live below the 900px viewport fold. The perceptual reviewer (Tier 4)
+  // consumes these PNGs to compare mockup-vs-built; if both are viewport-
+  // only, anything below the fold is invisible to the comparison and
+  // perceptual files zero findings for entire classes of absences.
+  // fullPage:true is ~5-10× larger but the leverage on absence detection
+  // is decisive — the cost is well-spent.
   let builtPng: Buffer | undefined;
   let mockupPng: Buffer | undefined;
   let computedStyleWarnings: string[] = [];
@@ -475,7 +482,7 @@ async function defaultCompareScreen({
         document.documentElement.classList.remove("dark");
         document.documentElement.setAttribute("data-theme", "light");
       });
-      builtPng = await builtPage.screenshot({ type: "png", fullPage: false });
+      builtPng = await builtPage.screenshot({ type: "png", fullPage: true });
     } catch (err) {
       computedStyleWarnings.push(
         `built screenshot capture failed: ${(err as Error).message}`,
@@ -515,7 +522,7 @@ async function defaultCompareScreen({
       try {
         mockupPng = await mockupPage.screenshot({
           type: "png",
-          fullPage: false,
+          fullPage: true,
         });
       } catch (err) {
         computedStyleWarnings.push(
