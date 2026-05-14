@@ -93,6 +93,12 @@ After writing tasks.yaml (mode=tasks):
 5. Every `requiredNow: true` integration from architecture.yaml has ≥1 `P0` task in some feature
 6. `summary_counts` (if populated) agrees with independently-computed counts from `features[]`
 7. **bug-018: `affects_files[]` coverage ≥80%.** Run `node -e 'const y=require("js-yaml").load(require("fs").readFileSync("docs/tasks.yaml","utf8")); const n=y.features.filter(f=>(f.affects_files??[]).length>0).length; console.log(n+"/"+y.features.length+" ("+Math.round(n/y.features.length*100)+"%)")'` — if <80%, walk back and populate the missing features. If you legitimately cannot identify file scope for a feature (rare), set `affects_files: []` with a `# explicit-no-shared-files: <reason>` YAML comment so the omission is auditable.
+8. **bug-100: mockup-element coverage ≥80%.** Run `node scripts/audit-pm-mockup-coverage.mjs .` from the project root. Output reports unmapped `(screen-id, kit-component)` tuples — these are visible elements present in `docs/screens/{platform}/*.html` mockups whose corresponding implementation is not addressed by any task in `tasks.yaml`. For each unmapped tuple, decide explicitly:
+   - **(a) Add a task** to the appropriate feature in tasks.yaml. Default action when the element is brief-derived AND core to the screen's intent.
+   - **(b) Document as out-of-scope** by appending to `docs/pm-coverage-decisions.md`: `- {screen-id}/{component}: out-of-scope for v1 — {short rationale citing the brief section that justifies deferral}`.
+   - **(c) Cite a subsuming capability** from brief §11 in the existing feature description. Apply when an existing feature implicitly covers the element but doesn't name-drop it (e.g. "Library list with status filtering" subsumes a "StatusFilter" component without naming it).
+
+   If coverage stays <80% after option (a)+(b)+(c) review, walk back and add the missing tasks — this is the single biggest source of "features visible in mockup but absent from build" surprises (empirical: reading-log-02 2026-05-13 user manual session, 5 such gaps on a single screen). The audit's heuristic is intentionally lenient (matches on either screen-id OR component name in any task text) — if it flags something, the gap is real.
 
 After writing mini-plan (mode=kit-change-request):
 
