@@ -639,6 +639,29 @@ export async function runAiWalkthrough({
     for (const s of interactionSteps) manifest.steps.push(s);
   }
 
+  // ── feat-069 / bug-103 — Pass B: project-shape-aware flow walk ────────────
+  // Pass A (above) is generic — applies the same 4 helpers across every
+  // project. Pass B reads docs/user-flows-manifest.json (the canonical
+  // project-specific declaration of which user flows the app supports) and
+  // executes each flow's interactions[] in order as a walkthrough sweep.
+  //
+  // Without Pass B, projects whose canonical flows differ from
+  // theme/search/delete/tab get zero walkthrough coverage for their actual
+  // user behavior. With Pass B, every project's walkthrough automatically
+  // covers its declared flows — regardless of app shape.
+  //
+  // Pass B is silent no-op when:
+  //  - user-flows-manifest.json doesn't exist
+  //  - manifest has zero flows OR all flows have empty interactions[]
+  await runFlowsManifestPass(
+    page,
+    projectDir,
+    outDir,
+    manifest,
+    warnings,
+    nextStep,
+  );
+
   const manifestPath = join(outDir, "manifest.json");
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
@@ -659,6 +682,159 @@ export async function runAiWalkthrough({
     outDir,
     manifestPath,
   };
+}
+
+// ─── feat-069 / bug-103 — Pass B helpers ────────────────────────────────────
+
+/**
+ * Walk each flow declared in `docs/user-flows-manifest.json`. For each flow,
+ * execute its `interactions[]` in order against the open Playwright page +
+ * capture per-step manifest entries with screenshots. The captured network +
+ * console state surfaces in the walkthrough's existing ndjson sinks (the
+ * `page.on` listeners registered at top of `runAiWalkthrough`).
+ *
+ * No-op (silent) when the manifest is absent OR has no flows with non-empty
+ * interactions[].
+ *
+ * Wired into runAiWalkthrough AFTER the per-route Pass A sweep. Pass A and
+ * Pass B are independent; their step entries coexist in `manifest.steps[]`
+ * with distinct `kind` discriminators (route-visit / search-fill / ... for
+ * Pass A; flow-step for Pass B). The walkthrough-reviewer agent receives
+ * both + the agent prompt explicitly distinguishes them.
+ */
+export async function runFlowsManifestPass(
+  page,
+  projectDir,
+  outDir,
+  manifest,
+  warnings,
+  nextStep,
+) {
+  const manifestPath = join(projectDir, "docs", "user-flows-manifest.json");
+  if (!existsSync(manifestPath)) {
+    // Project doesn't declare flows → Pass B is a no-op.
+    return;
+  }
+  let flowsDoc;
+  try {
+    flowsDoc = JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch (err) {
+    warnings.push(
+      `flows-manifest: failed to parse ${manifestPath}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return;
+  }
+  const flows = Array.isArray(flowsDoc.flows) ? flowsDoc.flows : [];
+
+  for (const flow of flows) {
+    const interactions = Array.isArray(flow.interactions)
+      ? flow.interactions
+      : [];
+    if (interactions.length === 0) continue;
+    const flowId = flow.id ?? "unnamed-flow";
+    const flowName = flow.name ?? flowId;
+
+    for (let i = 0; i < interactions.length; i++) {
+      const step = interactions[i];
+      const stepNum = nextStep();
+      const tsBefore = Date.now();
+      let stepError = null;
+      try {
+        await executeInteraction(page, step);
+      } catch (err) {
+        stepError = err instanceof Error ? err.message : String(err);
+        warnings.push(
+          `flow-step ${flowId}#${i} (${step.kind}): ${stepError.slice(0, 200)}`,
+        );
+      }
+      // Best-effort screenshot per step. Failures don't abort the flow.
+      const stepSlug = `${flowId.replace(/[^a-z0-9]+/gi, "-")}-step-${String(i).padStart(2, "0")}-${step.kind}`;
+      const screenshotName = `${stepSlug}.png`;
+      try {
+        await page.screenshot({
+          path: join(outDir, screenshotName),
+          fullPage: false,
+        });
+      } catch {
+        /* ignore */
+      }
+      manifest.steps.push({
+        step: stepNum,
+        kind: "flow-step",
+        flowId,
+        flowName,
+        stepKind: step.kind,
+        stepIndex: i,
+        tsBefore,
+        tsAfter: Date.now(),
+        screenshotPath: screenshotName,
+        url: page.url(),
+        ...(stepError ? { error: stepError } : {}),
+      });
+    }
+  }
+}
+
+/**
+ * Execute one user-flows-manifest InteractionStep against the open page.
+ * Mirrors the synthesizer's `emitInteraction` shape but runs LIVE rather
+ * than emitting Playwright source. Read-only assertions
+ * (assertVisible / assertText / assertUrlMatches) are SKIPPED in Pass B —
+ * the walkthrough captures observed state for the agent to review rather
+ * than failing on assertion mismatch. Mocks are SKIPPED — they're a
+ * synthesizer-specific concept (route interception for read-only fixtures).
+ *
+ * Throws on synchronous Playwright errors so the caller can capture the
+ * step error in the manifest entry.
+ */
+export async function executeInteraction(page, step) {
+  switch (step.kind) {
+    case "navigate":
+      await page.goto(step.to, {
+        waitUntil: "domcontentloaded",
+        timeout: 15000,
+      });
+      // Settle for late-render so subsequent steps see the new state.
+      await page.waitForTimeout(400);
+      return;
+    case "fill":
+      await page.locator(step.selector).fill(step.value, { timeout: 5000 });
+      return;
+    case "click":
+      await page.locator(step.selector).click({ timeout: 5000 });
+      // Brief settle for route changes / dialog mounts.
+      await page.waitForTimeout(300);
+      return;
+    case "select":
+      await page
+        .locator(step.selector)
+        .selectOption(step.option, { timeout: 5000 });
+      return;
+    case "waitForResponse": {
+      const re = new RegExp(step.urlPattern);
+      const hasStatus = typeof step.status === "number";
+      await page.waitForResponse(
+        (r) => re.test(r.url()) && (!hasStatus || r.status() === step.status),
+        { timeout: 10000 },
+      );
+      return;
+    }
+    case "waitForSelector":
+      await page.waitForSelector(step.selector, {
+        timeout: step.timeout ?? 5000,
+      });
+      return;
+    case "assertVisible":
+    case "assertText":
+    case "assertUrlMatches":
+    case "screenshot":
+    case "mock":
+      // Pass B doesn't enforce assertions or apply mocks — walkthrough is
+      // observational. Skip silently.
+      return;
+    default:
+      throw new Error(`unknown interaction kind: ${String(step.kind)}`);
+  }
 }
 
 // CLI mode: `node scripts/ai-walkthrough.mjs <projectDir> <baseUrl>`
