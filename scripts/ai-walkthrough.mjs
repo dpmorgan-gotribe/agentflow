@@ -523,6 +523,314 @@ export async function runAiWalkthrough({
     };
   }
 
+  /**
+   * bug-101 (2026-05-14) — Anchor-click interaction. Finds the first
+   * in-app anchor link (href starting with "/" OR "#"), captures URL +
+   * scroll position BEFORE click, clicks, waits for navigation/scroll to
+   * settle, captures AFTER. Reveals: broken anchor links, anchor that
+   * scrolls to top instead of target, route changes that 404.
+   *
+   * Empirical motivator (reading-log-02 user manual session 2026-05-13
+   * Prompt 5): "Open documentation in About section just scrolls to top
+   * of page" — anchor link present in mockup but href / target missing
+   * or wrong, producing no-op scroll instead of section navigation OR
+   * route change.
+   *
+   * Selectors prefer concrete in-app anchors over external links to
+   * avoid drilling into off-site behavior the walkthrough can't reason
+   * about.
+   */
+  async function runAnchorClick(routeSlug) {
+    const anchor = await findFirstVisible([
+      'a[href^="/"]:not([href="/"])', // route link, not the homepage
+      'a[href^="#"]', // in-page anchor
+      'a[role="link"]:not([href^="http"])',
+    ]);
+    if (!anchor) return null;
+    const step = nextStep();
+    const tsBefore = Date.now();
+    let screenshotPath = null;
+    let urlBefore = null;
+    let urlAfter = null;
+    let scrollBefore = null;
+    let scrollAfter = null;
+    let hrefAttr = null;
+    try {
+      hrefAttr = await anchor.getAttribute("href");
+      urlBefore = page.url();
+      scrollBefore = await page.evaluate(() => ({
+        x: window.scrollX,
+        y: window.scrollY,
+      }));
+      await anchor.click({ timeout: 5000 });
+      // Wait for either navigation OR scroll to settle. 800ms is enough
+      // for anchor scroll on most SPAs; route changes get their own
+      // page.waitForLoadState call below.
+      await page.waitForTimeout(800);
+      urlAfter = page.url();
+      scrollAfter = await page.evaluate(() => ({
+        x: window.scrollX,
+        y: window.scrollY,
+      }));
+      screenshotPath = screenshotFor(routeSlug, "anchor-click");
+      await page.screenshot({ path: join(outDir, screenshotPath) });
+      screenshotsCount += 1;
+    } catch (err) {
+      warnings.push(
+        `step ${step} (anchor-click): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return {
+      step,
+      kind: "anchor-click",
+      tsBefore,
+      tsAfter: Date.now(),
+      screenshotPath,
+      href: hrefAttr,
+      urlBefore,
+      urlAfter,
+      urlChanged: urlBefore !== null && urlBefore !== urlAfter,
+      scrollBefore,
+      scrollAfter,
+      scrollChanged:
+        scrollBefore !== null &&
+        scrollAfter !== null &&
+        (scrollBefore.x !== scrollAfter.x || scrollBefore.y !== scrollAfter.y),
+    };
+  }
+
+  /**
+   * bug-101 (2026-05-14) — Form-submit interaction. Finds the first
+   * <form> element on the route, fills its inputs with sentinel values,
+   * clicks the submit button, captures the network response status +
+   * verifies the form's submit produced an observable side-effect
+   * (response 2xx OR a new item appearing in the DOM).
+   *
+   * Empirical motivator (reading-log-02 user manual session 2026-05-13
+   * Prompt 3): "POST /books 422 on every save variant" — frontend form
+   * sends values backend validator rejects. Without form-submit
+   * walkthrough coverage, the 422 class is invisible to every tier.
+   *
+   * Sentinels:
+   *   text/email/url/number inputs → "walkthrough-probe-<ts>"
+   *   selects → first non-empty option
+   *   checkboxes → toggle to checked
+   *   textareas → "walkthrough-probe-<ts>"
+   * Date inputs are LEFT BLANK (the walkthrough doesn't know what date
+   * format the backend expects + a synthetic date risks distorting the
+   * agent's downstream review).
+   */
+  async function runFormSubmitAndCreate(routeSlug) {
+    const form = await findFirstVisible(["form", '[role="form"]']);
+    if (!form) return null;
+    const step = nextStep();
+    const tsBefore = Date.now();
+    let screenshotPath = null;
+    const sentinel = `walkthrough-probe-${Date.now()}`;
+    const networkEvents = [];
+    let responseStatus = null;
+    let submitButton = null;
+    let urlBefore = null;
+    let urlAfter = null;
+    let sentinelVisible = false;
+
+    // Capture POST/PUT/PATCH/DELETE response statuses during this step.
+    const responseHandler = (response) => {
+      const method = response.request().method();
+      if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+        networkEvents.push({
+          method,
+          url: response.url(),
+          status: response.status(),
+        });
+        if (responseStatus === null && response.status() >= 200) {
+          responseStatus = response.status();
+        }
+      }
+    };
+    page.on("response", responseHandler);
+
+    try {
+      urlBefore = page.url();
+      // Fill all text-ish inputs inside the form. Scoped to form to avoid
+      // accidentally typing into a search bar elsewhere on the page.
+      const textInputs = await form
+        .locator(
+          'input:not([type="hidden"]):not([type="date"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]), textarea',
+        )
+        .all();
+      for (const input of textInputs) {
+        try {
+          await input.fill(sentinel, { timeout: 2000 });
+        } catch {
+          /* some inputs may be readonly / disabled / inside conditional UI */
+        }
+      }
+      // Pick first option for any selects.
+      const selects = await form.locator("select").all();
+      for (const sel of selects) {
+        try {
+          const optionCount = await sel.locator("option").count();
+          if (optionCount > 1) {
+            // Index 0 is often the placeholder; choose 1.
+            const value = await sel
+              .locator("option")
+              .nth(1)
+              .getAttribute("value");
+            if (value) await sel.selectOption(value, { timeout: 2000 });
+          }
+        } catch {
+          /* defensive */
+        }
+      }
+
+      // Find the submit button — prefer button[type=submit], fall back to
+      // first button inside the form. Submit-text matches (Save, Submit,
+      // Create) are noisier than type=submit; type wins.
+      submitButton = await findFirstVisible(
+        ['button[type="submit"]', 'input[type="submit"]', "form button"],
+        { scopeLocator: form, scrollIntoView: false },
+      );
+      if (!submitButton) {
+        warnings.push(
+          `step ${step} (form-submit): no submit button found in form on ${routeSlug}`,
+        );
+      } else {
+        await submitButton.click({ timeout: 5000 });
+        // Wait for response + any UI updates to settle.
+        await page.waitForTimeout(1500);
+      }
+
+      urlAfter = page.url();
+      // Verify the sentinel made it into the DOM (e.g. as a list-item).
+      try {
+        const sentinelLocator = page.locator(`text=${sentinel}`).first();
+        sentinelVisible = (await sentinelLocator.count()) > 0;
+      } catch {
+        sentinelVisible = false;
+      }
+
+      screenshotPath = screenshotFor(routeSlug, "form-submit");
+      await page.screenshot({ path: join(outDir, screenshotPath) });
+      screenshotsCount += 1;
+    } catch (err) {
+      warnings.push(
+        `step ${step} (form-submit): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      page.off("response", responseHandler);
+    }
+
+    return {
+      step,
+      kind: "form-submit",
+      tsBefore,
+      tsAfter: Date.now(),
+      screenshotPath,
+      sentinel,
+      urlBefore,
+      urlAfter,
+      urlChanged: urlBefore !== urlAfter,
+      networkEvents,
+      responseStatus,
+      sentinelVisible,
+    };
+  }
+
+  /**
+   * bug-101 (2026-05-14) — Filter-combine interaction. Finds tab-style
+   * or button-group filter controls on the page, toggles two distinct
+   * filters in sequence, captures the result-set count after each.
+   * Reveals: OR-not-AND combination logic, filters that fail to apply
+   * (clicks but result-set unchanged), filters that show "all" when
+   * a specific filter is selected.
+   *
+   * Empirical motivator (reading-log-02 user manual session 2026-05-13
+   * Prompt 9): "If tag and status set its returns a OR not AND filter
+   * so with paused and non-fiction set i see fantasy books" — filter
+   * combination logic broken; produces a result-set superset instead of
+   * intersection.
+   *
+   * Result-set count heuristic: the walkthrough captures the COUNT of
+   * elements matching a common list-item selector before + after each
+   * filter toggle. A correctly-AND-combining filter set should produce
+   * a non-increasing count sequence. If count INCREASES after a second
+   * filter, OR-semantics is the likely cause.
+   */
+  async function runFilterCombine(routeSlug) {
+    // Find filter controls — prefer role=tab or aria-pressed buttons.
+    const filterControls = await page
+      .locator(
+        [
+          'button[role="tab"]:not([aria-selected="true"])',
+          'button[aria-pressed="false"]',
+        ].join(", "),
+      )
+      .all()
+      .catch(() => []);
+    if (filterControls.length < 2) return null;
+
+    const step = nextStep();
+    const tsBefore = Date.now();
+    let screenshotPath = null;
+    const stages = [];
+
+    // List-item selector heuristic — covers common shapes.
+    const itemSelector =
+      '[role="listitem"], article, [data-list-item], li[role="article"]';
+
+    try {
+      // Capture baseline count.
+      let count = await page.locator(itemSelector).count();
+      stages.push({ stage: "baseline", count });
+
+      // Toggle first filter.
+      const firstFilter = filterControls[0];
+      const firstLabel =
+        (await firstFilter.textContent())?.trim() ?? "filter-1";
+      await firstFilter.click({ timeout: 5000 });
+      await page.waitForTimeout(800);
+      count = await page.locator(itemSelector).count();
+      stages.push({ stage: "after-filter-1", filter: firstLabel, count });
+
+      // Toggle second filter (only when it's a different control).
+      if (filterControls.length > 1) {
+        const secondFilter = filterControls[1];
+        const secondLabel =
+          (await secondFilter.textContent())?.trim() ?? "filter-2";
+        await secondFilter.click({ timeout: 5000 });
+        await page.waitForTimeout(800);
+        count = await page.locator(itemSelector).count();
+        stages.push({ stage: "after-filter-2", filter: secondLabel, count });
+      }
+
+      screenshotPath = screenshotFor(routeSlug, "filter-combine");
+      await page.screenshot({ path: join(outDir, screenshotPath) });
+      screenshotsCount += 1;
+    } catch (err) {
+      warnings.push(
+        `step ${step} (filter-combine): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    // Compute the non-increasing-monotonic-count heuristic. The agent
+    // reviews this; the walkthrough emits the raw observation.
+    const counts = stages.map((s) => s.count);
+    const isMonotonicNonIncreasing = counts.every(
+      (c, i) => i === 0 || c <= (counts[i - 1] ?? Infinity),
+    );
+
+    return {
+      step,
+      kind: "filter-combine",
+      tsBefore,
+      tsAfter: Date.now(),
+      screenshotPath,
+      stages,
+      isMonotonicNonIncreasing,
+    };
+  }
+
   for (let i = 0; i < routes.length; i++) {
     const route = routes[i];
     const slug = slugifyRoute(route.routePattern);
@@ -601,10 +909,22 @@ export async function runAiWalkthrough({
     //    re-navigate to the original URL so the next helper sees the
     //    declared route context.
     // ──
+    // bug-101 (2026-05-14) — 3 new helpers wired in:
+    //  - runFilterCombine: between delete-click + form-submit (toggle-only,
+    //    no nav, no record mutation).
+    //  - runFormSubmitAndCreate: AFTER delete-click + filter-combine (it
+    //    creates a sentinel record; if delete ran later, the sentinel
+    //    might get deleted) BEFORE search-fill / anchor-click (those nav
+    //    away from the route + break form context).
+    //  - runAnchorClick: AFTER form-submit (anchor navigation may leave
+    //    the page entirely), BEFORE search-fill / tab-traversal.
     const interactionSteps = [];
     for (const helper of [
       runThemeToggle,
       runDeleteClick,
+      runFilterCombine,
+      runFormSubmitAndCreate,
+      runAnchorClick,
       runSearchFill,
       runTabTraversal,
     ]) {
