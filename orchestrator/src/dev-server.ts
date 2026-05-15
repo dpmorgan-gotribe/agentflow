@@ -173,11 +173,28 @@ export function spawnDevServer(
     env,
   });
   if (!isWin && typeof child.unref === "function") child.unref();
-  // Drain stdout/stderr so the buffer doesn't fill — orchestrator doesn't
-  // surface dev-server logs by default; operators can spawn manually if
-  // they want to inspect.
+  // bug-112 Patch A — capture stderr tail into a 50-line ring buffer so
+  // bootDevServer's frontend catch block (and waitForDevServer's
+  // premature-exit fast-fail at lines ~484-492) can surface the actual
+  // failure message instead of the empty `last error: ` 60s timeout.
+  // Mirrors the backend pattern at spawnBackendDevServer; was missing on
+  // the frontend lane before bug-112. Empirical motivator: gotribe-tribe-
+  // directory 2026-05-15 — `'next' is not recognized` + `WARN node_modules
+  // missing` exited in ~1s but the orchestrator saw nothing for 60s.
+  const stderrTail: string[] = [];
+  const STDERR_TAIL_MAX_LINES = 50;
   if (child.stdout) child.stdout.on("data", () => {});
-  if (child.stderr) child.stderr.on("data", () => {});
+  if (child.stderr) {
+    child.stderr.on("data", (chunk: Buffer) => {
+      const lines = chunk.toString().split(/\r?\n/);
+      for (const line of lines) {
+        if (!line) continue;
+        stderrTail.push(line);
+        if (stderrTail.length > STDERR_TAIL_MAX_LINES) stderrTail.shift();
+      }
+    });
+  }
+  (child as ChildProcess & { _stderrTail: string[] })._stderrTail = stderrTail;
   return child;
 }
 
@@ -509,7 +526,20 @@ function probeOnce(url: string): Promise<number | null> {
       res.resume();
       resolve(res.statusCode ?? null);
     });
-    req.on("error", reject);
+    // bug-112 Patch B — synthesize a non-empty .message when Node's http
+    // ECONNREFUSED produces an empty one (Node 22 + Windows 11 behavior:
+    // err.code === "ECONNREFUSED", err.errno === -4078, err.message === "").
+    // Without this, waitForDevServer's `last error: ${lastErr.message}`
+    // becomes literally `last error: ` — masking which probe was failing.
+    req.on("error", (err: NodeJS.ErrnoException) => {
+      if (!err.message) {
+        const code = err.code ?? "UNKNOWN";
+        const errnoPart =
+          err.errno !== undefined ? ` (errno ${err.errno})` : "";
+        err.message = `${code}${errnoPart} probing ${url}`;
+      }
+      reject(err);
+    });
     req.setTimeout(5000, () => {
       req.destroy(new Error("http get timeout"));
     });
@@ -638,10 +668,43 @@ export async function bootDevServer(
     ...(backendUrl ? { backendUrl } : {}),
   };
   try {
-    await waitForDevServer(baseUrl, timeoutMs);
+    // bug-112 Patch A (cont.) — pass `proc` so waitForDevServer's
+    // premature-exit fast-fail (lines ~484-492) catches `'next' is not
+    // recognized` / `WARN node_modules missing` style ~1s exits instead
+    // of waiting the full timeout silently. Pre-bug-112 the omitted arg
+    // produced a 60s timeout for a 1s failure mode.
+    await waitForDevServer(baseUrl, timeoutMs, undefined, proc);
     return handle;
   } catch (err) {
     teardownDevServer(handle);
+    // bug-112 Patch C — sweep stderr-tail for known signatures + enrich
+    // the thrown error with an operator-actionable hint. Without this,
+    // even with Patch A's stderr-tail capture, the caller would see the
+    // raw `'next' is not recognized` line without context about how to
+    // fix it. Common signatures listed below; unmatched stderr-tails
+    // pass through with the existing `child process exited prematurely`
+    // shape from waitForDevServer.
+    const tail = (proc as ChildProcess & { _stderrTail?: string[] })
+      ._stderrTail;
+    if (tail && tail.length > 0) {
+      const joined = tail.join("\n");
+      let hint: string | null = null;
+      if (
+        /node_modules.*missing|'next' is not recognized|next: not found|Cannot find module 'next'/.test(
+          joined,
+        )
+      ) {
+        hint = `Frontend node_modules missing. Run \`pnpm install\` at projectDir. The verifier auto-installs when projectDir/node_modules is absent (bug-112 Patch D); if you're seeing this, the install may have failed or apps/web/ has its own node_modules with broken symlinks.`;
+      } else if (/EADDRINUSE/.test(joined)) {
+        hint = `Port ${baseUrl} already in use. Kill the holder process or override FRONTEND_PORT.`;
+      } else if (/Cannot find module/.test(joined)) {
+        hint = `Missing dependency in apps/web/package.json. backend-builder retry or operator-side \`pnpm install\` needed.`;
+      }
+      if (hint) {
+        const msg = (err as Error).message;
+        (err as Error).message = `${msg}\nHint: ${hint}`;
+      }
+    }
     throw err;
   }
 }
