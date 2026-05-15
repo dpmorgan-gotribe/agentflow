@@ -1,10 +1,13 @@
 ---
 id: bug-112-dev-server-empty-error-and-pnpm-install
 type: bug
-status: approved
+status: archived
 author-agent: human
 created: 2026-05-15
 updated: 2026-05-15
+approved-at: 2026-05-15
+completed-at: 2026-05-15
+outcome: success
 parent-plan: investigate-033-verifier-spawn-vs-manual-spawn-divergence
 supersedes: null
 superseded-by: null
