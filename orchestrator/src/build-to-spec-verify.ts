@@ -172,6 +172,12 @@ export interface BuildToSpecVerifyContext {
    */
   bootDevServer?: typeof import("./dev-server.js").bootDevServer;
   /**
+   * bug-112 Patch D — gate the pre-flight `pnpm install` step. Defaults to
+   * `true` (production behavior). Tests pass `false` to skip the install
+   * (the tmp project roots they seed don't need it + would hit the network).
+   */
+  runPreflightInstall?: boolean;
+  /**
    * feat-068 — invokeAgent seam plumbed through from the orchestrator so
    * perceptualReview can dispatch the perceptual-reviewer agent with the
    * same SDK auth + budget tracking as fix-loop dispatches. When unset,
@@ -299,6 +305,48 @@ function synthesizeToolFailure(
 }
 
 /**
+ * bug-112 Patch D — `pnpm install` from the project root. Used by the
+ * verifier's pre-flight when `<projectDir>/node_modules` is absent.
+ * Mode B's `installAfterCommit` covers post-merge installs during the
+ * feature graph; this closes the gap for manual / fix-bugs-loop / operator-
+ * reentry paths where the project's deps may not be present.
+ */
+async function runPreflightInstall(projectDir: string): Promise<void> {
+  const isWin = process.platform === "win32";
+  const cmd = isWin ? "pnpm.cmd" : "pnpm";
+  return new Promise((resolveP, rejectP) => {
+    const child = spawn(cmd, ["install"], {
+      cwd: projectDir,
+      windowsHide: true,
+      shell: isWin,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stderrTail: string[] = [];
+    if (child.stdout) child.stdout.on("data", () => {});
+    if (child.stderr) {
+      child.stderr.on("data", (chunk: Buffer) => {
+        const lines = chunk.toString().split(/\r?\n/);
+        for (const line of lines) {
+          if (!line) continue;
+          stderrTail.push(line);
+          if (stderrTail.length > 50) stderrTail.shift();
+        }
+      });
+    }
+    child.on("error", (err) => rejectP(err));
+    child.on("close", (code) => {
+      if (code === 0) resolveP();
+      else
+        rejectP(
+          new Error(
+            `pnpm install exited with code ${code}. stderr tail:\n${stderrTail.slice(-15).join("\n")}`,
+          ),
+        );
+    });
+  });
+}
+
+/**
  * Default `runScript` implementation. Spawns `node <script> <projectDir>`
  * from the factory root, captures stdout/stderr, returns parseable JSON.
  */
@@ -348,6 +396,38 @@ export async function runBuildToSpecVerify(
     : projectDir;
 
   const warnings: string[] = [];
+
+  // ── bug-112 Patch D: pre-flight pnpm install when node_modules absent ────
+  // Mode B's installAfterCommit covers post-merge installs during the
+  // feature graph. The verifier's manual / fix-bugs-loop / operator-reentry
+  // paths have no equivalent. Without this gate, a project whose root
+  // node_modules is missing produces a silent 60s frontend pre-boot timeout
+  // (the empirical motivator from gotribe-tribe-directory 2026-05-15:
+  // `'next' is not recognized` exited in ~1s but `last error: ` was empty
+  // because of orthogonal dev-server gaps fixed under bug-112 Patches A+B+C).
+  // Cheap when not needed (~1ms existsSync); 30-60s when needed (the
+  // alternative is 60s silent timeout PLUS false-clean report PLUS Tier 3+4+5
+  // cascade-skip).
+  // Gated on package.json presence — a tmpdir with no package.json is not a
+  // real project (test seam) so we skip. Tests can also opt out via
+  // ctx.runPreflightInstall === false.
+  if (
+    ctx.runPreflightInstall !== false &&
+    existsSync(resolve(projectDir, "package.json")) &&
+    !existsSync(resolve(projectDir, "node_modules"))
+  ) {
+    const installStartedAt = Date.now();
+    try {
+      await runPreflightInstall(projectDir);
+      warnings.push(
+        `verifier pre-flight: ran pnpm install (took ${Date.now() - installStartedAt}ms; root node_modules was missing)`,
+      );
+    } catch (err) {
+      warnings.push(
+        `verifier pre-flight: pnpm install FAILED (${(err as Error).message}); dev-server spawn likely to fail next. Operator action: cd <projectDir> && pnpm install`,
+      );
+    }
+  }
 
   // ── bug-078 / feat-066 v2 Phase 1B: deterministic pre-verify gate ────────
   // Run the cheap (~10ms) filesystem-only discriminators FIRST. When ANY

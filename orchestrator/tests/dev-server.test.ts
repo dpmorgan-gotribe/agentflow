@@ -375,6 +375,30 @@ describe("waitForDevServer — child-exit watchdog (feat-056 Gap B)", () => {
     ).toBe(true);
     expect(thrown!.message).not.toContain("child process exited prematurely");
   });
+
+  // bug-112 Patch B — probeOnce synthesizes a non-empty .message when Node's
+  // http ECONNREFUSED produces an empty one on Node 22 + Windows 11. Without
+  // this enrichment, waitForDevServer's `last error: ${lastErr.message}`
+  // becomes literally `last error: `. The new behavior surfaces the
+  // underlying err.code + err.errno + the probed URL.
+  it("synthesizes ECONNREFUSED message containing code + url (bug-112 Patch B)", async () => {
+    let thrown: Error | null = null;
+    try {
+      await waitForDevServer("http://localhost:9997/health", 250, 50);
+    } catch (err) {
+      thrown = err as Error;
+    }
+    expect(thrown).not.toBeNull();
+    // The synthesized message MUST contain a non-empty connection-error
+    // signature. Either Node populated `.message` itself (POSIX + some
+    // Windows paths) OR Patch B's enrichment kicked in. In both cases the
+    // assertions below should hold — they're the contract the
+    // bootDevServer / file-bug-plan callers depend on.
+    expect(thrown!.message).toMatch(/last error: \S/);
+    expect(thrown!.message).toMatch(
+      /ECONN|ECONNREFUSED|9997|connect|socket hang up/,
+    );
+  });
 });
 
 // bug-062 (2026-05-07) — readPersistenceLayerSlug is the discriminator that

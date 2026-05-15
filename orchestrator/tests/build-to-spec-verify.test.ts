@@ -1453,3 +1453,100 @@ describe("runBuildToSpecVerify — bug-095 seed-baseline restore", () => {
     fetchSpy.mockRestore();
   });
 });
+
+describe("runBuildToSpecVerify — bug-112 Patch D pre-flight pnpm install", () => {
+  // When the project has a package.json (real-project signal) AND no
+  // node_modules/, the verifier auto-runs `pnpm install` before any spawn.
+  // Without this gate, the frontend dev-server spawn produces a silent
+  // 60s timeout (`'next' is not recognized` exits in ~1s but the orchestrator
+  // sees nothing). Tests pass runPreflightInstall: false to skip the real
+  // install in tmp-project tests.
+
+  it("skips pre-flight install when projectDir has no package.json (test-seam shape)", async () => {
+    // The default test setup creates an empty tmpdir with no package.json.
+    // Patch D's gate is `existsSync(package.json) && !existsSync(node_modules)`.
+    // No package.json → no install → no warning about it.
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) => {
+        if (script.includes("audit-app-reachability")) return stubReachOk();
+        return {
+          stdout: JSON.stringify({
+            ok: true,
+            flowsCount: 0,
+            generatedFiles: [],
+            skippedFiles: [],
+            projectDir,
+            outDir: "apps/web/e2e/synthesized",
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+      runFlows: runFlowsOk,
+      ...BENIGN_NO_DEV_SERVER,
+    });
+    expect(
+      result.warnings.some((w) => /pre-flight: ran pnpm install/.test(w)),
+    ).toBe(false);
+  });
+
+  it("skips pre-flight install when runPreflightInstall is false (test opt-out)", async () => {
+    // Seed package.json + skip node_modules. Without the opt-out, this WOULD
+    // try to run pnpm install. With opt-out, install is skipped + no warning.
+    writeFileSync(join(projectDir, "package.json"), '{"name":"test"}');
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      runPreflightInstall: false,
+      runScript: async ({ script }) => {
+        if (script.includes("audit-app-reachability")) return stubReachOk();
+        return {
+          stdout: JSON.stringify({
+            ok: true,
+            flowsCount: 0,
+            generatedFiles: [],
+            skippedFiles: [],
+            projectDir,
+            outDir: "apps/web/e2e/synthesized",
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+      runFlows: runFlowsOk,
+      ...BENIGN_NO_DEV_SERVER,
+    });
+    expect(
+      result.warnings.some((w) => /pre-flight: ran pnpm install/.test(w)),
+    ).toBe(false);
+  });
+
+  it("skips pre-flight install when node_modules already exists", async () => {
+    // package.json + node_modules both present → no install needed.
+    writeFileSync(join(projectDir, "package.json"), '{"name":"test"}');
+    mkdirSync(join(projectDir, "node_modules"));
+    const result = await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) => {
+        if (script.includes("audit-app-reachability")) return stubReachOk();
+        return {
+          stdout: JSON.stringify({
+            ok: true,
+            flowsCount: 0,
+            generatedFiles: [],
+            skippedFiles: [],
+            projectDir,
+            outDir: "apps/web/e2e/synthesized",
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+      runFlows: runFlowsOk,
+      ...BENIGN_NO_DEV_SERVER,
+    });
+    expect(
+      result.warnings.some((w) => /pre-flight: ran pnpm install/.test(w)),
+    ).toBe(false);
+  });
+});
