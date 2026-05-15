@@ -7,6 +7,7 @@ import type {
   GitAgentOutput,
   InFlightFeature,
   ParityDivergence,
+  ReviewerOutput as ReviewerOutputType,
   Task,
   TasksV2,
 } from "@repo/orchestrator-contracts";
@@ -151,6 +152,15 @@ export interface InvokeAgentResult {
   lastWritingAgent?: AgentSequenceMember;
   /** Raw git-agent output (when agent === "git-agent"); otherwise undefined. */
   gitAgentOutput?: GitAgentOutput;
+  /**
+   * bug-109 (2026-05-15) — Reviewer's full ReviewerOutput when agent ===
+   * "reviewer" AND the agent's JSON returned validated against the
+   * ReviewerOutput schema. Carries overallVerdict + issuesFound[] +
+   * retryTargets[] so feature-graph can route reviewer-driven retries
+   * back to the named builders. undefined for non-reviewer agents or
+   * when the reviewer's JSON failed schema validation.
+   */
+  reviewerOutput?: ReviewerOutputType;
   /** Cost recorded for this invocation — summed into Mode B totals. */
   costUsd: number;
   /**
@@ -1158,6 +1168,195 @@ export async function runFeature(
     for (const t of agentTasks) {
       const status = result.taskStatus[t.id] ?? "failed";
       taskOutcomes[t.id] = status;
+    }
+
+    // bug-109 (2026-05-15): reviewer-driven retry routing. When the
+    // dispatched agent is the reviewer + it returned a ReviewerOutput
+    // with overallVerdict !== "approved", route retries to the NAMED
+    // BUILDERS in retryTargets[] rather than re-running the reviewer
+    // against unchanged code (the latent bug investigate-030 H5
+    // surfaced — investigate-030 §Findings step 2 confirmed pre-bug-109
+    // the per-task retry loop hardcoded `agent: agentName`).
+    //
+    // Algorithm:
+    //   1. For each retryTarget in reviewerOutput.retryTargets, find the
+    //      named agent + its task ids; re-dispatch that agent with
+    //      retryContext carrying the relevant ReviewIssue payload
+    //      formatted as a HARD CONSTRAINT block.
+    //   2. After ALL retryTargets re-run, re-dispatch the reviewer to
+    //      re-validate. If the new verdict is "approved", continue with
+    //      the agent_sequence as normal. If still needs-revision, loop
+    //      again (bounded by REVIEWER_RETRY_CAP).
+    //   3. If "blocked", fail the feature immediately (spec contradiction).
+    //   4. Retry-cap exhaustion → fail feature with abortReason naming
+    //      the dimension that wouldn't clear.
+    if (
+      agentName === "reviewer" &&
+      result.reviewerOutput &&
+      result.reviewerOutput.overallVerdict !== "approved"
+    ) {
+      const verdict = result.reviewerOutput.overallVerdict;
+      if (verdict === "blocked") {
+        tracker.onFeatureFailed({ featureId: feature.id });
+        const firstIssue = result.reviewerOutput.issuesFound[0];
+        const blockedDetail = firstIssue
+          ? `${firstIssue.dimension}: ${firstIssue.message}`
+          : "reviewer reported blocked verdict without an issue";
+        return finish(
+          feature.id,
+          "failed",
+          startedAt,
+          attempts,
+          totalCostUsd,
+          taskOutcomes,
+          `reviewer-blocked: ${blockedDetail}`,
+          commitWarnings,
+        );
+      }
+
+      // verdict === "needs-revision": route to named builders.
+      const reviewerCounterKey = `${feature.id}/reviewer-routing`;
+      let routingResolved = false;
+      while (!ctx.retryCounters.isExhausted("task-retry", reviewerCounterKey)) {
+        const counterValue = ctx.retryCounters.increment(
+          "task-retry",
+          reviewerCounterKey,
+        );
+        saveState(
+          ctx.projectRoot,
+          ctx.pipelineRunId,
+          ctx.retryCounters,
+          ctx.budget,
+        );
+        if (counterValue > TASK_RETRY_CAP) break;
+
+        // 1. For each retry target, re-dispatch the named agent.
+        const issuesByAgent = new Map<AgentSequenceMember, string[]>();
+        for (const issue of result.reviewerOutput.issuesFound) {
+          const targetAgent = issue.retryTarget.agent as AgentSequenceMember;
+          const existing = issuesByAgent.get(targetAgent) ?? [];
+          existing.push(
+            `[${issue.dimension} / ${issue.playbookSection}] ` +
+              `${issue.filePath}${issue.line ? `:${issue.line}` : ""} — ${issue.message}`,
+          );
+          issuesByAgent.set(targetAgent, existing);
+        }
+
+        for (const target of result.reviewerOutput.retryTargets) {
+          const targetAgent = target.agent as AgentSequenceMember;
+          const targetTasks = feature.tasks.filter((t) =>
+            target.taskIds.includes(t.id),
+          );
+          if (targetTasks.length === 0) continue;
+          const issuesForAgent = issuesByAgent.get(targetAgent) ?? [];
+          const hardConstraint =
+            `HARD CONSTRAINT — REVIEWER REJECTED A PRIOR ATTEMPT\n` +
+            `The reviewer flagged the following issue(s) on this feature:\n` +
+            issuesForAgent.map((s) => `  - ${s}`).join("\n") +
+            `\nYou MUST apply these exact fixes. Do not re-implement from ` +
+            `the task spec — extend the existing implementation with the ` +
+            `named changes. Run lint+typecheck+test, then report completed.`;
+
+          attempts += 1;
+          const retryResult = await ctx.invokeAgent({
+            agent: targetAgent,
+            cwd: worktreeCwd,
+            featureContext,
+            tasks: targetTasks,
+            retryContext: {
+              taskId: targetTasks[0]!.id,
+              errorMessage: hardConstraint,
+            },
+          });
+          totalCostUsd += retryResult.costUsd;
+          lastWritingAgent = retryResult.lastWritingAgent ?? targetAgent;
+          for (const t of targetTasks) {
+            taskOutcomes[t.id] = retryResult.taskStatus[t.id] ?? "failed";
+          }
+
+          // Commit + install after the retry-target builder so subsequent
+          // re-review sees the new code.
+          const retryCompletedIds = targetTasks
+            .filter((t) => taskOutcomes[t.id] === "completed")
+            .map((t) => t.id);
+          if (retryCompletedIds.length > 0) {
+            try {
+              await commitChanges(
+                worktreeCwd,
+                `${targetAgent}: reviewer-driven retry (bug-109) — ${retryCompletedIds.join(", ")}\n\n[via orchestrator Mode B; feature: ${feature.id}]`,
+              );
+            } catch {
+              /* commit warning swallowed; same shape as the main commit branch */
+            }
+          }
+        }
+
+        // 2. Re-dispatch the reviewer to re-validate the new state.
+        attempts += 1;
+        const reReview = await ctx.invokeAgent({
+          agent: "reviewer",
+          cwd: worktreeCwd,
+          featureContext,
+          tasks: agentTasks,
+        });
+        totalCostUsd += reReview.costUsd;
+        for (const t of agentTasks) {
+          taskOutcomes[t.id] = reReview.taskStatus[t.id] ?? "failed";
+        }
+
+        if (
+          reReview.reviewerOutput &&
+          reReview.reviewerOutput.overallVerdict === "approved"
+        ) {
+          routingResolved = true;
+          break;
+        }
+        if (
+          reReview.reviewerOutput &&
+          reReview.reviewerOutput.overallVerdict === "blocked"
+        ) {
+          tracker.onFeatureFailed({ featureId: feature.id });
+          const firstIssue = reReview.reviewerOutput.issuesFound[0];
+          const blockedDetail = firstIssue
+            ? `${firstIssue.dimension}: ${firstIssue.message}`
+            : "reviewer reported blocked verdict on re-review";
+          return finish(
+            feature.id,
+            "failed",
+            startedAt,
+            attempts,
+            totalCostUsd,
+            taskOutcomes,
+            `reviewer-blocked: ${blockedDetail}`,
+            commitWarnings,
+          );
+        }
+        // verdict === "needs-revision" still → continue loop
+        result.reviewerOutput =
+          reReview.reviewerOutput ?? result.reviewerOutput;
+      }
+
+      if (!routingResolved) {
+        tracker.onFeatureFailed({ featureId: feature.id });
+        const lastIssue = result.reviewerOutput.issuesFound[0];
+        const detail = lastIssue
+          ? `${lastIssue.dimension}: ${lastIssue.message}`
+          : "needs-revision retry cap exhausted";
+        return finish(
+          feature.id,
+          "failed",
+          startedAt,
+          attempts,
+          totalCostUsd,
+          taskOutcomes,
+          `reviewer-cap-exhausted (bug-109): ${detail}`,
+          commitWarnings,
+        );
+      }
+
+      // Routing resolved → reviewer is now "approved". Skip the per-task
+      // retry loop below (it would re-dispatch the reviewer needlessly).
+      continue;
     }
 
     // Per-task retry

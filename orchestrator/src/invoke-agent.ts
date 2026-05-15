@@ -22,12 +22,14 @@ import { query as realQuery } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AgentSequenceMember,
   GitAgentOutput,
+  ReviewerOutput as ReviewerOutputType,
   Task,
 } from "@repo/orchestrator-contracts";
 import {
   BuilderOutput,
   BuilderOutputJsonSchema,
   GitAgentOutput as GitAgentOutputSchema,
+  ReviewerOutput as ReviewerOutputSchema,
 } from "@repo/orchestrator-contracts";
 import { buildAgentMcpServersOption } from "./agent-mcp-config.js";
 import { resolveAuthOptions } from "./auth-provider.js";
@@ -1632,10 +1634,21 @@ async function runLlmAgent(
   }
   const translated = translateOutcomes(extracted.parsed, args.tasks);
 
+  // bug-109: when the dispatched agent is the reviewer, parse its full
+  // ReviewerOutput so feature-graph can route retries to the named
+  // builders. Falls through silently when the JSON doesn't validate
+  // (legacy reviewers / hand-stubbed agents in tests).
+  let reviewerOutput: ReviewerOutputType | undefined;
+  if (agent === "reviewer") {
+    const parsed = ReviewerOutputSchema.safeParse(extracted.parsed);
+    if (parsed.success) reviewerOutput = parsed.data;
+  }
+
   return {
     taskStatus: translated.taskStatus,
     errors: translated.errors,
     costUsd: result.total_cost_usd,
+    ...(reviewerOutput !== undefined ? { reviewerOutput } : {}),
     ...(isBuildAgent(agent) ? { lastWritingAgent: agent } : {}),
   };
 }

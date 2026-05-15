@@ -811,6 +811,265 @@ describe("runFeature — per-task retry", () => {
   });
 });
 
+describe("runFeature — reviewer-driven retry routing (bug-109)", () => {
+  // Empirical anchor: gotribe-tribe-directory feat-tribe-api 2026-05-15 had
+  // 1× backend-builder + 3× reviewer dispatches (zero builder retries
+  // despite retryTarget=backend-builder named every time). The per-task
+  // retry loop re-dispatched the same agent (reviewer) against unchanged
+  // code. bug-109 routes retryTargets[] to the NAMED BUILDERS.
+
+  it("routes needs-revision verdict to named builder + re-reviews until approved", async () => {
+    const feature = buildFeature({
+      agent_sequence: ["backend-builder", "reviewer"],
+      tasks: [
+        {
+          id: "auth-api",
+          agent: "backend-builder",
+          depends_on: [],
+          skills: [],
+          status: "pending",
+          screens: [],
+        },
+        {
+          id: "auth-review",
+          agent: "reviewer",
+          depends_on: [],
+          skills: [],
+          status: "pending",
+          screens: [],
+        },
+      ],
+    });
+    let builderInvocations = 0;
+    let reviewerInvocations = 0;
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput:
+            args.gitOp?.op === "checkout-feature" ? checkoutOk : closeOk,
+          costUsd: 0.001,
+        };
+      }
+      if (args.agent === "backend-builder") {
+        builderInvocations += 1;
+        // Builder always reports completed (we're testing reviewer routing,
+        // not builder retry). retryContext.errorMessage should contain the
+        // HARD CONSTRAINT framing when called from reviewer routing.
+        if (builderInvocations > 1) {
+          expect(args.retryContext).toBeDefined();
+          expect(args.retryContext!.errorMessage).toMatch(/HARD CONSTRAINT/);
+          expect(args.retryContext!.errorMessage).toMatch(/REVIEWER REJECTED/);
+        }
+        return {
+          taskStatus: Object.fromEntries(
+            args.tasks.map((t) => [t.id, "completed"] as const),
+          ),
+          errors: {},
+          costUsd: 0.1,
+        };
+      }
+      if (args.agent === "reviewer") {
+        reviewerInvocations += 1;
+        // 1st reviewer: needs-revision pointing at backend-builder.
+        // 2nd reviewer (after builder retry): approved.
+        if (reviewerInvocations === 1) {
+          return {
+            taskStatus: { "auth-review": "failed" },
+            errors: { "auth-review": "needs-revision" },
+            reviewerOutput: {
+              success: true,
+              featureId: "feat-auth",
+              dimensions: {
+                architecture: { status: "pass" },
+                security: {
+                  status: "fail",
+                  issues: [
+                    {
+                      dimension: "security",
+                      playbookSection: "§2 security",
+                      severity: "error",
+                      filePath: "apps/api/src/handler.ts",
+                      line: 42,
+                      message: "SSRF guard not wired",
+                      retryTarget: {
+                        agent: "backend-builder",
+                        taskIds: ["auth-api"],
+                      },
+                    },
+                  ],
+                },
+                compliance: { status: "pass" },
+                maintainability: { status: "pass" },
+                a11y: { status: "pass" },
+                performance: { status: "pass" },
+                "brief-delivery": { status: "pass" },
+              },
+              overallVerdict: "needs-revision",
+              issuesFound: [
+                {
+                  dimension: "security",
+                  playbookSection: "§2 security",
+                  severity: "error",
+                  filePath: "apps/api/src/handler.ts",
+                  line: 42,
+                  message: "SSRF guard not wired",
+                  retryTarget: {
+                    agent: "backend-builder",
+                    taskIds: ["auth-api"],
+                  },
+                },
+              ],
+              retryTargets: [
+                { agent: "backend-builder", taskIds: ["auth-api"] },
+              ],
+              toolsUsed: [],
+              headSha: null,
+              warnings: [],
+            },
+            costUsd: 0.1,
+          };
+        }
+        // 2nd reviewer: approved.
+        return {
+          taskStatus: { "auth-review": "completed" },
+          errors: {},
+          reviewerOutput: {
+            success: true,
+            featureId: "feat-auth",
+            dimensions: {
+              architecture: { status: "pass" },
+              security: { status: "pass" },
+              compliance: { status: "pass" },
+              maintainability: { status: "pass" },
+              a11y: { status: "pass" },
+              performance: { status: "pass" },
+              "brief-delivery": { status: "pass" },
+            },
+            overallVerdict: "approved",
+            issuesFound: [],
+            retryTargets: [],
+            toolsUsed: [],
+            headSha: null,
+            warnings: [],
+          },
+          costUsd: 0.1,
+        };
+      }
+      return { taskStatus: {}, errors: {}, costUsd: 0 };
+    };
+
+    const ctx = makeCtx(invokeAgent);
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed");
+    expect(builderInvocations).toBe(2); // original + 1 retry from reviewer routing
+    expect(reviewerInvocations).toBe(2); // original + 1 re-review
+    expect(result.taskOutcomes["auth-api"]).toBe("completed");
+    expect(result.taskOutcomes["auth-review"]).toBe("completed");
+  });
+
+  it("blocked verdict immediately fails the feature with reviewer-blocked reason", async () => {
+    const feature = buildFeature({
+      agent_sequence: ["backend-builder", "reviewer"],
+      tasks: [
+        {
+          id: "auth-api",
+          agent: "backend-builder",
+          depends_on: [],
+          skills: [],
+          status: "pending",
+          screens: [],
+        },
+        {
+          id: "auth-review",
+          agent: "reviewer",
+          depends_on: [],
+          skills: [],
+          status: "pending",
+          screens: [],
+        },
+      ],
+    });
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput:
+            args.gitOp?.op === "checkout-feature" ? checkoutOk : closeOk,
+          costUsd: 0.001,
+        };
+      }
+      if (args.agent === "backend-builder") {
+        return {
+          taskStatus: Object.fromEntries(
+            args.tasks.map((t) => [t.id, "completed"] as const),
+          ),
+          errors: {},
+          costUsd: 0.1,
+        };
+      }
+      // reviewer returns blocked
+      return {
+        taskStatus: { "auth-review": "failed" },
+        errors: { "auth-review": "blocked: spec contradiction" },
+        reviewerOutput: {
+          success: true,
+          featureId: "feat-auth",
+          dimensions: {
+            architecture: { status: "pass" },
+            security: { status: "pass" },
+            compliance: {
+              status: "fail",
+              issues: [
+                {
+                  dimension: "compliance",
+                  playbookSection: "§3 compliance",
+                  severity: "error",
+                  filePath: ".claude/architecture.yaml",
+                  message:
+                    "brief says GDPR required but architecture says false",
+                  retryTarget: {
+                    agent: "architect",
+                    taskIds: ["auth-api"],
+                  },
+                },
+              ],
+            },
+            maintainability: { status: "pass" },
+            a11y: { status: "pass" },
+            performance: { status: "pass" },
+            "brief-delivery": { status: "pass" },
+          },
+          overallVerdict: "blocked",
+          issuesFound: [
+            {
+              dimension: "compliance",
+              playbookSection: "§3 compliance",
+              severity: "error",
+              filePath: ".claude/architecture.yaml",
+              message: "brief says GDPR required but architecture says false",
+              retryTarget: { agent: "architect", taskIds: ["auth-api"] },
+            },
+          ],
+          retryTargets: [{ agent: "architect", taskIds: ["auth-api"] }],
+          toolsUsed: [],
+          headSha: null,
+          warnings: [],
+        },
+        costUsd: 0.1,
+      };
+    };
+
+    const ctx = makeCtx(invokeAgent);
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("failed");
+    expect(result.abortReason).toMatch(/reviewer-blocked/);
+    expect(result.abortReason).toMatch(/compliance/);
+  });
+});
+
 describe("runFeature — merge conflict routing", () => {
   it("routes a conflict through resolve-conflict-handoff then re-closes", async () => {
     const feature = buildFeature({
