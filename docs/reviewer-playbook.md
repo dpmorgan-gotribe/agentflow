@@ -51,9 +51,11 @@ node -e "
 # spawn must produce an importable app module). Stack-specific probe; see the
 # per-backend stack skill's §Review block for the exact command. For
 # python-fastapi:
-test -d apps/api && (cd apps/api && uv run python -c "import importlib; importlib.import_module('api.main')")
-# ...expected: exit 0. Failure with ModuleNotFoundError → backend layout drift
-# (e.g. main.py at wrong path); cascades to verifier + fix-loop blindspots.
+test -d apps/api && (cd apps/api && PYTHONPATH=src uv run python -c "import importlib; importlib.import_module('api.main')")
+# ...expected: exit 0. Failure with ModuleNotFoundError: No module named
+# 'api.main' → backend layout drift (e.g. main.py at wrong path); cascades to
+# verifier + fix-loop blindspots. The PYTHONPATH=src prefix mirrors uvicorn's
+# --app-dir src flag (without it the probe trips on every project).
 ```
 
 ### Pass threshold

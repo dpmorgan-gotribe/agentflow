@@ -246,9 +246,13 @@ db:migrate:  uv run alembic upgrade head
 db:revise:   uv run alembic revision --autogenerate -m "msg"
 ```
 
-Builder self-verify gate: `uv run ruff check api && uv run mypy api && uv run pytest && uv run python -c "import importlib; importlib.import_module('api.main')"`. Runs in ~5-15s on a small project.
+Builder self-verify gate: `uv run ruff check api && uv run mypy api && uv run pytest && PYTHONPATH=src uv run python -c "import importlib; importlib.import_module('api.main')"`. Runs in ~5-15s on a small project.
 
-The trailing `import_module('api.main')` step is the **importability gate** (bug-111). It catches the gotribe-tribe-directory-2026-05-15 class: builder authors `main.py` at `apps/api/src/main.py` instead of the canonical `apps/api/src/api/main.py`. pytest passes because it walks directories, not because `api.main` resolves; without this gate, the wrong-path layout escapes the builder loop and uvicorn fails at runtime with `Error loading ASGI app. Could not import module "api.main"`. Cost: ~50ms after the venv is warm. The check MUST run from `apps/api/` (uv resolves pyproject.toml from cwd) AND `src/` must be on the Python path — `pyproject.toml`'s `[tool.uv]` or `[tool.setuptools.packages.find]` `where = ["src"]` config is what makes that work. The error on failure is `ModuleNotFoundError: No module named 'api.main'`, which the builder's retry context surfaces verbatim → next dispatch repositions the file.
+The trailing `import_module('api.main')` step is the **importability gate** (bug-111). It catches the gotribe-tribe-directory-2026-05-15 class: builder authors `main.py` at `apps/api/src/main.py` instead of the canonical `apps/api/src/api/main.py`. pytest passes because it walks directories AND pyproject.toml's `[tool.pytest.ini_options] pythonpath = ["src"]` puts src/ on pytest's sys.path — neither of which catches a wrong-path layout. Without this gate, the wrong-path layout escapes the builder loop and uvicorn fails at runtime with `Error loading ASGI app. Could not import module "api.main"`. Cost: ~50ms after the venv is warm.
+
+**The `PYTHONPATH=src` prefix is REQUIRED**, not optional. `uv run python` by default does NOT inherit pytest's `pythonpath = ["src"]` setting (that's pytest-specific). The `PYTHONPATH=src` env mirrors what uvicorn's `--app-dir src` flag does at runtime — pushes `src/` onto sys.path before importing. Without it, the probe trips `ModuleNotFoundError: No module named 'api'` on EVERY project, including correctly-laid-out ones — a false-positive that makes the gate useless. POSIX-style `PYTHONPATH=src cmd ...` works in bash + zsh; Windows PowerShell needs `$env:PYTHONPATH = "src"; uv run python ...` (the builder dispatches use a POSIX shell so the inline form is fine).
+
+The error on actual failure (wrong-path layout) is `ModuleNotFoundError: No module named 'api.main'` — note the trailing `.main`, distinguishing it from the path-missing case above. The builder's retry context surfaces verbatim → next dispatch repositions the file.
 
 ## §dev-orchestrator (multi-tier dev script) — bug-040 Phase A.5
 
@@ -279,8 +283,8 @@ Stack-specific checks the reviewer agent runs IN ADDITION to `docs/reviewer-play
 
 #### architecture — backend dev-server boot probe (bug-111)
 
-- **Invocation**: `(cd apps/api && uv run python -c "import importlib; importlib.import_module('api.main')")`
-- **Threshold**: exit 0. A `ModuleNotFoundError: No module named 'api.main'` (or any other ModuleNotFoundError naming `api.*`) means the canonical app entrypoint isn't where the spawn command expects it. The canonical layout is `apps/api/src/api/main.py` (per §dev-orchestrator + `orchestrator/src/dev-server.ts STACK_BACKEND_SPAWN_COMMAND["python-fastapi"]`). Empirical motivator: gotribe-tribe-directory 2026-05-15 — builder authored `apps/api/src/main.py` and all 4 detection layers (builder self-verify, this check, verifier pre-boot, fix-loop) failed to catch it.
+- **Invocation**: `(cd apps/api && PYTHONPATH=src uv run python -c "import importlib; importlib.import_module('api.main')")`
+- **Threshold**: exit 0. A `ModuleNotFoundError: No module named 'api.main'` means the canonical app entrypoint isn't where the spawn command expects it. The canonical layout is `apps/api/src/api/main.py` (per §dev-orchestrator + `orchestrator/src/dev-server.ts STACK_BACKEND_SPAWN_COMMAND["python-fastapi"]`). The `PYTHONPATH=src` prefix mirrors what uvicorn's `--app-dir src` flag does at runtime — without it the probe trips `ModuleNotFoundError: No module named 'api'` on every project (false positive). Empirical motivator: gotribe-tribe-directory 2026-05-15 — builder authored `apps/api/src/main.py` and all 4 detection layers (builder self-verify, this check, verifier pre-boot, fix-loop) failed to catch it.
 - **Retry target**: backend-builder, with the exact ModuleNotFoundError message + a reference to "§dev-orchestrator names the canonical path as `apps/api/src/api/main.py`". The retry context MUST include the canonical path verbatim so the dispatched agent doesn't re-hallucinate.
 - **Playbook §**: augments §1 architecture (backend boot probe row).
 
