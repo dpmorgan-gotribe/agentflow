@@ -148,7 +148,7 @@ const BUILD_AGENTS: readonly AgentSequenceMember[] = [
   "mobile-frontend-builder",
 ];
 
-function isBuildAgent(agent: AgentSequenceMember): boolean {
+export function isBuildAgent(agent: AgentSequenceMember): boolean {
   return BUILD_AGENTS.includes(agent);
 }
 

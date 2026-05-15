@@ -28,6 +28,7 @@ import {
   commitWorktreeChanges as defaultCommitWorktreeChanges,
   type InstallResult,
   installIfPackageJsonChanged as defaultInstallIfPackageJsonChanged,
+  isBuildAgent,
 } from "./invoke-agent.js";
 import type { RetryCounters } from "./retry-counters.js";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -1262,12 +1263,21 @@ export async function runFeature(
       });
 
       // feat-019 Phase B: if the commit landed, refresh the dep tree
-      // when the change set touched any package.json. Failures here
-      // are warnings — the next agent may still succeed.
+      // when the change set touched any package.json.
+      //
+      // bug-108 (2026-05-15): install failures used to be warn-only,
+      // letting the tester land on an unworkable worktree (missing deps
+      // like @playwright/test, no node_modules) where its first
+      // `pnpm vitest run` would 30-second-timeout on every import. Now
+      // we mark the failure + route back to the builder with the
+      // install stderr as retryContext.errorMessage. Bounded by the
+      // same TASK_RETRY_CAP as the per-task retry loop above.
       if (commitLanded) {
+        let installFailure: string | null = null;
         try {
           const install = await installAfterCommit(worktreeCwd);
           if (install.warning) {
+            installFailure = install.warning;
             commitWarnings.push(`${agentName}: ${install.warning}`);
             // eslint-disable-next-line no-console
             console.warn(
@@ -1276,11 +1286,83 @@ export async function runFeature(
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
+          installFailure = `install threw: ${msg}`;
           commitWarnings.push(`${agentName}: install threw: ${msg}`);
           // eslint-disable-next-line no-console
           console.warn(
             `[runFeature] install threw for ${feature.id}/${agentName}: ${msg}`,
           );
+        }
+
+        // bug-108: route install failure back to the builder. Only
+        // applies to build agents — non-build agents (tester, reviewer,
+        // security) don't author package.json so install issues there
+        // can't be self-resolved by re-dispatch.
+        if (installFailure !== null && isBuildAgent(agentName)) {
+          const counterKey = `${feature.id}/${agentName}/install-failure`;
+          while (!ctx.retryCounters.isExhausted("task-retry", counterKey)) {
+            const counterValue = ctx.retryCounters.increment(
+              "task-retry",
+              counterKey,
+            );
+            saveState(
+              ctx.projectRoot,
+              ctx.pipelineRunId,
+              ctx.retryCounters,
+              ctx.budget,
+            );
+            if (counterValue > TASK_RETRY_CAP) break;
+
+            attempts += 1;
+            // Pass install stderr to ALL the agent's tasks (the builder
+            // doesn't know which task caused the broken package.json;
+            // re-running them as a group lets it re-author cleanly).
+            const firstTask = agentTasks[0]!;
+            const retryResult = await ctx.invokeAgent({
+              agent: agentName,
+              cwd: worktreeCwd,
+              featureContext,
+              tasks: agentTasks,
+              retryContext: {
+                taskId: firstTask.id,
+                errorMessage: `Post-commit pnpm install failed — your package.json is missing required deps or has a parse error. Stderr:\n${installFailure}\nFix the package.json + re-run self-verify.`,
+              },
+            });
+            totalCostUsd += retryResult.costUsd;
+            lastWritingAgent = retryResult.lastWritingAgent ?? agentName;
+
+            // Re-commit + re-install. If install now succeeds, we're done.
+            const reCommit = await commitChanges(
+              worktreeCwd,
+              `${agentName}: install-failure retry ${counterValue} (bug-108)\n\n[via orchestrator Mode B; feature: ${feature.id}]`,
+            ).catch(() => ({ committed: false, warning: undefined }) as const);
+            if (reCommit.committed === true) {
+              try {
+                const reInstall = await installAfterCommit(worktreeCwd);
+                if (!reInstall.warning) {
+                  installFailure = null;
+                  break; // recovery succeeded
+                }
+                installFailure = reInstall.warning;
+              } catch (err) {
+                installFailure = `install threw: ${err instanceof Error ? err.message : String(err)}`;
+              }
+            }
+          }
+
+          if (installFailure !== null) {
+            tracker.onFeatureFailed({ featureId: feature.id });
+            return finish(
+              feature.id,
+              "failed",
+              startedAt,
+              attempts,
+              totalCostUsd,
+              taskOutcomes,
+              `install-failure: ${agentName} produced unworkable package.json after ${TASK_RETRY_CAP} retries: ${installFailure.slice(0, 200)}`,
+              commitWarnings,
+            );
+          }
         }
       }
     }

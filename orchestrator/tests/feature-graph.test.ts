@@ -1537,28 +1537,39 @@ describe("runFeature — install-after-commit (feat-019 Phase B)", () => {
     expect(helperCalls).toBe(0);
   });
 
-  it("install warning is appended to commitWarnings + surfaces in FeatureResult", async () => {
+  it("install warning on builder triggers retry; recovery succeeds when install passes 2nd time (bug-108)", async () => {
     const feature = buildFeature();
+    let installCallCount = 0;
     const ctx = makeCtx(okGitInvoke(), {
       commitWorktreeChanges: async () => ({
         committed: true,
         sha: "abc1234",
       }),
-      installIfPackageJsonChanged: async () => ({
-        installed: false,
-        warning: "pnpm install failed (commit had package.json changes): boom",
-      }),
+      installIfPackageJsonChanged: async () => {
+        installCallCount += 1;
+        if (installCallCount === 1) {
+          return {
+            installed: false,
+            warning:
+              "pnpm install failed (commit had package.json changes): boom",
+          };
+        }
+        // 2nd call (after builder retry) succeeds.
+        return { installed: true };
+      },
     });
     const result = await runFeature(feature, ctx);
     expect(result.status).toBe("completed");
     expect(result.commitWarnings).toBeDefined();
-    expect(result.commitWarnings!.length).toBe(3);
-    for (const w of result.commitWarnings!) {
-      expect(w).toContain("pnpm install failed");
-    }
+    // Warning from the original failure is captured; retry resolution doesn't unset it.
+    expect(
+      result.commitWarnings!.some((w) => w.includes("pnpm install failed")),
+    ).toBe(true);
+    // Builder ran twice total (original + 1 retry), then tester + reviewer once each.
+    expect(installCallCount).toBeGreaterThanOrEqual(2);
   });
 
-  it("install failure does NOT abort the feature — next agent in sequence still runs", async () => {
+  it("install failure on builder exhausts retries → feature fails with install-failure reason (bug-108)", async () => {
     const feature = buildFeature(); // backend-builder + tester + reviewer
     const agentInvocations: string[] = [];
     const invokeAgent: InvokeAgentFn = async (args) => {
@@ -1585,21 +1596,53 @@ describe("runFeature — install-after-commit (feat-019 Phase B)", () => {
         committed: true,
         sha: "abc1234",
       }),
-      // First install fails; runFeature must continue iteration.
+      // Install always fails — exhausts retry cap.
       installIfPackageJsonChanged: async () => ({
         installed: false,
-        warning: "pnpm install failed: registry 500",
+        warning: "pnpm install failed: missing @playwright/test",
       }),
     });
     const result = await runFeature(feature, ctx);
-    expect(result.status).toBe("completed");
-    // Every agent in the sequence ran despite the install warnings.
-    expect(agentInvocations).toEqual(["backend-builder", "tester", "reviewer"]);
-    expect(result.taskOutcomes).toEqual({
-      "auth-api": "completed",
-      "auth-tests": "completed",
-      "auth-review": "completed",
+    expect(result.status).toBe("failed");
+    expect(result.abortReason).toMatch(/install-failure/);
+    expect(result.abortReason).toMatch(/backend-builder/);
+    // Builder was invoked original + retries; tester + reviewer never ran
+    // because the feature failed at the builder boundary.
+    expect(
+      agentInvocations.filter((a) => a === "backend-builder").length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(agentInvocations).not.toContain("tester");
+    expect(agentInvocations).not.toContain("reviewer");
+  });
+
+  it("install failure on non-builder (tester) stays warn-only (bug-108 scoped to build agents)", async () => {
+    // Tester edits package.json (unusual but possible); install fails;
+    // bug-108 doesn't retry tester since it's not a build agent. The
+    // legacy warn-only behavior preserves coverage there.
+    const feature = buildFeature();
+    let installCallCount = 0;
+    const ctx = makeCtx(okGitInvoke(), {
+      commitWorktreeChanges: async () => ({
+        committed: true,
+        sha: "abc1234",
+      }),
+      installIfPackageJsonChanged: async () => {
+        installCallCount += 1;
+        // Builder install: clean. Tester install: warning. Reviewer install: clean.
+        if (installCallCount === 2) {
+          return {
+            installed: false,
+            warning: "pnpm install failed during tester commit",
+          };
+        }
+        return { installed: true };
+      },
     });
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed"); // tester install-warning doesn't fail feature
+    expect(
+      result.commitWarnings!.some((w) => w.includes("pnpm install failed")),
+    ).toBe(true);
   });
 });
 
