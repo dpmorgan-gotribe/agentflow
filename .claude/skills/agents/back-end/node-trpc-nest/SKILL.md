@@ -263,6 +263,13 @@ NOTE: this template is a PLACEHOLDER as of 2026-05-03 — no live trpc-nest proj
 
 Stack-specific checks the reviewer agent runs IN ADDITION to `docs/reviewer-playbook.md`'s generic 7 dimensions. Scope: files in the feature's diff under `apps/api/`.
 
+#### architecture — backend entrypoint at canonical path (bug-111 — node-trpc-nest mirror)
+
+- **Invocation**: `test -f apps/api/src/main.ts`
+- **Threshold**: exit 0. Missing file means the builder placed the entrypoint somewhere other than the canonical Nest CLI location named in §dev-orchestrator + `orchestrator/src/dev-server.ts STACK_BACKEND_SPAWN_COMMAND["node-trpc-nest"]` (which expects `pnpm --filter @repo/api start:dev` to resolve the Nest CLI's default `src/main.ts` bootstrap). Empirical motivator: gotribe-tribe-directory 2026-05-15 (python-fastapi class — node-trpc-nest cross-stack mirror is preventative; deepen if the failure mode here surfaces differently empirically.)
+- **Retry target**: backend-builder, with reference to "§dev-orchestrator names `apps/api/src/main.ts` as the canonical Nest bootstrap"
+- **Playbook §**: augments §1 architecture (backend boot probe row)
+
 #### architecture — tRPC procedure return-type inference
 
 - **Invocation**: `grep -rnE "(query|mutation)\s*\(.*\)\s*:\s*any" apps/api/src/`

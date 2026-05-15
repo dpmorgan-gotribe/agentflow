@@ -40,6 +40,10 @@ function seedBaseline(): void {
   write("apps/web/package.json", "{}\n");
   // apps/api/ tier
   write("apps/api/package.json", "{}\n");
+  // Backend canonical app-entrypoint (bug-111). The tuple matches whichever
+  // stack the project ships with — baseline picks python-fastapi as the
+  // empirically-validated case from gotribe-tribe-directory.
+  write("apps/api/src/api/main.py", "# placeholder\n");
   // root tier
   write("package.json", "{}\n");
   write("pnpm-workspace.yaml");
@@ -87,6 +91,24 @@ describe("verifyProtectedFiles — happy path", () => {
     const result = verifyProtectedFiles(tmpRoot);
     expect(result.ok).toBe(true);
   });
+
+  it("treats backend-entry tuple as satisfied when ANY stack variant exists (bug-111)", () => {
+    seedBaseline();
+    // Swap python-fastapi entry for node-fastify — still satisfies the tuple.
+    remove("apps/api/src/api/main.py");
+    write("apps/api/src/server.ts", "// placeholder\n");
+    const result = verifyProtectedFiles(tmpRoot);
+    expect(result.ok).toBe(true);
+    expect(result.violations).toEqual([]);
+  });
+
+  it("treats backend-entry tuple as satisfied for node-trpc-nest variant (bug-111)", () => {
+    seedBaseline();
+    remove("apps/api/src/api/main.py");
+    write("apps/api/src/main.ts", "// placeholder\n");
+    const result = verifyProtectedFiles(tmpRoot);
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe("verifyProtectedFiles — absolute-path violations", () => {
@@ -130,6 +152,49 @@ describe("verifyProtectedFiles — absolute-path violations", () => {
         kind: "deleted",
       }),
     );
+  });
+
+  it("flags backend-entry tuple violation when NO stack variant exists (bug-111)", () => {
+    seedBaseline();
+    // Delete every backend entrypoint variant — should trip the tuple check.
+    remove("apps/api/src/api/main.py");
+    const result = verifyProtectedFiles(tmpRoot);
+    expect(result.ok).toBe(false);
+    // The first variant (python-fastapi) is the reported canonical path.
+    const violation = result.violations.find(
+      (v) => v.path === "apps/api/src/api/main.py",
+    );
+    expect(violation).toBeDefined();
+    expect(violation!.kind).toBe("deleted");
+    expect(violation!.reason).toContain("any of:");
+    expect(violation!.reason).toContain("apps/api/src/api/main.py");
+    expect(violation!.reason).toContain("apps/api/src/server.ts");
+    expect(violation!.reason).toContain("apps/api/src/main.ts");
+  });
+
+  it("skips backend-entry tuple check when apps/api/ doesn't exist (web-only / mobile-only project, bug-111)", () => {
+    // No apps/api/ tier at all — every entrypoint variant under apps/api/ is
+    // outside the present-tier set and should be silently OK. Mirrors the
+    // existing apps/web tier-presence gate.
+    write("apps/web/postcss.config.mjs");
+    write("apps/web/tailwind.config.ts");
+    write("apps/web/next.config.ts");
+    write("apps/web/vitest.config.ts");
+    write("apps/web/tsconfig.json", "{}\n");
+    write("apps/web/package.json", "{}\n");
+    write("package.json", "{}\n");
+    write("pnpm-workspace.yaml");
+    write("scripts/dev.mjs");
+    write("packages/ui-kit/package.json", "{}\n");
+    write("packages/ui-kit/tsconfig.json", "{}\n");
+    write(
+      "packages/ui-kit/src/styles/globals.css",
+      `@tailwind base;\n@tailwind components;\n@tailwind utilities;\n`,
+    );
+    // Deliberately NO apps/api/.
+    const result = verifyProtectedFiles(tmpRoot);
+    expect(result.ok).toBe(true);
+    expect(result.violations).toEqual([]);
   });
 });
 

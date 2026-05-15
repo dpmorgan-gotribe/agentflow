@@ -1,4 +1,4 @@
-# Protected-files policy (bug-091)
+# Protected-files policy (bug-091 + bug-111)
 
 Authoritative policy consumed by `bug-fixer` + `systemic-fixer` agents during `/fix-bugs` loop dispatches. Referenced from `.claude/agents/bug-fixer.md` §Protected files + `.claude/agents/systemic-fixer.md` §Protected files + `orchestrator/src/protected-files.ts` (canonical machine-readable manifest).
 
@@ -6,12 +6,14 @@ Authoritative policy consumed by `bug-fixer` + `systemic-fixer` agents during `/
 
 The factory ships load-bearing config files that downstream CSS compilation, build orchestration, dev-server boot, test discovery, and workspace resolution all DEPEND ON. Past `/fix-bugs` dispatches have deleted or emptied these files while reasoning that a config was the source of unwanted behavior — silently regressing prior structural correctness. The most empirically destructive case: deleting `apps/web/postcss.config.mjs` on reading-log-02 reopened bug-077's Tailwind-pipeline gap across multiple `/fix-bugs` rounds while orchestrator metrics reported ~95% clean resolution.
 
-| Invariant class                | Manifest source (TS)              | Failure shape                                    |
-| ------------------------------ | --------------------------------- | ------------------------------------------------ |
-| Absolute path must exist       | `PROTECTED_FILES`                 | Agent deletes `apps/web/postcss.config.mjs`      |
-| First-match variant must exist | `PROTECTED_FILES` (tuple entries) | Agent renames `postcss.config.mjs` → unknown ext |
-| Every packages/<name>/ keeps   | `PROTECTED_PACKAGES_FILES`        | Agent deletes `packages/ui-kit/package.json`     |
-| File contains substring(s)     | `PROTECTED_CONTENT_INVARIANTS`    | Agent strips `@tailwind base` from `globals.css` |
+bug-111 added the backend canonical app-entrypoints to the manifest after gotribe-tribe-directory 2026-05-15 shipped through Mode B + verifier + /fix-bugs with the FastAPI entry at `apps/api/src/main.py` instead of the canonical `apps/api/src/api/main.py`. The empirical class is symmetric: deleting / mis-placing the canonical backend entrypoint cascade-skips Tiers 3+4+5 of `/build-to-spec-verify` (parity, perceptual, walkthrough) because `dev-server` pre-boot fails. The hard layer here guards a fix-loop dispatch that — having read this policy and chosen to delete the entrypoint anyway — gets its commit rolled back.
+
+| Invariant class                | Manifest source (TS)              | Failure shape                                                                                         |
+| ------------------------------ | --------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Absolute path must exist       | `PROTECTED_FILES`                 | Agent deletes `apps/web/postcss.config.mjs`                                                           |
+| First-match variant must exist | `PROTECTED_FILES` (tuple entries) | Agent renames `postcss.config.mjs` → unknown ext; agent deletes the canonical backend entry (bug-111) |
+| Every packages/<name>/ keeps   | `PROTECTED_PACKAGES_FILES`        | Agent deletes `packages/ui-kit/package.json`                                                          |
+| File contains substring(s)     | `PROTECTED_CONTENT_INVARIANTS`    | Agent strips `@tailwind base` from `globals.css`                                                      |
 
 `orchestrator/src/protected-files.ts` is the canonical source. The lists below are documentation; the TS module is what fires the check.
 
@@ -99,6 +101,7 @@ Promotion to JSON manifest is deferred until the list exceeds ~30 entries OR a s
 
 - **bug-091** — the bug plan that introduced this policy. `plans/active/bug-091-protected-files-guard.md`.
 - **bug-077** — the empirical regression case. Without this guard, every `/fix-bugs` run risked reopening it.
+- **bug-111** — extended the manifest with backend canonical app-entrypoints (`apps/api/src/api/main.py` / `apps/api/src/server.ts` / `apps/api/src/main.ts`). Empirical case: gotribe-tribe-directory 2026-05-15 shipped FastAPI backend with entry at `apps/api/src/main.py`; the 4-layer detection stack (builder self-verify / reviewer dim-1 / verifier pre-boot / fix-loop bug-classification) failed to catch it. This entry guards against the symmetric class — a fix-loop dispatch deleting the canonical entry from a project that previously had it.
 - **bug-024** — architectural precedent for forbidden-paths enforcement on a different agent lane (tester). Three-layer pattern (agent prompt + rules doc + mechanical check) mirrored here.
 - **bug-023** — scaffold-owned-files precedent for builder lanes. `PROTECTED_FILES` overlaps with bug-023's scaffold-owned list; both lanes complement each other.
 - **bug-087 + bug-088** — perceptual-divergence routing to `systemic-fixer`. Routing UI findings to the higher-budget cross-file dispatcher is what makes this guard P0 (the empirical combo that produces config-file deletions).

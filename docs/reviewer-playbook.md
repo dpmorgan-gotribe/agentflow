@@ -46,6 +46,14 @@ node -e "
     if (!mergeSha) throw new Error(\`Feature \${f.id} is status:completed but has no merge commit on main\`);
   }
 "
+
+# Backend dev-server boot probe (bug-111 — when apps/api/ exists, the canonical
+# spawn must produce an importable app module). Stack-specific probe; see the
+# per-backend stack skill's §Review block for the exact command. For
+# python-fastapi:
+test -d apps/api && (cd apps/api && uv run python -c "import importlib; importlib.import_module('api.main')")
+# ...expected: exit 0. Failure with ModuleNotFoundError → backend layout drift
+# (e.g. main.py at wrong path); cascades to verifier + fix-loop blindspots.
 ```
 
 ### Pass threshold
@@ -53,6 +61,7 @@ node -e "
 - Every non-declined integration has ≥1 import in committed code
 - Every non-null `tooling.stack.{tier}_framework` has a corresponding `apps/{tier}/` directory populated
 - Every `features[].status === "completed"` has a corresponding `Merge {branch}:` commit on main
+- For projects with `apps/api/`: the canonical dev-server spawn produces an importable app module per the per-stack §Review boot probe (bug-111). Non-booting backends cascade-skip Tiers 3+4+5 in `/build-to-spec-verify` and mask every downstream check.
 
 ### Known-gap (deferred)
 
@@ -63,6 +72,7 @@ node -e "
 - Missing vendor import → `backend-builder` / `web-frontend-builder` / `mobile-frontend-builder` (whichever owns the file) with the specific task ID
 - Missing `apps/{tier}/` dir when framework is non-null → `backend-builder` (usually caught by infra-scaffolding feature retry)
 - Completed feature without merge → orchestrator wiring bug, not a retry target; flag as `blocked`
+- Backend boot probe fails with `ModuleNotFoundError` / `Cannot find module` → `backend-builder` with the exact module path from the error message and a reference to the stack skill's canonical layout (bug-111)
 
 ---
 

@@ -47,6 +47,7 @@ Files in this category (canonical source: `orchestrator/src/protected-files.ts`)
 - `apps/web/vitest.config.ts`, `apps/web/tsconfig.json` — bug-023 scaffold-owned
 - `apps/web/package.json`, `apps/api/package.json`, `package.json`, `packages/*/package.json`, `packages/*/tsconfig.json`, `pnpm-workspace.yaml`
 - `scripts/dev.mjs` — multi-tier dev orchestrator (bug-033 / bug-040)
+- Backend canonical app-entrypoints — at least ONE of `apps/api/src/api/main.py` (python-fastapi) / `apps/api/src/server.ts` (node-fastify) / `apps/api/src/main.ts` (node-trpc-nest) must remain at the canonical path (bug-111). Deleting / renaming breaks `dev-server` pre-boot and cascade-skips Tiers 3+4+5 of `/build-to-spec-verify`.
 - `@tailwind base/components/utilities` directives in `packages/ui-kit/src/styles/globals.css` (content-level invariant — emptying the file is the same as deleting it)
 
 A post-dispatch invariant check rejects any commit that violates this list: your attempt is marked failed, the merge cascade is skipped, the violation is threaded into the next retry's context. Save yourself the retry — flag, don't delete. See `.claude/rules/protected-files-policy.md` for the policy doc.
