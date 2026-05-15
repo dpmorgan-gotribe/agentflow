@@ -1550,3 +1550,213 @@ describe("runBuildToSpecVerify — bug-112 Patch D pre-flight pnpm install", () 
     ).toBe(false);
   });
 });
+
+describe("runBuildToSpecVerify — bug-113 walkthrough cascade-root linkage", () => {
+  // When a perceptual finding has category 'page-not-found', subsequent
+  // walkthrough findings get dependsOnBugId set to the perceptual bug's
+  // planId. Empirical motivator: gotribe-tribe-directory 2026-05-15 — the
+  // browse page rendered Next.js 404 (1 perceptual finding) + 4 cascade
+  // walkthrough findings on the same iteration. Pre-bug-113, /fix-bugs
+  // would dispatch web-frontend-builder 5× for ONE structural fix.
+
+  it("sets dependsOnBugId on walkthrough findings when perceptual page-not-found exists", async () => {
+    // Perceptual review only fires when `docs/build-to-spec/pixel-diffs/`
+    // contains *.mockup.png files (screen-id enumeration). Seed one entry
+    // so the runner enumerates 1 screen.
+    mkdirSync(join(projectDir, "docs", "build-to-spec", "pixel-diffs"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(
+        projectDir,
+        "docs",
+        "build-to-spec",
+        "pixel-diffs",
+        "tribe-directory-browse.mockup.png",
+      ),
+      "stub-png",
+    );
+    const filed: Array<{
+      planId: string;
+      kind: string;
+      category?: string;
+      dependsOnBugId?: string;
+    }> = [];
+    let seq = 0;
+    await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) => {
+        if (script.includes("audit-app-reachability")) return stubReachOk();
+        return {
+          stdout: JSON.stringify({
+            ok: true,
+            flowsCount: 1,
+            generatedFiles: ["apps/web/e2e/synthesized/flow-1.spec.ts"],
+            skippedFiles: [],
+            projectDir,
+            outDir: "apps/web/e2e/synthesized",
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+      runFlows: runFlowsOk,
+      runParity: false,
+      runPerceptual: true,
+      runWalkthrough: true,
+      invokeAgent: (async () => ({
+        taskStatus: "completed",
+        errors: {},
+        costUsd: 0,
+      })) as never,
+      bootDevServer: stubBootDevServer,
+      perceptualReview: async () => ({
+        ok: false,
+        screensReviewed: 1,
+        screensSkipped: 0,
+        reviews: [
+          {
+            screen: "tribe-directory-browse",
+            ok: false,
+            findings: [
+              {
+                element: "Whole page",
+                severity: "P0" as const,
+                description: "Live build renders Next.js 404 — route broken",
+                category: "page-not-found" as const,
+              },
+            ],
+            alreadyFiled: [],
+            durationMs: 0,
+            costUsd: 0,
+          },
+        ],
+        warnings: [],
+        durationMs: 0,
+        costUsd: 0,
+      }),
+      walkthroughReview: (async () => ({
+        ok: false,
+        stepsRun: 5,
+        findings: [
+          {
+            step: 3,
+            element: "filter-checkbox-regenerative-ag",
+            observation: "Locator timed out — checkbox not present",
+            severity: "P1" as const,
+            evidence: [],
+          },
+          {
+            step: 6,
+            element: "Clear filters button",
+            observation: "Button not present after applying filter",
+            severity: "P1" as const,
+            evidence: [],
+          },
+        ],
+        alreadyFiled: [],
+        warnings: [],
+        summary: "",
+        durationMs: 0,
+        costUsd: 0,
+      })) as never,
+      fileBugPlan: async ({ violation, dependsOnBugId }) => {
+        seq += 1;
+        const planId = `bug-${String(seq).padStart(3, "0")}-${violation.kind}-stub`;
+        const entry: {
+          planId: string;
+          kind: string;
+          category?: string;
+          dependsOnBugId?: string;
+        } = { planId, kind: violation.kind };
+        if ("category" in violation && violation.category !== undefined) {
+          entry.category = String(violation.category);
+        }
+        if (dependsOnBugId !== undefined) entry.dependsOnBugId = dependsOnBugId;
+        filed.push(entry);
+        return { planId, planPath: `/tmp/${planId}.md` };
+      },
+    });
+
+    const perceptualBugs = filed.filter((f) => f.kind === "perceptual-finding");
+    const walkthroughBugs = filed.filter(
+      (f) => f.kind === "walkthrough-finding",
+    );
+    expect(perceptualBugs).toHaveLength(1);
+    expect(walkthroughBugs).toHaveLength(2);
+    // Perceptual files FIRST (bug-113 order swap) + has no dependsOnBugId.
+    expect(filed[0]!.kind).toBe("perceptual-finding");
+    expect(filed[0]!.category).toBe("page-not-found");
+    expect(filed[0]!.dependsOnBugId).toBeUndefined();
+    // Walkthrough findings get dependsOnBugId pointing to the perceptual
+    // page-not-found planId.
+    const rootPlanId = filed[0]!.planId;
+    for (const wb of walkthroughBugs) {
+      expect(wb.dependsOnBugId).toBe(rootPlanId);
+    }
+  });
+
+  it("does NOT set dependsOnBugId when no perceptual page-not-found exists", async () => {
+    const filed: Array<{ kind: string; dependsOnBugId?: string }> = [];
+    await runBuildToSpecVerify({
+      projectDir,
+      runScript: async ({ script }) => {
+        if (script.includes("audit-app-reachability")) return stubReachOk();
+        return {
+          stdout: JSON.stringify({
+            ok: true,
+            flowsCount: 1,
+            generatedFiles: ["apps/web/e2e/synthesized/flow-1.spec.ts"],
+            skippedFiles: [],
+            projectDir,
+            outDir: "apps/web/e2e/synthesized",
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+      runFlows: runFlowsOk,
+      runParity: false,
+      runPerceptual: false,
+      runWalkthrough: true,
+      invokeAgent: (async () => ({
+        taskStatus: "completed",
+        errors: {},
+        costUsd: 0,
+      })) as never,
+      bootDevServer: stubBootDevServer,
+      walkthroughReview: (async () => ({
+        ok: false,
+        stepsRun: 3,
+        findings: [
+          {
+            step: 1,
+            element: "delete-button on book-detail",
+            observation: "Click handler fires 6× per click",
+            severity: "P1" as const,
+            evidence: [],
+          },
+        ],
+        alreadyFiled: [],
+        warnings: [],
+        summary: "",
+        durationMs: 0,
+        costUsd: 0,
+      })) as never,
+      fileBugPlan: async ({ violation, dependsOnBugId }) => {
+        const entry: { kind: string; dependsOnBugId?: string } = {
+          kind: violation.kind,
+        };
+        if (dependsOnBugId !== undefined) entry.dependsOnBugId = dependsOnBugId;
+        filed.push(entry);
+        return { planId: `stub-${filed.length}`, planPath: "/tmp/stub.md" };
+      },
+    });
+
+    const walkthroughBugs = filed.filter(
+      (f) => f.kind === "walkthrough-finding",
+    );
+    expect(walkthroughBugs).toHaveLength(1);
+    expect(walkthroughBugs[0]!.dependsOnBugId).toBeUndefined();
+  });
+});
