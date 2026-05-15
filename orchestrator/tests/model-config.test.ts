@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -401,6 +401,108 @@ describe("readModelConfig — stallTimeoutMs (feat-024 Phase B)", () => {
     writeFileSync(projectPath, `agents:\n  tester: { stallTimeoutMs: null }\n`);
     const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
     expect(cfg.stallTimeoutMs).toBeNull();
+  });
+});
+
+// ─── bug-107: Strategy-D web tester wall-clock-cap discriminator ─────────
+
+describe("readModelConfig — Strategy-D web tester wall-clock cap (bug-107)", () => {
+  function writeArchitectureYaml(stack: {
+    persistence_layer?: string | null;
+    web_framework?: string | null;
+  }) {
+    mkdirSync(join(tmpDir, ".claude"), { recursive: true });
+    const pl =
+      stack.persistence_layer === null
+        ? `null`
+        : `"${stack.persistence_layer ?? "real-db"}"`;
+    const wf =
+      stack.web_framework === null
+        ? `null`
+        : `"${stack.web_framework ?? "react-next"}"`;
+    writeFileSync(
+      join(tmpDir, ".claude", "architecture.yaml"),
+      `tooling:\n  stack:\n    persistence_layer: ${pl}\n    web_framework: ${wf}\n`,
+    );
+  }
+
+  it("Strategy-D web tester gets 30-min cap (bumped from 20)", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  tester: { tier: build }\n`,
+    );
+    writeArchitectureYaml({
+      persistence_layer: "external-api-only",
+      web_framework: "react-next",
+    });
+    const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
+    expect(cfg.stallTimeoutMs).toBe(30 * 60 * 1000);
+  });
+
+  it("backend-only Strategy-D (no web_framework) keeps 20-min default", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  tester: { tier: build }\n`,
+    );
+    writeArchitectureYaml({
+      persistence_layer: "external-api-only",
+      web_framework: null,
+    });
+    const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
+    expect(cfg.stallTimeoutMs).toBe(20 * 60 * 1000);
+  });
+
+  it("Strategy-C real-db web tester keeps 20-min default", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  tester: { tier: build }\n`,
+    );
+    writeArchitectureYaml({
+      persistence_layer: "real-db",
+      web_framework: "react-next",
+    });
+    const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
+    expect(cfg.stallTimeoutMs).toBe(20 * 60 * 1000);
+  });
+
+  it("missing architecture.yaml keeps 20-min default (Mode A or pre-architect)", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  tester: { tier: build }\n`,
+    );
+    // no writeArchitectureYaml call
+    const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
+    expect(cfg.stallTimeoutMs).toBe(20 * 60 * 1000);
+  });
+
+  it("backend-builder on Strategy-D web is unaffected (only tester discriminates)", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  backend-builder: { tier: build }\n`,
+    );
+    writeArchitectureYaml({
+      persistence_layer: "external-api-only",
+      web_framework: "react-next",
+    });
+    const cfg = readModelConfig("backend-builder", tmpDir, {
+      globalPath,
+      projectPath,
+    });
+    expect(cfg.stallTimeoutMs).toBe(25 * 60 * 1000);
+  });
+
+  it("explicit project YAML override preempts the Strategy-D discriminator", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  tester: { tier: build }\n`,
+    );
+    writeFileSync(projectPath, `stallTimeoutMs:\n  tester: 60000\n`);
+    writeArchitectureYaml({
+      persistence_layer: "external-api-only",
+      web_framework: "react-next",
+    });
+    const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
+    expect(cfg.stallTimeoutMs).toBe(60_000);
   });
 });
 

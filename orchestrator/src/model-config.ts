@@ -161,6 +161,82 @@ const FACTORY_DEFAULT_AGENT_TIERS: Record<
   "walkthrough-reviewer": { tier: "building", effort: "medium" },
 };
 
+/**
+ * bug-107 (2026-05-15) — Strategy-D web tester needs a longer wall-clock cap
+ * than the global default. Per investigate-031 H1+H2: the synthesize-flow-e2e
+ * step + Playwright child processes + page.route mock authoring + edge-case
+ * unit tests + coverage run is 4-5× a backend tester's workload and routinely
+ * exceeds the 20-min default, especially at elevated rate-limit utilization.
+ * Empirical anchor: gotribe-tribe-directory feat-tribe-directory-web 2026-05-15
+ * (2 × 20-min stall-timeouts, $3.25 wasted; web tester needed >20 min,
+ * backend testers in the same run finished in <5 min).
+ *
+ * Resolves to 30 min instead of 20 when the conditions match:
+ *   - agentName === "tester"
+ *   - architecture.yaml.tooling.stack.persistence_layer === "external-api-only"
+ *   - architecture.yaml.tooling.stack.web_framework is set (non-null)
+ *
+ * Other tester contexts (backend-only Strategy-D, Strategy-A localStorage,
+ * Strategy-C real-db) keep the 20-min default. Explicit overrides in
+ * .claude/models.yaml at higher precedence steps still win.
+ */
+const STRATEGY_D_WEB_TESTER_STALL_TIMEOUT = 30 * 60 * 1000;
+
+/**
+ * Lightweight regex parse of architecture.yaml to extract the two slots
+ * relevant to per-agent wall-clock cap discrimination. Returns null when
+ * the file is absent (Mode A stages, pre-architect) or parse fails.
+ *
+ * Mirrors `readPersistenceLayerSlug` in dev-server.ts; kept private here to
+ * avoid a cross-module dependency for one helper. Both helpers must stay in
+ * sync if `architecture.yaml.tooling.stack.*` shape evolves.
+ */
+function readArchStackContext(
+  projectRoot: string,
+): { persistenceLayer: string | null; webFramework: string | null } | null {
+  const archPath = join(projectRoot, ".claude", "architecture.yaml");
+  if (!existsSync(archPath)) return null;
+  try {
+    const text = readFileSync(archPath, "utf8");
+    const pl = text.match(/^\s*persistence_layer:\s*"?([\w-]+)"?\s*(?:#.*)?$/m);
+    const wf = text.match(/^\s*web_framework:\s*"?([\w-]+)"?\s*(?:#.*)?$/m);
+    return {
+      persistenceLayer: pl?.[1] ?? null,
+      webFramework: wf?.[1] && wf[1] !== "null" ? wf[1] : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the default stall-timeout for an agent, applying class-discrimination
+ * where the workload of a given (agent, project stack) pair structurally needs
+ * a different cap. Called from `readModelConfig` at the lowest-precedence step
+ * (after all YAML overrides have been considered); explicit project/global
+ * overrides preempt this discrimination.
+ *
+ * Today's only discriminator: bug-107 Strategy-D web tester → 30 min.
+ * Future discriminators (e.g. Strategy-C real-db tester needing 25 min) plug
+ * in here with their own conditions.
+ */
+function resolveDefaultStallTimeout(
+  agentName: string,
+  projectRoot: string,
+): number | null {
+  if (agentName === "tester") {
+    const arch = readArchStackContext(projectRoot);
+    if (
+      arch &&
+      arch.persistenceLayer === "external-api-only" &&
+      arch.webFramework !== null
+    ) {
+      return STRATEGY_D_WEB_TESTER_STALL_TIMEOUT;
+    }
+  }
+  return DEFAULT_STALL_TIMEOUT_BY_AGENT[agentName] ?? null;
+}
+
 const DEFAULT_STALL_TIMEOUT_BY_AGENT: Record<string, number | null> = {
   "backend-builder": 25 * 60 * 1000,
   "web-frontend-builder": 25 * 60 * 1000,
@@ -344,7 +420,9 @@ export function readModelConfig(
   } else if (globalCfg.stallTimeoutMs?.[agentName] !== undefined) {
     stallTimeoutMs = globalCfg.stallTimeoutMs[agentName] ?? null;
   } else if (agentName in DEFAULT_STALL_TIMEOUT_BY_AGENT) {
-    stallTimeoutMs = DEFAULT_STALL_TIMEOUT_BY_AGENT[agentName] ?? null;
+    // bug-107: Class-discriminator. Strategy-D web tester gets 30 min instead
+    // of the global 20-min default. Explicit overrides at steps 1-4 win.
+    stallTimeoutMs = resolveDefaultStallTimeout(agentName, projectRoot);
   }
 
   const providerConfig = resolveProviderConfig(globalCfg, projectCfg);
