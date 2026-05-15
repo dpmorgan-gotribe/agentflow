@@ -811,6 +811,150 @@ describe("runFeature — per-task retry", () => {
   });
 });
 
+describe("runFeature — pre-dispatch rate-limit gate (bug-110)", () => {
+  // Empirical anchor: gotribe-tribe-directory feat-tribe-directory-web
+  // 2026-05-15 ran at 91% seven_day utilization; SDK round-trips 95-117s/turn
+  // (3-5x baseline); tester wall-clock-capped twice. The bug-110 pre-flight
+  // gate would have written paused.json at 85% before any wasted dispatch.
+
+  it("at elevated utilization, refuses dispatch + writes paused.json (bug-110)", async () => {
+    const { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } =
+      await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+
+    const projectRoot = mkdtempSync(join(tmpdir(), "bug-110-"));
+    const pipelineRunId = "test-run-bug-110-a";
+    const stateDir = join(projectRoot, ".claude", "state", pipelineRunId);
+    mkdirSync(stateDir, { recursive: true });
+    // Seed rate-limit-events.ndjson with a single seven_day entry at 91%.
+    writeFileSync(
+      join(stateDir, "rate-limit-events.ndjson"),
+      JSON.stringify({
+        ts: "2026-05-15T11:00:00Z",
+        featureId: "feat-auth",
+        agent: "backend-builder",
+        rateLimitType: "seven_day",
+        status: "allowed_warning",
+        utilization: 0.91,
+      }) + "\n",
+      "utf8",
+    );
+
+    const feature = buildFeature();
+    let dispatchCount = 0;
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput:
+            args.gitOp?.op === "checkout-feature" ? checkoutOk : closeOk,
+          costUsd: 0.001,
+        };
+      }
+      dispatchCount += 1;
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+
+    const ctx = makeCtx(invokeAgent) as ReturnType<typeof makeCtx> & {
+      preDispatchUtilizationThreshold?: number | null;
+    };
+    // Override projectRoot + pipelineRunId so the gate reads our seeded file.
+    ctx.projectRoot = projectRoot;
+    ctx.pipelineRunId = pipelineRunId;
+    ctx.preDispatchUtilizationThreshold = 0.85;
+
+    const { PauseSignal } = await import("../src/pause.js");
+    let caught: unknown;
+    try {
+      await runFeature(feature, ctx);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PauseSignal);
+    expect((caught as InstanceType<typeof PauseSignal>).state.reason).toBe(
+      "rate-limit-elevated-pre-flight",
+    );
+    expect(dispatchCount).toBe(0); // gate fired BEFORE any LLM dispatch
+
+    // paused.json was written
+    const pausedPath = join(stateDir, "paused.json");
+    expect(existsSync(pausedPath)).toBe(true);
+    const paused = JSON.parse(readFileSync(pausedPath, "utf8"));
+    expect(paused.reason).toBe("rate-limit-elevated-pre-flight");
+    expect(paused.reasonDetail).toMatch(/91%/);
+    expect(paused.reasonDetail).toMatch(/85%/);
+
+    rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  it("at below-threshold utilization, dispatch fires normally (bug-110)", async () => {
+    const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+
+    const projectRoot = mkdtempSync(join(tmpdir(), "bug-110-"));
+    const pipelineRunId = "test-run-bug-110-b";
+    const stateDir = join(projectRoot, ".claude", "state", pipelineRunId);
+    mkdirSync(stateDir, { recursive: true });
+    // Seed with utilization at 84% — below the 85% threshold.
+    writeFileSync(
+      join(stateDir, "rate-limit-events.ndjson"),
+      JSON.stringify({
+        ts: "2026-05-15T11:00:00Z",
+        featureId: "feat-auth",
+        agent: "backend-builder",
+        rateLimitType: "seven_day",
+        status: "allowed_warning",
+        utilization: 0.84,
+      }) + "\n",
+      "utf8",
+    );
+
+    const feature = buildFeature();
+    let dispatchCount = 0;
+    const invokeAgent: InvokeAgentFn = async (args) => {
+      if (args.agent === "git-agent") {
+        return {
+          taskStatus: {},
+          errors: {},
+          gitAgentOutput:
+            args.gitOp?.op === "checkout-feature" ? checkoutOk : closeOk,
+          costUsd: 0.001,
+        };
+      }
+      dispatchCount += 1;
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+
+    const ctx = makeCtx(invokeAgent) as ReturnType<typeof makeCtx> & {
+      preDispatchUtilizationThreshold?: number | null;
+    };
+    ctx.projectRoot = projectRoot;
+    ctx.pipelineRunId = pipelineRunId;
+    ctx.preDispatchUtilizationThreshold = 0.85;
+
+    const result = await runFeature(feature, ctx);
+    expect(result.status).toBe("completed");
+    expect(dispatchCount).toBeGreaterThanOrEqual(3); // backend + tester + reviewer
+
+    rmSync(projectRoot, { recursive: true, force: true });
+  });
+});
+
 describe("runFeature — reviewer-driven retry routing (bug-109)", () => {
   // Empirical anchor: gotribe-tribe-directory feat-tribe-api 2026-05-15 had
   // 1× backend-builder + 3× reviewer dispatches (zero builder retries

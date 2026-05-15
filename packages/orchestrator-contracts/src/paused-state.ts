@@ -30,6 +30,16 @@ export const PauseReason = z.enum([
   "auth-failed",
   /** Per-agent wall-clock or keepalive abort fired in strict mode. */
   "stall-timeout",
+  /**
+   * bug-110 (2026-05-15) — Pre-dispatch soft refusal at elevated seven-
+   * day rate-limit utilization. Distinct from `claude-max-seven-day-limit`
+   * (the hard-stop at 95%): this fires earlier (default 85%) BEFORE any
+   * new agent dispatch, on the theory that SDK round-trip latency at
+   * ≥85% utilization is 3-5× baseline and agents hit wall-clock caps
+   * before completing. Operator resumes via /resume-build when bucket
+   * clears.
+   */
+  "rate-limit-elevated-pre-flight",
 ]);
 export type PauseReason = z.infer<typeof PauseReason>;
 

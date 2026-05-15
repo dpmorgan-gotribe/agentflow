@@ -30,6 +30,7 @@ import {
   type InstallResult,
   installIfPackageJsonChanged as defaultInstallIfPackageJsonChanged,
   isBuildAgent,
+  readMostRecentSevenDayUtilization,
 } from "./invoke-agent.js";
 import type { RetryCounters } from "./retry-counters.js";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -291,6 +292,17 @@ export interface FeatureGraphContext {
    * since `existsSync` against a non-existent path is microseconds.
    */
   pauseSentinelPollDisabled?: boolean;
+  /**
+   * bug-110 (2026-05-15) — Pre-dispatch soft-refusal threshold for the
+   * seven-day rate-limit bucket. When the most-recent rate-limit-events
+   * breadcrumb shows utilization ≥ this value, runFeature writes
+   * `paused.json` with reason `rate-limit-elevated-pre-flight` and
+   * throws `PauseSignal` BEFORE dispatching the next agent. Default
+   * 0.85; set to `null` to disable the gate (legacy behavior + tests
+   * that don't exercise the gate). The existing 95% hard-stop inside
+   * runLlmAgent stays orthogonal.
+   */
+  preDispatchUtilizationThreshold?: number | null;
   /**
    * bug-021 — when set, the progress tracker created by `runFeatureGraph`
    * is seeded from this snapshot rather than starting empty. Wired by
@@ -1137,6 +1149,46 @@ export async function runFeature(
         `paused.json sentinel detected before ${feature.agent_sequence[seqIdx]} on ${feature.id}`,
         { drained: true },
       );
+    }
+
+    // bug-110 (2026-05-15) — Pre-dispatch soft refusal at elevated
+    // seven-day rate-limit utilization. The existing 95% hard-stop fires
+    // INSIDE runLlmAgent when the SDK reports rate-limit events; this
+    // earlier gate fires at the dispatch boundary instead. Empirical
+    // anchor: gotribe-tribe-directory feat-tribe-directory-web 2026-05-15
+    // ran at 91% utilization; SDK round-trips 95-117s/turn (3-5× baseline);
+    // tester wall-clock-capped twice. Refusing pre-flight at 85% would
+    // have written paused.json BEFORE the wasted dispatches.
+    //
+    // Threshold configurable via project models.yaml — see
+    // `ctx.preDispatchUtilizationThreshold` (defaults to 0.85; null
+    // disables the gate).
+    if (
+      !ctx.pauseSentinelPollDisabled &&
+      ctx.preDispatchUtilizationThreshold !== null &&
+      ctx.preDispatchUtilizationThreshold !== undefined
+    ) {
+      const utilization = readMostRecentSevenDayUtilization(
+        ctx.projectRoot,
+        ctx.pipelineRunId,
+      );
+      if (
+        utilization !== null &&
+        utilization >= ctx.preDispatchUtilizationThreshold
+      ) {
+        tracker.flush();
+        await pauseRun(
+          {
+            projectRoot: ctx.projectRoot,
+            pipelineRunId: ctx.pipelineRunId,
+            authProvider: ctx.authProvider ?? "unknown",
+            progressTracker: tracker,
+          },
+          "rate-limit-elevated-pre-flight",
+          `seven_day utilization at ${Math.round(utilization * 100)}% (threshold ${Math.round(ctx.preDispatchUtilizationThreshold * 100)}%) before ${feature.agent_sequence[seqIdx]} on ${feature.id} — refusing dispatch to avoid wall-clock-cap waste; resume with /resume-build when bucket clears`,
+          { drained: true },
+        );
+      }
     }
     const agentName = feature.agent_sequence[seqIdx]!;
     if (agentName === "git-agent") continue; // lifecycle is owned by the orchestrator

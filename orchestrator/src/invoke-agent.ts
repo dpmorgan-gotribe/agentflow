@@ -202,6 +202,52 @@ function writeStallLogBreadcrumb(
  * Silent no-op when `cfg.pipelineRunId` isn't set (back-compat with
  * tests).
  */
+/**
+ * bug-110 (2026-05-15) — read the most-recent seven_day utilization from
+ * the rate-limit-events.ndjson breadcrumb file. Returns null when the
+ * file doesn't exist OR has no seven_day entries yet OR the parse fails.
+ * Used by the pre-dispatch gate in feature-graph.ts to refuse new agent
+ * dispatches when utilization is elevated (≥85% by default), avoiding
+ * wall-clock-cap-induced failures while the bucket is full.
+ */
+export function readMostRecentSevenDayUtilization(
+  projectRoot: string,
+  pipelineRunId: string,
+): number | null {
+  const path = join(
+    projectRoot,
+    ".claude",
+    "state",
+    pipelineRunId,
+    "rate-limit-events.ndjson",
+  );
+  if (!existsSync(path)) return null;
+  try {
+    const text = readFileSync(path, "utf8");
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    // Walk backward — find the most recent seven_day entry.
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const parsed = JSON.parse(lines[i]!) as {
+          rateLimitType?: string;
+          utilization?: number;
+        };
+        if (
+          parsed.rateLimitType === "seven_day" &&
+          typeof parsed.utilization === "number"
+        ) {
+          return parsed.utilization;
+        }
+      } catch {
+        /* malformed line — skip */
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function writeRateLimitEventBreadcrumb(
   cfg: CreateInvokeAgentConfig,
   entry: {
