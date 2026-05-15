@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentflow/schemas/brief-capabilities.schema.json",
   "title": "brief-capabilities.json — authoritative catalog of brief §11/§12 capabilities",
   "description": "Emitted by /analyze alongside requirements.md. Every capability the brief promises has an entry here; PM consumes this list to produce tasks-coverage.json. Authoritative spec: plans/active/feat-023-pm-stage-brief-coverage-assertion.md. Zod mirror: packages/orchestrator-contracts/src/brief-coverage.ts.",
