@@ -1,7 +1,7 @@
 ---
 id: bug-106-validate-brief-ajv-draft07
 type: bug
-status: completed
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-05-15
 updated: 2026-05-15
@@ -217,3 +217,29 @@ All four Validation Criteria from the plan body cleared (criteria 1, 2, 3 direct
 ### Recommended follow-up (not blocking this bug)
 
 A `/plan-refactor` to bump the remaining 7 draft-07 factory schemas to draft-2020-12 + align all 3 `validate-*.mjs` scripts to use `ajv/dist/2020.js` uniformly. ~30-line refactor; pre-empts the latent crash class on any future validator-import consolidation. Author when next touching the validator surface.
+
+---
+
+# COMPLETION RECORD (appended to archived plan)
+
+```yaml
+completed: 2026-05-15
+outcome: success
+actual-files-changed:
+  - schemas/brief-capabilities.schema.json (modified)
+  - orchestrator/tests/brief-capabilities-schema-ajv2020.test.ts (created)
+  - plans/active/bug-106-validate-brief-ajv-draft07.md (created)
+  - plans/active.md (modified)
+commits:
+  - hash: 67e0226
+    message: "fix(bug-106): bump brief-capabilities.schema.json to draft-2020-12"
+attempts: 1
+lessons:
+  - "Factory ships in a mixed-meta-schema state (8 draft-07 + 9 draft-2020-12 across 17 schemas). This bug was the first call site where the mismatch surfaced because validate-brief.mjs is the only validator that loads ajv/dist/2020.js (strict Ajv2020 build) AND compiles a draft-07 schema in the same call site. Other draft-07 schemas survive today because their validators use the default ajv import. A future refactor consolidating Ajv imports would expose the same crash class simultaneously on every draft-07 schema."
+  - "Schema files copy unchanged across the draft-07 / draft-2020-12 boundary for our use cases — all keywords used (type, enum, const, required, additionalProperties, pattern, properties, items, minLength) are stable across drafts; only meta-schema resolution behaviour differs at compile time. A draft-2020-12-only factory regime is the lower-friction default."
+  - "sync-project-schemas.mjs byte-compare propagation works correctly — one factory edit, then 5 idempotent project-side updates with one log line per file. No project-side hand-edits needed. The script remains the right answer to 'schemas drifted, sync them'."
+test-results:
+  unit: 5/5 passed (orchestrator/tests/brief-capabilities-schema-ajv2020.test.ts)
+  integration: validate-brief.mjs --all --keep-going exits 0 on projects/gotribe-tribe-directory + projects/reading-log-02 (the two empirical canaries)
+duration-minutes: 30
+```
