@@ -90,6 +90,22 @@ export const PROTECTED_FILES: readonly (string | readonly string[])[] = [
   // Multi-tier dev orchestrator (bug-033 / bug-040 — scripts/dev.mjs is the
   // canonical multi-process boot; deleting it breaks every project's `pnpm dev`).
   "scripts/dev.mjs",
+  // Backend canonical app-entrypoints (bug-111). Each backend stack's
+  // §dev-orchestrator + STACK_BACKEND_SPAWN_COMMAND in
+  // `orchestrator/src/dev-server.ts` resolves to ONE of these paths. Deleting
+  // the canonical entry causes `Could not import module` / `Cannot find
+  // module` at boot time, which cascade-skips Tiers 3+4+5 of the verifier.
+  // The tuple shape means "at least one variant must exist" — a project
+  // ships with exactly one backend stack, so one of these resolves and
+  // the others are silently OK. Per the standard apps/api/ tier-presence
+  // gate (lines 159-174) + baselineRoot regression-only mode (lines
+  // 130-141), projects with no apps/api/ dir AND projects whose baseline
+  // already lacked the canonical path are not blamed for the absence.
+  [
+    "apps/api/src/api/main.py", // python-fastapi
+    "apps/api/src/server.ts", // node-fastify
+    "apps/api/src/main.ts", // node-trpc-nest (Nest CLI default)
+  ],
 ];
 
 /**

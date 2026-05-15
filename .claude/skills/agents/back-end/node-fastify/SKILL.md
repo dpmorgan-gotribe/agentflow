@@ -278,6 +278,13 @@ The orchestrator's verifier-time auto-boot (`orchestrator/src/dev-server.ts spaw
 
 Stack-specific checks the reviewer agent runs IN ADDITION to `docs/reviewer-playbook.md`'s generic 7 dimensions. Scope: files in the feature's diff under `apps/api/`.
 
+#### architecture — backend entrypoint at canonical path (bug-111 — node-fastify mirror)
+
+- **Invocation**: `test -f apps/api/src/server.ts`
+- **Threshold**: exit 0. Missing file means the builder placed the entrypoint somewhere other than the canonical location named in §dev-orchestrator + `orchestrator/src/dev-server.ts STACK_BACKEND_SPAWN_COMMAND["node-fastify"]` (which expects `pnpm --filter @repo/api dev` to resolve `tsx watch src/server.ts`). Empirical motivator: gotribe-tribe-directory 2026-05-15 (python-fastapi class — node-fastify cross-stack mirror is preventative; if the failure mode here proves different empirically, deepen the check then.)
+- **Retry target**: backend-builder, with reference to "§dev-orchestrator names `apps/api/src/server.ts` as the canonical entrypoint"
+- **Playbook §**: augments §1 architecture (backend boot probe row)
+
 #### architecture — service functions take db as first arg (no module-scope singletons)
 
 - **Invocation**: `grep -rnE "^(export )?(async )?function \w+\s*\([^)]*\)\s*[:{]" apps/api/src/routes/*/[*]service.ts | grep -vE "\(\s*(db|app)"` (services without an explicit `db` or `app` first param)

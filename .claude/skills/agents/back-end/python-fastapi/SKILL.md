@@ -246,7 +246,9 @@ db:migrate:  uv run alembic upgrade head
 db:revise:   uv run alembic revision --autogenerate -m "msg"
 ```
 
-Builder self-verify gate: `uv run ruff check api && uv run mypy api && uv run pytest`. Runs in ~5-15s on a small project.
+Builder self-verify gate: `uv run ruff check api && uv run mypy api && uv run pytest && uv run python -c "import importlib; importlib.import_module('api.main')"`. Runs in ~5-15s on a small project.
+
+The trailing `import_module('api.main')` step is the **importability gate** (bug-111). It catches the gotribe-tribe-directory-2026-05-15 class: builder authors `main.py` at `apps/api/src/main.py` instead of the canonical `apps/api/src/api/main.py`. pytest passes because it walks directories, not because `api.main` resolves; without this gate, the wrong-path layout escapes the builder loop and uvicorn fails at runtime with `Error loading ASGI app. Could not import module "api.main"`. Cost: ~50ms after the venv is warm. The check MUST run from `apps/api/` (uv resolves pyproject.toml from cwd) AND `src/` must be on the Python path — `pyproject.toml`'s `[tool.uv]` or `[tool.setuptools.packages.find]` `where = ["src"]` config is what makes that work. The error on failure is `ModuleNotFoundError: No module named 'api.main'`, which the builder's retry context surfaces verbatim → next dispatch repositions the file.
 
 ## §dev-orchestrator (multi-tier dev script) — bug-040 Phase A.5
 
@@ -274,6 +276,13 @@ The orchestrator's verifier-time auto-boot (`orchestrator/src/dev-server.ts spaw
 ## Review
 
 Stack-specific checks the reviewer agent runs IN ADDITION to `docs/reviewer-playbook.md`'s generic 7 dimensions. Scope: files in the feature's diff under `apps/api/`.
+
+#### architecture — backend dev-server boot probe (bug-111)
+
+- **Invocation**: `(cd apps/api && uv run python -c "import importlib; importlib.import_module('api.main')")`
+- **Threshold**: exit 0. A `ModuleNotFoundError: No module named 'api.main'` (or any other ModuleNotFoundError naming `api.*`) means the canonical app entrypoint isn't where the spawn command expects it. The canonical layout is `apps/api/src/api/main.py` (per §dev-orchestrator + `orchestrator/src/dev-server.ts STACK_BACKEND_SPAWN_COMMAND["python-fastapi"]`). Empirical motivator: gotribe-tribe-directory 2026-05-15 — builder authored `apps/api/src/main.py` and all 4 detection layers (builder self-verify, this check, verifier pre-boot, fix-loop) failed to catch it.
+- **Retry target**: backend-builder, with the exact ModuleNotFoundError message + a reference to "§dev-orchestrator names the canonical path as `apps/api/src/api/main.py`". The retry context MUST include the canonical path verbatim so the dispatched agent doesn't re-hallucinate.
+- **Playbook §**: augments §1 architecture (backend boot probe row).
 
 #### security — SQL string interpolation
 

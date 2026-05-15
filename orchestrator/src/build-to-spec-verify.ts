@@ -457,6 +457,14 @@ export async function runBuildToSpecVerify(
   const needsDevServer =
     (ctx.executeFlows !== false && generatedFiles.length > 0) ||
     ctx.runParity !== false;
+  // bug-111 — hoisted ahead of pre-boot block so the catch handler can push a
+  // synthesized FlowFailure when stderr matches a module-import-failure
+  // signature. The original declarations live below at line 522-524 alongside
+  // flowsPassed + flowsRan; this hoist exists so the pre-boot block can route
+  // module-import-failures into the cascade-root file-bug-plan path.
+  const flowsPassed: string[] = [];
+  const flowsFailed: FlowFailure[] = [];
+  let flowsRan = false; // bug-095 — set true when runFlows actually executed
   let sharedDevServerHandle: DevServerHandle | null = null;
   if (needsDevServer) {
     try {
@@ -468,9 +476,47 @@ export async function runBuildToSpecVerify(
         `dev-server: pre-booted at ${sharedDevServerHandle.baseUrl} (took ${Date.now() - sharedDevServerHandle.startedAtMs}ms)`,
       );
     } catch (err) {
-      warnings.push(
-        `dev-server pre-boot failed: ${(err as Error).message}; runFlows + parityVerify will fall back to their own spawn paths (which trip bug-071 on Strategy C — synth-e2e likely 0-tests-run)`,
+      const errMessage = (err as Error).message;
+      // bug-111 — when the pre-boot failure signature is a module-import
+      // error (canonical: FastAPI `Could not import module "api.main"`;
+      // Python: `ModuleNotFoundError`; Node: `Cannot find module`), the
+      // root cause is project-source (entry file at wrong path) not
+      // operator environment (uv/pnpm/port). Synthesize a runtime-error
+      // FlowFailure and push to flowsFailed[] so the existing cascade-
+      // root file-bug-plan path catches it. Non-module-import failures
+      // (port collision, dependency missing, true 60s timeout) stay on
+      // the warnings.push path — those are operator-environment issues.
+      const moduleImportFailureMatch = errMessage.match(
+        /(Could not import module "([^"]+)"|ModuleNotFoundError: No module named '([^']+)'|Cannot find module '([^']+)')/,
       );
+      if (moduleImportFailureMatch) {
+        const offendingModule =
+          moduleImportFailureMatch[2] ??
+          moduleImportFailureMatch[3] ??
+          moduleImportFailureMatch[4] ??
+          "unknown";
+        flowsFailed.push({
+          flowId: "backend-boot-failure",
+          flowName: `backend dev-server failed to import \`${offendingModule}\``,
+          step: 0,
+          fromScreenId: null,
+          expectedScreenId: null,
+          actualScreenId: null,
+          selector: null,
+          screenshotPath: null,
+          htmlDumpPath: null,
+          primaryCause: "runtime-error",
+          message: `Backend dev-server pre-boot failed at module import for \`${offendingModule}\`. The canonical app entrypoint is named in the relevant backend stack skill's §dev-orchestrator (e.g. python-fastapi expects \`apps/api/src/api/main.py\` so \`uv run uvicorn api.main:app --app-dir src\` resolves; node-fastify expects \`apps/api/src/server.ts\`; node-trpc-nest expects \`apps/api/src/main.ts\`). Builder authored the entry file at a non-canonical path. Fix: move the entry file to the canonical path (no import edits needed if absolute imports already resolve via the project's pyproject.toml / package.json package discovery). Then verify with the stack's importability probe — for FastAPI: \`(cd apps/api && uv run python -c "import importlib; importlib.import_module('api.main')")\` exits 0.`,
+          stderrTail: errMessage.slice(0, 1500),
+        });
+        warnings.push(
+          `dev-server pre-boot failed: module-import failure for \`${offendingModule}\` — auto-filed as runtime-error bug (bug-111 detection path).`,
+        );
+      } else {
+        warnings.push(
+          `dev-server pre-boot failed: ${errMessage}; runFlows + parityVerify will fall back to their own spawn paths (which trip bug-071 on Strategy C — synth-e2e likely 0-tests-run)`,
+        );
+      }
     }
   }
 
@@ -481,9 +527,7 @@ export async function runBuildToSpecVerify(
   // degrades to `{ ok:false, reason:"playwright-not-installed" }` when the
   // project hasn't installed the runtime — we propagate that as a warning
   // (not a failure) so the verify stage stays soft-gated for v1.
-  const flowsPassed: string[] = [];
-  const flowsFailed: FlowFailure[] = [];
-  let flowsRan = false; // bug-095 — set true when runFlows actually executed
+  // flowsPassed / flowsFailed / flowsRan declared above (bug-111 hoist).
   if (ctx.executeFlows !== false && generatedFiles.length > 0) {
     let runResult: RunFlowsResult | null = null;
     try {
