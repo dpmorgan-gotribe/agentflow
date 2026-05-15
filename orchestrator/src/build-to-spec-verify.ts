@@ -1146,42 +1146,21 @@ export async function runBuildToSpecVerify(
     sharedDevServerHandle = null;
   }
 
-  // Auto-file ONE bug per walkthrough finding. Each maps 1:1 to a
-  // walkthrough-divergence bug plan + bugs.yaml entry via fileBugPlan.
-  if (ctx.autoFileBugPlans !== false && walkthrough) {
-    const fileBugPlanWalk = ctx.fileBugPlan ?? defaultFileBugPlanResolver();
-    const violations = walkthroughReviewToViolations(walkthrough);
-    for (const v of violations) {
-      try {
-        const violationPayload: Record<string, unknown> = {
-          kind: "walkthrough-finding" as const,
-          step: v.step,
-          element: v.element,
-          observation: v.observation,
-          severity: v.severity,
-          evidence: v.evidence,
-        };
-        if (v.expected !== undefined) violationPayload.expected = v.expected;
-        if (v.category !== undefined) violationPayload.category = v.category;
-        const args: Parameters<typeof fileBugPlanWalk>[0] = {
-          projectDir,
-          violation: violationPayload as unknown as BugPlanViolation,
-        };
-        if (ctx.pipelineRunId !== undefined)
-          args.pipelineRunId = ctx.pipelineRunId;
-        if (ctx.iteration !== undefined) args.iteration = ctx.iteration;
-        const { planId } = await fileBugPlanWalk(args);
-        bugPlansFiled.push(planId);
-      } catch (err) {
-        warnings.push(
-          `file-bug-plan failed for walkthrough step ${v.step}/${v.element}: ${(err as Error).message}`,
-        );
-      }
-    }
-  }
-
+  // bug-113 — file PERCEPTUAL bugs BEFORE walkthrough bugs so walkthrough
+  // findings can carry `dependsOnBugId` linkage to any perceptual
+  // `page-not-found` bug on the same iteration. Empirical motivator:
+  // gotribe-tribe-directory 2026-05-15 — the browse page rendered a
+  // Next.js 404 (1 perceptual finding) which caused 4 cascade walkthrough
+  // findings ("checkbox not found", "Clear filters not found", etc.) that
+  // are all symptoms of the same broken route. Without dependsOnBugId,
+  // /fix-bugs dispatches web-frontend-builder 5× for what is structurally
+  // ONE fix. Pre-bug-113 ordering filed walkthrough first; bug-113 swaps
+  // so the perceptual planIds are available when walkthrough files.
+  //
   // Auto-file ONE bug per perceptual finding. Like parity bugs, each maps
   // 1:1 to a bug plan + bugs.yaml entry via fileBugPlan.
+  const cascadeRootBugIdByScreen = new Map<string, string>();
+  let firstPageNotFoundBugId: string | null = null;
   if (ctx.autoFileBugPlans !== false && perceptual) {
     const fileBugPlan = ctx.fileBugPlan ?? defaultFileBugPlanResolver();
     const violations = perceptualReviewToViolations(perceptual);
@@ -1212,9 +1191,63 @@ export async function runBuildToSpecVerify(
         if (ctx.iteration !== undefined) args.iteration = ctx.iteration;
         const { planId } = await fileBugPlan(args);
         bugPlansFiled.push(planId);
+        // bug-113 — remember `page-not-found` perceptual bugs so subsequent
+        // walkthrough findings can declare dependsOnBugId on them.
+        if (v.category === "page-not-found") {
+          cascadeRootBugIdByScreen.set(v.screen, planId);
+          if (firstPageNotFoundBugId === null) firstPageNotFoundBugId = planId;
+        }
       } catch (err) {
         warnings.push(
           `file-bug-plan failed for perceptual ${v.screen}/${v.element}: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  // Auto-file ONE bug per walkthrough finding. Each maps 1:1 to a
+  // walkthrough-divergence bug plan + bugs.yaml entry via fileBugPlan.
+  // bug-113 — when ANY perceptual page-not-found bug was filed above,
+  // walkthrough findings carry dependsOnBugId pointing to it (coarse:
+  // first such planId for the whole iteration). The /fix-bugs loop
+  // respects dependsOnBugId by suppressing dependents until the root
+  // resolves, then re-verifies — if cascade dependents disappeared
+  // because the root fixed, they're skipped; if they persist, they
+  // dispatch normally. Per-flow scope (matching walkthrough flow to
+  // the perceptual screen) is deferred — coarse iteration-wide scope
+  // is correct because page-routing being broken anywhere blocks
+  // confident walkthrough verdict on every flow.
+  if (ctx.autoFileBugPlans !== false && walkthrough) {
+    const fileBugPlanWalk = ctx.fileBugPlan ?? defaultFileBugPlanResolver();
+    const violations = walkthroughReviewToViolations(walkthrough);
+    for (const v of violations) {
+      try {
+        const violationPayload: Record<string, unknown> = {
+          kind: "walkthrough-finding" as const,
+          step: v.step,
+          element: v.element,
+          observation: v.observation,
+          severity: v.severity,
+          evidence: v.evidence,
+        };
+        if (v.expected !== undefined) violationPayload.expected = v.expected;
+        if (v.category !== undefined) violationPayload.category = v.category;
+        const args: Parameters<typeof fileBugPlanWalk>[0] = {
+          projectDir,
+          violation: violationPayload as unknown as BugPlanViolation,
+        };
+        if (ctx.pipelineRunId !== undefined)
+          args.pipelineRunId = ctx.pipelineRunId;
+        if (ctx.iteration !== undefined) args.iteration = ctx.iteration;
+        // bug-113 — link to first perceptual page-not-found bug if any.
+        if (firstPageNotFoundBugId !== null) {
+          args.dependsOnBugId = firstPageNotFoundBugId;
+        }
+        const { planId } = await fileBugPlanWalk(args);
+        bugPlansFiled.push(planId);
+      } catch (err) {
+        warnings.push(
+          `file-bug-plan failed for walkthrough step ${v.step}/${v.element}: ${(err as Error).message}`,
         );
       }
     }
