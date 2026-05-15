@@ -1,10 +1,12 @@
 ---
 id: investigate-032-fastapi-main-py-layout-mismatch
 type: investigation
-status: completed
+status: archived
 author-agent: human
 created: 2026-05-15
 updated: 2026-05-15
+archived-at: 2026-05-15
+outcome: success
 parent-plan: null
 supersedes: null
 superseded-by: null

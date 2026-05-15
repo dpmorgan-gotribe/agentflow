@@ -1,10 +1,13 @@
 ---
 id: bug-111-fastapi-layout-detection-stack
 type: bug
-status: approved
+status: archived
 author-agent: human
 created: 2026-05-15
 updated: 2026-05-15
+approved-at: 2026-05-15
+completed-at: 2026-05-15
+outcome: success
 parent-plan: investigate-032-fastapi-main-py-layout-mismatch
 supersedes: null
 superseded-by: null
@@ -175,4 +178,47 @@ Add a regression test in `orchestrator/tests/protected-files.test.ts` mirroring 
 
 ## Attempt Log
 
-(empty — to be populated by executing agents)
+### Attempt 1 — 2026-05-15 — shipped all 4 phases in one PR (master commit 6f3ec57 → merge 6edef03)
+
+**What changed (per phase):**
+
+- **Phase A** — `.claude/skills/agents/back-end/python-fastapi/SKILL.md:249` extended the Builder self-verify gate command from `uv run ruff check api && uv run mypy api && uv run pytest` to `... && uv run python -c "import importlib; importlib.import_module('api.main')"` + appended a paragraph explaining the gate's role with cross-ref to bug-111.
+
+- **Phase B** — `docs/reviewer-playbook.md:23-49` §1 Architecture adherence got: (a) a new `## Backend dev-server boot probe` block in the Tool-invocation code fence, (b) a new bullet under Pass threshold ("For projects with apps/api/: the canonical dev-server spawn produces an importable app module per the per-stack §Review boot probe (bug-111)..."), (c) a new bullet under Retry target. `python-fastapi/SKILL.md §Review` got a `#### architecture — backend dev-server boot probe (bug-111)` block invoking `importlib.import_module('api.main')`. `node-fastify/SKILL.md` + `node-trpc-nest/SKILL.md` got parallel `architecture — backend entrypoint at canonical path` blocks (test for `apps/api/src/server.ts` and `apps/api/src/main.ts` respectively). Node-stack probes are preliminary file-existence checks; deeper boot probes deferred until first empirical node-backend project ships.
+
+- **Phase C** — `orchestrator/src/build-to-spec-verify.ts:466-475` (the dev-server pre-boot catch block) now regex-tests `err.message` for `Could not import module "X"` / `ModuleNotFoundError: No module named 'X'` / `Cannot find module 'X'`. On match: synthesizes a `FlowFailure` with `flowId: "backend-boot-failure"`, `primaryCause: "runtime-error"`, rich `message` field naming canonical paths for each backend stack + the fix recipe, `stderrTail: errMessage.slice(0, 1500)`. Pushes to `flowsFailed[]`; existing cascade-root file-bug-plan path (line 645-654) picks it up. Non-import failures (true 60s timeout, port collision, dep missing) stay on the original `warnings.push` path. `flowsPassed` / `flowsFailed` / `flowsRan` declarations hoisted ahead of the pre-boot block (fixes TS2448 used-before-declaration that the inline-push would have produced).
+
+- **Phase D** — `orchestrator/src/protected-files.ts` added the backend canonical-entry tuple `["apps/api/src/api/main.py", "apps/api/src/server.ts", "apps/api/src/main.ts"]` to `PROTECTED_FILES`. `.claude/rules/protected-files-policy.md` opening section + invariant-class table updated to reference bug-111. `bug-fixer.md` + `systemic-fixer.md` §Protected files blocks each got a bullet naming the new entry. `orchestrator/tests/protected-files.test.ts` got 3 new tests (tuple satisfied by any variant / tuple violation when none exists / skip when apps/api/ absent) + the seedBaseline scaffold gained `apps/api/src/api/main.py`.
+
+**Validation:**
+
+- `pnpm --filter orchestrator test -- --run tests/protected-files.test.ts tests/build-to-spec-verify.test.ts` → 59/59 pass (23 protected-files + 36 build-to-spec-verify; +3 new in protected-files)
+- `pnpm --filter @repo/orchestrator-contracts test` → 401/401 pass
+- Full orchestrator suite has 185 failing tests in 6 files (`diff-kit-skeleton.test.ts`, `audit-computed-styles.test.ts`, `run-synthesized-flows.test.ts`, `file-bug-plan-parity.test.ts`, `seed-app-state.test.ts`, `derive-fixture-from-mockup.test.ts`). Confirmed PRE-EXISTING on stashed-master baseline (identical 83/83 failing in the two probed files). Flagged to operator for separate investigation; my 4 phases regress nothing.
+
+## Outcome
+
+**Success.** All 4 phases shipped to master in commit `6f3ec57` (merge `6edef03`). The detection stack now has redundant defense across 4 layers — Phase A catches at <1s cost in the builder loop; Phases B/C/D catch as defense-in-depth if Phase A is bypassed.
+
+**Project hand-fix recipe (still pending for gotribe-tribe-directory):** `git mv apps/api/src/main.py apps/api/src/api/main.py` in the project; no import edits needed (already uses absolute `from api.routes.tribes import...` and `src/` is on pythonpath per pyproject.toml). Then re-run `/build-to-spec-verify gotribe-tribe-directory` — Tiers 3+4+5 should fire instead of cascade-skipping.
+
+### Lessons
+
+1. **A clear spec doesn't guarantee a builder follows it.** The python-fastapi SKILL.md was internally CONSISTENT (3 mentions of `src/api/main.py`, all agreeing) — the builder hallucinated against an unambiguous spec. Detection layers downstream of the builder are load-bearing, not redundant. Cheap layers (importability probe in self-verify, ~50ms cost) catch this BEFORE expensive ones (reviewer/verifier dispatches at $0.50-$5).
+
+2. **`warnings[]` ≠ `bugPlansFiled[]`.** When the verifier downgrades a real failure to a warning, the bug-fix loop never sees it. Today's class-of-bug-the-loop-can't-touch is `dev-server pre-boot failed`; tomorrow's might be a different soft-gate. The `synthesizeToolFailure` + `flowsFailed[]` pipeline is the right channel — anything that warrants a fix should route through it, not into `warnings[]`.
+
+3. **Cascade-skip semantics need to surface.** When Tier 3 parity / Tier 4 perceptual / Tier 5 walkthrough all skip because the dev-server failed to boot, the verifier reports "clean" if Tiers 1-2 are green. A future hardening would surface "N tiers skipped due to <reason>" in the run-level status — operators would catch this faster.
+
+4. **Protected-files tuple shape is generally useful.** The first-match-tuple pattern (any one of N variants must exist) is what made Phase D safe across 3 backend stacks. Same shape could extend to web stack canonical-entry (e.g. `apps/web/app/page.tsx | apps/web/src/app/page.tsx | apps/web/pages/index.tsx`).
+
+5. **Hoisting declarations for inline-push is cheap.** Phase C's `flowsFailed[]` push needed the declaration ahead of the pre-boot block; hoisting 3 lines (with a comment explaining why) was much cleaner than restructuring the pre-boot block to defer.
+
+### Cross-references
+
+- `investigate-032` — parent investigation; 4 of 5 hypotheses confirmed
+- `bug-091` — the original protected-files-guard precedent (Phase D extends its manifest)
+- `bug-077` — the empirical CSS-pipeline regression that motivated bug-091
+- `bug-040` — scripts/dev.mjs templates (cross-stack canonical spawn shapes)
+- `bug-043` — orchestrator dev-server spawn became stack-aware; Phase C builds on `STACK_BACKEND_SPAWN_COMMAND`
+- `gotribe-tribe-directory` — the empirical motivator project; pending hand-fix re-run is task #19 of this session
