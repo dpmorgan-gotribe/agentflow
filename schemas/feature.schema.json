@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentflow/schemas/feature.schema.json",
   "title": "feature — one post-design unit-of-work with an assigned worktree and agent sequence",
   "description": "A feature is the first-class primitive of tasks.yaml v2. It groups related tasks that share a worktree + branch + agent sequence. The orchestrator (task 035) executes each feature inside its own git worktree by invoking the declared agent_sequence[] in order. Features can skip[] agents that aren't needed for their scope. Parallelism across features is governed by feature.depends_on[]. Refactor-004 introduces this primitive; it does not exist in tasks.yaml v1.",

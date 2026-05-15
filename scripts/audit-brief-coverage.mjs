@@ -32,7 +32,7 @@
  * Authoritative spec: plans/active/feat-023-pm-stage-brief-coverage-assertion.md
  */
 
-import Ajv from "ajv";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -86,7 +86,7 @@ function loadSchema(name) {
   return JSON.parse(readFileSync(join(schemasDir, name), "utf8"));
 }
 
-const ajv = new Ajv({ allErrors: true, strict: false });
+const ajv = new Ajv2020({ allErrors: true, strict: false });
 addFormats(ajv);
 
 function validateOrDie(schemaName, data, label) {

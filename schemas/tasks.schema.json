@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentflow/schemas/tasks.schema.json",
   "title": "tasks.yaml — PM task graph v2 (refactor-004: features[] + agent_sequence[])",
   "description": "Produced by /pm --mode=tasks. The primary input to the feature-graph phase of the orchestrator. Version 2.0 (refactor-004) introduces 'features[]' as a first-class grouping over tasks — each feature carries its own worktree, branch, and agent sequence. Version 1.0 (pre-refactor-004) had a flat 'tasks:' array with a single 'agent' field per task and no first-class feature concept; it is deprecated and the orchestrator will reject v1 tasks.yaml with a guidance error.",

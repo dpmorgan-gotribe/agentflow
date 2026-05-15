@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentflow-phase2/schemas/visual-review-report.schema.json",
   "title": "Visual Review Report",
   "description": "Aggregate output of /visual-review — one per pipeline run. Matches VisualReviewOutput in task 034b.",

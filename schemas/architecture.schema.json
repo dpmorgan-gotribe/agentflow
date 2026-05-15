@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentflow/schemas/architecture.schema.json",
   "title": "architecture.yaml — architecture-as-code produced by /architect (refactor-003 + feat-002)",
   "description": "Written by the architect agent (task 020) post-design-signoff, consumed by PM (task 021), skills-audit --scope=build (task 038), and all builders (028/029/030). Refactor-002/003 fixed the ordering; feat-002 (stack-skill-shelf) introduced `tooling.stack` as the stack-dispatch slot: per-tier stack-slug values that resolve to .claude/skills/agents/{tier}/{stack-slug}/SKILL.md. Builders use tooling.stack to load the right per-stack prompt pack at run time. `additionalProperties: false` only on the stack block (architecture.yaml itself allows consumer-specific fields; stack is locked).",

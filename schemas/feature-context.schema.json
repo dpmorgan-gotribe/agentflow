@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentflow/schemas/feature-context.schema.json",
   "title": "feature-context — lockfile for one open feature worktree (feat-003 git-agent)",
   "description": "Written by git-agent `checkout-feature`, updated by git-agent + every agent in the feature.agent_sequence. Lives at .claude/worktrees/{worktree}/.feature-context.json. Source of truth for worktree state — orchestrator reads it to route conflicts to the last writing agent, to detect stale worktrees on resume, and to decide when emergency-abort is safe. Never delete manually except as part of `just git-cleanup` housekeeping.",

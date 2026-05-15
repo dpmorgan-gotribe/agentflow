@@ -13,7 +13,7 @@
  *   - CI workflow step (future)
  */
 
-import Ajv from "ajv";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
@@ -34,7 +34,7 @@ const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
 const raw = readFileSync(resolve(input), "utf8");
 const parsed = yaml.load(raw);
 
-const ajv = new Ajv({ allErrors: true, strict: false });
+const ajv = new Ajv2020({ allErrors: true, strict: false });
 addFormats(ajv);
 const validate = ajv.compile(schema);
 const ok = validate(parsed);

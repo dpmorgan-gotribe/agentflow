@@ -24,7 +24,7 @@
  *   - future CI workflow step
  */
 
-import Ajv from "ajv";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -56,7 +56,7 @@ const featureSchema = JSON.parse(
 const raw = readFileSync(resolve(input), "utf8");
 const parsed = yaml.load(raw);
 
-const ajv = new Ajv({ allErrors: true, strict: false });
+const ajv = new Ajv2020({ allErrors: true, strict: false });
 addFormats(ajv);
 ajv.addSchema(featureSchema, "./feature.schema.json");
 const validate = ajv.compile(tasksSchema);

@@ -1,5 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentflow/schemas/tasks-coverage.schema.json",
   "title": "tasks-coverage.json — PM's mapping from brief capabilities to tasks.yaml task IDs",
   "description": "Emitted by /pm --mode=tasks between step 7b (file-affinity) and step 8 (write tasks.yaml). Cross-checked by scripts/audit-brief-coverage.mjs. Authoritative spec: plans/active/feat-023-pm-stage-brief-coverage-assertion.md. Zod mirror: packages/orchestrator-contracts/src/brief-coverage.ts.",
