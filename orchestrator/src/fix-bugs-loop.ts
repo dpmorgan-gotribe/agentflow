@@ -854,6 +854,28 @@ export function openPerBugWorktree(args: {
   // Create fresh worktree from current baseBranch HEAD. (bug-061: always
   // reach this path — bug-055 Phase A's else-branch reuse path is gone.)
   mkdirSync(dirname(worktreePath), { recursive: true });
+
+  // bug-115 Patch C (2026-05-16 follow-up) — pre-delete the per-bug
+  // branch if it exists from a prior /fix-bugs run. Without this, the
+  // `git worktree add -b fix/bug-X` below fails with "fatal: a branch
+  // named 'fix/bug-X' already exists" when a prior round left the branch
+  // around (typical when round-N teardown was skipped or the operator
+  // reset bugs.yaml from failed→pending for re-dispatch). bug-061's
+  // teardown branch (lines 766-817) only runs when the worktree dir is
+  // present; for stale-branch-only state it doesn't fire, so add the
+  // pre-delete here unconditionally. -D forces deletion regardless of
+  // ahead/behind tracking; the per-bug branch is ephemeral so this is
+  // safe — any uncommitted work in that branch is already not reachable
+  // from the loop's state machine.
+  try {
+    execSync(`git branch -D ${shellQuote(branch)}`, {
+      cwd: args.projectRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    /* branch did not exist; expected for fresh bugs */
+  }
+
   try {
     execSync(
       `git worktree add ${shellQuote(worktreePath)} -b ${shellQuote(branch)} ${shellQuote(args.baseBranch)}`,
