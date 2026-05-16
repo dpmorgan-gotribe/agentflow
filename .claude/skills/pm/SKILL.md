@@ -173,6 +173,14 @@ For each frontend task whose `screens[]` includes screens whose `screens.json` e
 
 If the screens.json entry lacks `routePattern` (older project pre-bug-025), emit a `tasks.yaml.warnings[]`: `missing-route-pattern: webapp/{screenId} — re-run /screens to populate routePattern, OR add it to docs/screens-manifest.json`. Builders without an authoritative routePattern fall back to `/{screen-id}` heuristic which is wrong for dynamic routes.
 
+**bug-114 upgrade (2026-05-16): missing-route-pattern is HARD-FAILED at gate 4, not warned**. The bug-114 motivator (gotribe-tribe-directory) showed that the warning-only behavior allowed shipping a manifest with `routePattern: null` on every screen — the verifier's perceptual + parity tiers then visited heuristic URLs that 404'd, producing 4 cascading false-positive bugs that the fix-loop spent ~$15 dispatching builders against. After bug-114 ships:
+
+- `/screens` self-verifies that every `files[]` entry has a non-empty `routePattern` BEFORE writing the manifest (cheapest layer; fails at design time).
+- PM re-validates here and ALSO surfaces missing routePattern as an error blocking gate 4 signoff (defense in depth; catches projects where `/screens` was bypassed or the manifest was hand-edited).
+- The `tasks.yaml.warnings[]` entry is renamed to `tasks.yaml.errors[]` for this class; the orchestrator's gate-4 validator treats `errors[]` as a hard block.
+
+Operator unblock for pre-bug-114 projects: re-run `/screens` to regenerate the manifest with populated `routePattern`, OR hand-edit `docs/screens-manifest.json` to add `routePattern` per screen (using the heuristics documented in `/screens` §8).
+
 ### 3. Compose tasks.yaml structure
 
 ```yaml
