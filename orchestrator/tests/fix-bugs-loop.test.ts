@@ -1670,6 +1670,72 @@ describe("bug-055 — orphan worktree + empty-merge guards", () => {
     }
   });
 
+  it("bug-115: openPerBugWorktree pre-flight rejects when project tracks __pycache__/*.pyc", () => {
+    const { repoRoot, cleanup } = setupRepo();
+    try {
+      // Seed the project with a tracked .pyc file under apps/api — the
+      // exact empirical class from gotribe-tribe-directory 2026-05-16.
+      const pycacheDir = join(
+        repoRoot,
+        "apps",
+        "api",
+        "src",
+        "api",
+        "__pycache__",
+      );
+      mkdirSync(pycacheDir, { recursive: true });
+      writeFileSync(
+        join(pycacheDir, "guards.cpython-313.pyc"),
+        // .pyc files have a 16-byte header; content doesn't matter for git.
+        "\x6f\x0d\x0d\x0a\x00\x00\x00\x00stub",
+      );
+      git(repoRoot, "add apps/api/src/api/__pycache__/guards.cpython-313.pyc");
+      git(repoRoot, 'commit -q -m "(test seed) track .pyc to repro bug-115"');
+
+      const result = openPerBugWorktree({
+        projectRoot: repoRoot,
+        bugId: "bug-pyc-blocker",
+        baseBranch: "fix/bugs-yaml-iter",
+      });
+
+      // Pre-flight should reject with the actionable error message.
+      expect(result.ok).toBe(false);
+      if (result.ok) return; // narrow the type for the next assertion
+      expect(result.reason).toMatch(/bug-115/);
+      expect(result.reason).toMatch(/__pycache__/);
+      expect(result.reason).toMatch(/audit-tracked-pycache\.mjs/);
+      // No worktree should have been created.
+      const worktreeDir = join(
+        repoRoot,
+        ".claude",
+        "worktrees",
+        "bug-pyc-blocker",
+      );
+      expect(existsSync(worktreeDir)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("bug-115: openPerBugWorktree proceeds normally when no tracked __pycache__ exists", () => {
+    const { repoRoot, cleanup } = setupRepo();
+    try {
+      // No tracked .pyc — pre-flight is a no-op; existing happy path runs.
+      const result = openPerBugWorktree({
+        projectRoot: repoRoot,
+        bugId: "bug-no-pyc-blocker",
+        baseBranch: "fix/bugs-yaml-iter",
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(`unexpected ok:false: ${result.reason}`);
+      }
+      expect(isRegisteredGitWorktree(repoRoot, result.worktreePath)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("closePerBugWorktree returns ok:false when per-bug branch has 0 commits ahead (empty merge)", () => {
     const { repoRoot, fixupWorktreePath, cleanup } = setupRepo();
     try {
