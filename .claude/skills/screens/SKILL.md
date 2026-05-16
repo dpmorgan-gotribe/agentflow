@@ -14,20 +14,20 @@ Screens are HTML previews (not React) — builders (tasks 029 / 030) convert to 
 
 ## Prerequisites
 
-- `/stylesheet` completed — `packages/ui-kit/` exists at `ui-kit@1.0.0` or higher; Storybook build succeeded
+- `/stylesheet` (slimmed, framework-agnostic — feat-074) completed: `packages/ui-kit/src/tokens/`, `packages/ui-kit/src/styles/` (including `preview-bootstrap.html`, `globals.css`, `tailwind.config.ts`), and `docs/design-system-preview.html` all exist. React primitives + Storybook do NOT exist yet — those land via `/stylesheet-primitives` post-architect.
 - `docs/selected-style.json` exists and validates against `SelectedStyleSchema` (034b)
-- `docs/signoff-stylesheet-{timestamp}.json` exists (gate 3 has sealed the kit)
+- `docs/signoff-stylesheet-{timestamp}.json` exists (gate 3 has sealed the kit; gate-3 reviews the HTML design-system-preview only — Storybook moves to a post-architect review surface)
 - `docs/analysis/{platform}/screens.json` (v3.0) exists per detected platform
 - `docs/analysis/shared/components.md` exists (produced by `/analyze` step 6e) + `.components-plan.json` in the kit (produced by `/stylesheet` step 8.5)
-- Task 022b artifacts live inside `packages/ui-kit/` (CONTRACT.md, eslint-plugin/, scripts/validate-consumer.ts, tsconfig.consumer.json)
+- Task 022b artifacts (CONTRACT.md, eslint-plugin/, scripts/validate-consumer.ts, tsconfig.consumer.json) are **post-architect** outputs of `/stylesheet-primitives`. `/screens` does NOT consume them (they enforce builder discipline against React primitives, which don't yet exist).
 
 ## Inputs (ordered by authority)
 
 1. `docs/selected-style.json` → styleId, iconLibrary, dials, uiKitVersion (implicit via `packages/ui-kit/package.json.version`)
 2. `docs/signoff-stylesheet-{timestamp}.json` → `componentsApproved[]` — the load-bearing allowlist. **Any screen whose `components[]` contains a name NOT in `componentsApproved` is rejected by this skill** (it emits a kit-change-request instead).
 3. `docs/analysis/{platform}/screens.json` (v3.0) per platform → authoritative full screen list with per-screen `navigation`, `components[]`, `icons[]`, `flows[]`. Do NOT read `companion/navigation-schema.json` — that was a user input the Analyst already consumed.
-4. `packages/ui-kit/src/index.ts` → live catalog of exported primitives / patterns / layouts. `packages/ui-kit/.components-plan.json` → map of analyst-name → PascalCase kit-name + custom-pattern set.
-5. `packages/ui-kit/package.json.version` → pinned into every screen's return manifest + sign-off contract.
+4. `packages/ui-kit/.components-plan.json` → map of analyst-name → PascalCase kit-name + custom-pattern set. (Pre-feat-074 this skill also read `packages/ui-kit/src/index.ts` for the live primitive catalog; that barrel is now authored post-architect by `/stylesheet-primitives`. `.components-plan.json` is the authoritative source pre-architect.)
+5. `packages/ui-kit/package.json.version` → pinned into every screen's return manifest + sign-off contract. Pre-feat-074 the version was `1.0.0`; with the split, this skill consumes the `0.1.0-tokens-only` stub written by slimmed `/stylesheet`. `/stylesheet-primitives` later bumps to `0.2.0-primitives` post-architect.
 6. `docs/mockups/style-{K}/manifest.json` for the winning K → identifies screens already rendered at `/mockups` time; those are NOT regenerated (handled by the representative-set subtraction below).
 7. `docs/analysis/shared/components.md` → cross-platform component inventory (for the kit-only check + usage-count reporting).
 

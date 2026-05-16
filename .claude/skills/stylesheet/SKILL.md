@@ -1,16 +1,29 @@
 ---
 name: stylesheet
-description: Assemble the @repo/ui-kit package (tokens + styles + primitives + patterns + layouts + illustrations + Storybook) from the winning style at docs/selected-style.json. Produces the versioned toolkit every downstream agent imports.
+description: Assemble the framework-agnostic core of the @repo/ui-kit package (tokens + globals + fonts + Tailwind config + HTML preview-bootstrap + illustrations) from the winning style at docs/selected-style.json. Pre-architect; no React primitives yet — those land via /stylesheet-primitives after /architect picks the stack.
 allowed-tools: Read Write Bash Grep Glob
 model: inherit
 argument-hint: "[--nanobanana]"
 ---
 
-# /stylesheet — UI Kit assembly
+# /stylesheet — UI Kit assembly (agnostic core)
 
-Third pipeline stage (after `/analyze` + `/mockups` + gate 2, before `/screens`). Consumes the winning style from `docs/selected-style.json` and produces the canonical `@repo/ui-kit` package — a single versioned front-end toolkit (tokens + globals + primitives + patterns + layouts + illustrations + Storybook) that is the binding source of truth for every downstream screen and build agent.
+Third pipeline stage (after `/analyze` + `/mockups` + gate 2, before `/screens`). Consumes the winning style from `docs/selected-style.json` and produces the **framework-agnostic core** of the canonical `@repo/ui-kit` package — tokens, globals, fonts, Tailwind config, HTML preview-bootstrap fragment, illustrations, and a components plan. These outputs are everything `/screens` needs (it writes pure HTML and never touches React); they are also the foundation the sibling `/stylesheet-primitives` skill builds React primitives on top of post-architect.
 
-Skill name is `stylesheet` for historical continuity with earlier scaffolding; the output is a full kit, not just a stylesheet.
+Skill name is `stylesheet` for historical continuity with earlier scaffolding; this skill ships the agnostic half of the kit.
+
+## Companion skill: /stylesheet-primitives (post-architect)
+
+Feat-074 split the original /stylesheet skill into two: this one (pre-architect, agnostic, fast — unblocks `/screens` immediately) and `/stylesheet-primitives` (post-architect, stack-aware, generates React primitives + patterns + layouts + barrel + Storybook for `architecture.yaml.tooling.stack.web_framework`).
+
+- `/stylesheet` (here) ships: `tokens/`, `styles/` (globals/fonts/tailwind.config/preview-bootstrap), `lib/cn`, `lib/cva`, `lib/motion`, optional `illustrations/`, `.components-plan.json`, **stub `package.json`** (exports only the agnostic surface — no React peerDeps yet), `design-system-preview.html`, gate-3 signoff hand-off.
+- `/stylesheet-primitives` (sibling) ships: `src/primitives/*.tsx`, `src/patterns/*.tsx`, `src/layouts/*.tsx`, `src/index.ts` public barrel, the FULL `package.json` (with React peerDeps + Storybook deps), filled-in 022b ESLint rules + validate-consumer, and `storybook-static/`. It auto-fires when `/architect` completes and runs in parallel with gate-5 credentials drop.
+
+`/screens` consumes only the outputs of THIS skill (HTML preview-bootstrap, tokens.json, globals.css, fonts.css, tailwind.config.ts, components plan). It does not need React primitives.
+
+Builders (Mode B `web-frontend-builder` etc.) consume both — they need the React primitives from `/stylesheet-primitives` plus the agnostic tokens/styles from here.
+
+Gate-3 signoff (HITL review) now reviews **only the HTML preview** (`docs/design-system-preview.html`). Storybook moves to a `/stylesheet-primitives`-internal artifact reviewed at build time (no separate gate). User-accepted trade-off per investigate-028.
 
 ## Prerequisites
 
@@ -39,63 +52,55 @@ Skill name is `stylesheet` for historical continuity with earlier scaffolding; t
 
 - `--nanobanana` (boolean flag) — whether the orchestrator-provided pipeline run includes `--flags=nanobanana`. Trust `.mcp.json`'s registration of `image-generator` rather than re-parsing the flag. Only gates the illustrations step; everything else is always code-gen.
 
-## Output: `packages/ui-kit/` structure
+## Output: `packages/ui-kit/` structure (agnostic core — what this skill ships)
 
 ```
 packages/ui-kit/
-├── package.json                # name: "@repo/ui-kit", version follows semver rules (see "Versioning policy")
-├── CHANGELOG.md                # seeded with 1.0.0 release notes on first run; appended per re-run
+├── package.json                # STUB — exports only ./styles/*.css + ./tokens/tokens.json; NO React peerDeps yet. Version pinned at "0.1.0-tokens-only". /stylesheet-primitives rewrites this with full deps + barrel.
+├── CHANGELOG.md                # seeded with 0.1.0 entry on first run; appended per re-run; /stylesheet-primitives appends its 0.2.0+ entry.
 ├── CONTRACT.md                 # from task 022b — consumer rules (left alone if already present)
-├── UI-KIT.md                   # living consumption guide — written by this skill
+├── UI-KIT.md                   # living consumption guide — written by this skill; /stylesheet-primitives appends primitive-import examples
 ├── tsconfig.json
-├── tsconfig.consumer.json      # from 022b — path aliases expose ONLY the public barrel
+├── tsconfig.consumer.json      # from 022b — path aliases expose ONLY the public barrel (barrel itself written by /stylesheet-primitives)
 ├── .input-fingerprint.json     # hash of resolved inputs; enables no-op re-runs
+├── .components-plan.json       # generation plan (canonical + custom) — consumed by /screens AND /stylesheet-primitives
 ├── src/
-│   ├── index.ts                # PUBLIC BARREL — the ONLY import surface for consumers
 │   ├── tokens/
 │   │   ├── tokens.json         # W3C DTCG — source of truth
 │   │   ├── tokens.css          # generated — CSS custom properties + .dark override block
 │   │   ├── tokens.ts           # generated — TypeScript types + runtime constants
 │   │   └── README.md           # naming conventions + dark-mode derivation explanation
 │   ├── styles/
-│   │   ├── globals.css         # resets + base typography + imports tokens.css
+│   │   ├── globals.css         # resets + base typography + imports tokens.css; STARTS with @tailwind base/components/utilities (bug-077 contract)
 │   │   ├── fonts.css           # @font-face declarations (variable fonts where available)
-│   │   └── tailwind.config.ts  # consumes tokens via CSS vars
+│   │   ├── tailwind.config.ts  # consumes tokens via CSS vars
+│   │   └── preview-bootstrap.html  # paste-ready Tailwind Play CDN fragment for /mockups + /screens HTML previews (refactor-007)
 │   ├── lib/
 │   │   ├── cn.ts               # clsx + twMerge
 │   │   ├── cva.ts              # class-variance-authority setup
 │   │   └── motion.ts           # shared motion presets from tokens.motion
-│   ├── primitives/             # ≥20 atomic, single-concept components (see table below)
-│   │   └── {button,input,textarea,select,checkbox,radio,switch,slider,card,dialog,drawer,popover,tooltip,toast,badge,avatar,skeleton,separator,tabs,accordion}/
-│   ├── patterns/               # ≥12 composed, context-aware components (see table below)
-│   │   └── {empty-state,error-state,data-table,form-field,page-header,breadcrumbs,search-combobox,command-palette,file-uploader,filter-bar,pagination,notification}/
-│   ├── layouts/                # ≥5 page-level shells
-│   │   └── {app-shell,split-view,focused-task,marketing,auth}/
 │   ├── icons/
-│   │   ├── generated/          # SVG → React components via svgr
-│   │   └── index.ts            # icon barrel
+│   │   ├── generated/          # SVG → React components via svgr (asset prep; consumed by /stylesheet-primitives' barrel)
+│   │   └── index.ts            # icon barrel (intermediate; re-exported from src/index.ts by /stylesheet-primitives)
 │   └── illustrations/          # optional; gated by --nanobanana
 │       ├── empty-states/
 │       ├── onboarding/
 │       ├── hero/
 │       └── manifest.json       # provenance per illustration (generated | vector | user)
-├── eslint-plugin/              # from task 022b — rules filled in HERE
-│   ├── package.json
-│   ├── index.js
-│   └── rules/
-│       ├── no-deep-imports.js
-│       ├── no-hex-in-className.js
-│       ├── no-arbitrary-tailwind.js
-│       └── no-inline-style-tokens.js
-├── scripts/
-│   └── validate-consumer.ts    # from task 022b — real implementation HERE
-├── .storybook/                 # Storybook config
-│   ├── main.ts
-│   └── preview.ts
-└── storybook-static/           # built Storybook output (produced here)
+├── eslint-plugin/              # SKELETON from /new-project step 5b; rules filled in by /stylesheet-primitives (not here)
+└── scripts/
+    └── validate-consumer.ts    # SKELETON from /new-project step 5b; real implementation in /stylesheet-primitives
 ```
 
-Every primitive/pattern/layout directory ships `{Name}.tsx` + `{Name}.variants.ts` + `{Name}.stories.tsx` + `index.ts`.
+**Outputs NOT shipped by this skill** (deferred to `/stylesheet-primitives`):
+
+- `src/primitives/*/` — React primitives (Button, Input, etc.)
+- `src/patterns/*/` — React patterns (EmptyState, DataTable, etc.)
+- `src/layouts/*/` — React layouts (AppShell, etc.)
+- `src/index.ts` — the public barrel
+- `.storybook/` + `storybook-static/` — Storybook config + build
+- Full `package.json` with React peerDeps + Storybook devDeps
+- Filled-in `eslint-plugin/rules/*.js` + real `scripts/validate-consumer.ts`
 
 ## Steps
 
@@ -111,7 +116,7 @@ Every primitive/pattern/layout directory ships `{Name}.tsx` + `{Name}.variants.t
 
 Compute a SHA-256 hash of: `docs/selected-style.json` bytes + the extracted styles.md block + the resolved asset list (icon-library name, font families, user-asset paths + sizes). Compare against `packages/ui-kit/.input-fingerprint.json`:
 
-- **Match AND** `packages/ui-kit/package.json` exists AND `packages/ui-kit/storybook-static/index.html` exists → no-op re-run. Emit return JSON with `noChange: true, success: true` and exit without regenerating.
+- **Match AND** `packages/ui-kit/package.json` exists AND `packages/ui-kit/src/tokens/tokens.json` exists AND `docs/design-system-preview.html` exists → no-op re-run. Emit return JSON with `noChange: true, success: true` and exit without regenerating. (Note: pre-feat-074 this gate also required `storybook-static/index.html`; Storybook moved to `/stylesheet-primitives` step 7, so it is no longer part of this skill's no-op heuristic.)
 - **Mismatch OR** kit missing → continue to step 3 and eventually overwrite `.input-fingerprint.json` at step 18.
 
 This guarantees byte-identical output for identical inputs.
@@ -386,10 +391,10 @@ The derivation is deterministic. Document it in `packages/ui-kit/src/tokens/READ
 
 **Compute the generation plan** (union):
 
-1. **All 20 canonical primitives** from step 9's table are generated unconditionally (future-proofing; some are unused-now but may be needed by `/screens` retry passes or post-gate-4 edits). Analyst-observed primitives get preview priority.
-2. **All 12 canonical patterns** from step 10's table are generated unconditionally.
-3. **All 5 canonical layouts** from step 11.
-4. **ONE custom pattern per project-specific entry** — generated in step 10.5 (below). Pattern name derived from kebab-case → PascalCase (`wallet-balance` → `WalletBalance`). Lives under `src/patterns/custom/{name}/` with the same `{Name}.tsx` + `.variants.ts` + `.stories.tsx` + `index.ts` shape as canonical patterns.
+1. **All 20 canonical primitives** (12 core + 8 extended — see `/stylesheet-primitives` step 1c/1d for the rosters) are listed in the plan unconditionally (future-proofing; some are unused-now but may be needed by `/screens` retry passes or post-gate-4 edits). Analyst-observed primitives get preview priority. Authoring happens in `/stylesheet-primitives`.
+2. **All 12 canonical patterns** (see `/stylesheet-primitives` step 2a for the table) are listed unconditionally. Authoring happens in `/stylesheet-primitives`.
+3. **All 5 canonical layouts** (see `/stylesheet-primitives` step 3 for the table). Authoring happens in `/stylesheet-primitives`.
+4. **ONE custom pattern per project-specific entry** — listed in the plan and authored later by `/stylesheet-primitives` step 2b. Pattern name derived from kebab-case → PascalCase (`wallet-balance` → `WalletBalance`). The custom pattern eventually lives under `src/patterns/custom/{name}/` with the same `{Name}.tsx` + `.variants.ts` + `.stories.tsx` + `index.ts` shape as canonical patterns.
 
 **Record the plan** in `packages/ui-kit/.components-plan.json`:
 
@@ -419,247 +424,23 @@ The derivation is deterministic. Document it in `packages/ui-kit/src/tokens/READ
 }
 ```
 
-Downstream: step 14's public barrel exports EVERY component in the plan (primitives + patterns + custom patterns + layouts). Step 17's preview renders EVERY component with its analyst-derived screen count (or "Available, no current screens use it" for unused canonicals).
+Downstream: `/stylesheet-primitives` step 5's public barrel exports EVERY component in the plan (primitives + patterns + custom patterns + layouts). This skill's step 17 preview renders EVERY component with its analyst-derived screen count (or "Available, no current screens use it" for unused canonicals) — even though the React surface doesn't exist yet, the HTML preview asserts coverage so gate-3 can sign off on the FULL component set before `/stylesheet-primitives` runs.
 
-### 9. Generate primitives (12 core mandatory + 8 extended on-demand)
+### Steps 9, 10, 11 — MOVED to `/stylesheet-primitives` (feat-074)
 
-Primitives are the kit's non-negotiable surface. **Historical gap (refactor-006):** before this rewrite, this step said "generate ≥20" in the aspirational voice and six projects (hatch, gotribe-v1, mindapp, mindapp-v2, runclub, test-app) shipped tokens-only without a single primitive. Step 18's self-verify is now a hard gate: <12 primitives = stage fails.
+- **Step 9 (Generate primitives — 12 core mandatory + 8 extended on-demand)** → `/stylesheet-primitives` step 1
+- **Step 10 (Generate patterns — 12 canonical + N custom)** → `/stylesheet-primitives` step 2
+- **Step 11 (Generate layouts — minimum 5)** → `/stylesheet-primitives` step 3
 
-**Reference implementation:** hatch-2's `packages/ui-kit/src/primitives/` (shipped by feat-013, commit `b9e0d21`). Use its file layout + `cn`/`cva` utility pattern + variant shapes as the template. ~2100 LOC across 16 primitives + tests is the shipped benchmark.
+These steps are React-specific and bound to `architecture.yaml.tooling.stack.web_framework`, which doesn't exist yet at this pipeline stage. They run automatically after `/architect` completes (in parallel with gate-5 credentials drop) via the sibling skill `/stylesheet-primitives`.
 
-#### 9a. Prerequisite files (author once, re-use across primitives)
+Historical context (refactor-006): before feat-074's split, step 9 said "generate ≥20" in the aspirational voice and six projects (hatch, gotribe-v1, mindapp, mindapp-v2, runclub, test-app) shipped tokens-only without a single primitive. The ≥12 mandatory-primitive hard gate now lives in `/stylesheet-primitives` step 8.
 
-1. **`src/lib/cn.ts`** — clsx + tailwind-merge composition:
-
-   ```ts
-   import { clsx, type ClassValue } from "clsx";
-   import { twMerge } from "tailwind-merge";
-   export function cn(...inputs: ClassValue[]) {
-     return twMerge(clsx(inputs));
-   }
-   ```
-
-2. **`src/lib/cva.ts`** — class-variance-authority re-export:
-
-   ```ts
-   export { cva, cx, type VariantProps } from "class-variance-authority";
-   ```
-
-3. **`package.json` runtime deps** — add: `class-variance-authority ^0.7.1`, `clsx ^2.1.1`, `tailwind-merge ^2.5.5`. DevDeps: `@testing-library/react ^16.1.0`, `@testing-library/jest-dom ^6.6.3`, `vitest ^2.1.8`, `jsdom ^25.0.1`, `@types/react ^19.0.2`. PeerDeps: `react ^19`, `react-dom ^19`.
-
-4. **`vitest.config.ts` + `vitest.setup.ts`** — jsdom environment, import `@testing-library/jest-dom/vitest` in setup.
-
-5. **`tsconfig.json`** — extends the monorepo root with `"jsx": "react-jsx"` and `"moduleResolution": "bundler"`.
-
-#### 9b. Per-primitive file layout (identical for every primitive)
-
-```
-packages/ui-kit/src/primitives/{kebab-name}/
-├── {kebab-name}.tsx         # React component — uses cn() + cva-derived variants
-├── {kebab-name}.variants.ts # cva() call — variant prop definitions (OPTIONAL for single-variant primitives like FormField)
-├── {kebab-name}.test.tsx    # happy-path: 3-5 tests — renders, variants apply, a11y
-└── index.ts                 # export * from "./{kebab-name}"
-```
-
-Then `packages/ui-kit/src/primitives/index.ts` barrel re-exports every primitive directory's index.
-
-#### 9b.1 Mandatory `data-kit-*` attribute forwarding (bug-029 — Phase 0 retrofit, automatic)
-
-**Every primitive's root rendered element MUST forward these attributes**, with no exceptions:
-
-```tsx
-data-kit-component="{ComponentName}"   // PascalCase, matches the export name
-data-kit-variant={variant}             // when the primitive has a `variant` prop
-data-kit-size={size}                   // when the primitive has a `size` prop
-data-kit-props={...}                   // serialized non-styling props (optional, advanced)
-```
-
-Pattern every primitive must follow:
-
-```tsx
-export interface ButtonProps {
-  variant?: "primary" | "secondary" | "ghost" | "destructive";
-  size?: "sm" | "md" | "lg";
-  // ...
-}
-
-export function Button({ variant, size, className, ...rest }: ButtonProps) {
-  return (
-    <button
-      data-kit-component="Button"
-      data-kit-variant={variant}
-      data-kit-size={size}
-      className={cn(buttonVariants({ variant, size }), className)}
-      {...rest}
-    />
-  );
-}
-```
-
-**Why mandatory**: feat-028 visual-parity-verifier extracts component identity by `data-kit-component` attribute. Without forwarding, the verifier reports the primitive as "missing" even when it renders fine — the diff is blind to attribute-less DOM nodes. Six projects pre-bug-029 shipped without retrofit; parity-verify Phase B (feat-035) reported 39+ false-positive "missing primitive" rows on the first run that hit them.
-
-**Same rule applies to layouts** (`packages/ui-kit/src/layouts/{name}/{name}.tsx`) — `AppShell`, `AuthShell`, `MarketingShell`, etc. Layouts are kit-component too.
-
-**Tests must assert presence**:
-
-```tsx
-test("forwards data-kit-component", () => {
-  render(<Button>click</Button>);
-  expect(screen.getByRole("button")).toHaveAttribute(
-    "data-kit-component",
-    "Button",
-  );
-});
-```
-
-This is also added to the §18 self-verify gate (below) — primitives missing the attribute fail the stage.
-
-#### 9c. Core mandatory roster (12 primitives — hard-gate by step 18)
-
-The subagent MUST author a `.tsx` + `.test.tsx` for each of these 12. Skipping any fails the stage.
-
-| Primitive     | Props / variants (minimum)                                                                                                                                                                                  | Style-specific binding from selected-style                                                                                                                                                                                           |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Button**    | `variant: primary \| secondary \| ghost \| destructive` × `size: sm \| md \| lg` + `iconOnly?: boolean` + `loading?: boolean` (sets `aria-busy`). Forwards ref; native `<button>` semantics.                | Radius from `tokens.radius.button` (style-4 → `rounded-full` pill; style-0 → `rounded-md`). Primary hover: if style declares `shadow.offsetHover` (style-4 riso overprint), emit `box-shadow: 4px 4px 0 var(--color-secondary-500)`. |
-| **Input**     | `type: text \| email \| password \| number \| search \| tel \| url` + `hasError?: boolean` (sets `aria-invalid`). Forwards ref.                                                                             | Border `var(--color-border-default)`; focus ring `var(--color-accent-500)`. Radius from `tokens.radius.input` (usually matches Card — sharp for style-4).                                                                            |
-| **Textarea**  | Same as Input + `rows?: number` + auto-resize option.                                                                                                                                                       | Same styling as Input.                                                                                                                                                                                                               |
-| **Select**    | Native `<select>` with `appearance-none` + custom chevron SVG data-URI. Same `hasError` as Input.                                                                                                           | Chevron color = `var(--color-text-primary)`.                                                                                                                                                                                         |
-| **Checkbox**  | `<input type="checkbox">` + custom box. Supports `indeterminate` ref-set.                                                                                                                                   | Checked fill = `var(--color-secondary-500)` (style-4) OR `var(--color-accent-500)` per style characteristic.                                                                                                                         |
-| **Radio**     | `<input type="radio">` + custom circle. Same fill logic as Checkbox.                                                                                                                                        | Circular.                                                                                                                                                                                                                            |
-| **Card**      | `interactive?: boolean` (hover elevates + translates), optional `CardHeader` / `CardBody` / `CardFooter` subcomponents.                                                                                     | Radius from `tokens.radius.card` (style-4 → `rounded-none` sharp corners — the characteristic).                                                                                                                                      |
-| **Badge**     | `variant: default \| accent \| secondary \| highlight` × `size: sm \| md`.                                                                                                                                  | Pill (rounded-full) regardless of style. Text-xs uppercase tracking-wide.                                                                                                                                                            |
-| **Avatar**    | `src?: string` + `alt?: string` + `initials?: string` (auto-computes from alt if absent) + `size: sm \| md \| lg`.                                                                                          | Square (no radius) — matches brutalist/riso aesthetics. Round only if style characteristic declares `avatar.round: true`.                                                                                                            |
-| **Separator** | `orientation: horizontal \| vertical` + `emphasis: subtle \| default \| strong` → maps to `--color-border-{subtle,default,strong}`.                                                                         | —                                                                                                                                                                                                                                    |
-| **Tabs**      | `<Tabs>` root + `<TabsList>` + `<TabsTrigger>` + `<TabsContent>`. `variant: underline \| pills`. Keyboard: ArrowLeft/Right/Up/Down/Home/End. `aria-selected` + `role="tab"`.                                | —                                                                                                                                                                                                                                    |
-| **FormField** | Composite: `<label>` + child (Input/Textarea/Select) + optional `error?: string` + optional `hint?: string`. Uses React.cloneElement to inject `id`, `aria-describedby`, `aria-invalid` on the child input. | —                                                                                                                                                                                                                                    |
-
-#### 9d. Extended roster (8 primitives — ship on-demand per signoff)
-
-Author these ONLY IF the gate-3 signoff's `componentsApproved[]` names them (i.e., the analyst/previous stage flagged them as used). If not referenced, skip — don't silently author. Skipping an unreferenced extended primitive does NOT fail the stage.
-
-| Primitive        | When to ship                                                          |
-| ---------------- | --------------------------------------------------------------------- |
-| **Breadcrumbs**  | when analyst observed breadcrumb navigation on any screen             |
-| **EmptyState**   | when any screen has `empty-state` variant metadata                    |
-| **PageHeader**   | when multi-section pages use a shared page-title + description block  |
-| **Notification** | when the project has contact-form or transactional flows              |
-| **Dialog**       | when any flow includes a modal confirmation                           |
-| **Drawer**       | when mobile-first design implies slide-in nav                         |
-| **Popover**      | when tooltip-rich or dropdown-menu UI is signed off                   |
-| **Skeleton**     | when loading states are explicitly designed (most projects skip this) |
-
-Primitives outside both rosters (Toast, Accordion, Slider, Switch, Tooltip) are authored only on explicit project demand and documented as "extended" in the kit's CHANGELOG.
-
-#### 9e. Shared authoring rules (apply to every primitive)
-
-- **Class composition via `cn()`** — never concatenate className strings by hand; never ad-hoc-switch variants via inline conditionals. Variants go through `cva()` in the companion `.variants.ts` file.
-- **No raw hex or inline styles** — all colors via `var(--color-*)` through Tailwind token classes. Exception: inline `style={{ backgroundImage: "url(data:image/svg+xml;...)" }}` is acceptable for data-URI icons (custom Select chevron, Checkbox mark). Record these as `inline-style-tokens-exempt` in the returned warnings so 022b's ESLint exempts the specific file.
-- **Accessibility minimums per primitive**: focus-visible ring (2px offset), ARIA role where semantic HTML doesn't provide it, keyboard navigation on composites (Tabs arrow keys; RadioGroup arrow keys), `aria-describedby` linkage between FormField and its error/hint, `aria-invalid` on error state, `aria-busy` on Button loading, `aria-current="page"` on Breadcrumbs terminal item.
-- **Default to server components** — only add `"use client"` when the primitive NEEDS interactivity. Button/Input/Card/Badge/Avatar are server-safe. Tabs, Checkbox with ref-set-indeterminate, and FormField with dynamic error linkage need client. Flag in the primitive's JSDoc header so consumers know.
-- **Tests per primitive**: at minimum 3 cases — renders with canonical props, applies variant-class changes, carries expected a11y attribute. Use `@testing-library/react` + `@testing-library/jest-dom` matchers. Mock `next/navigation` + external modules only at the app boundary, not in the kit.
-- **Dark-mode support**: the kit's `tokens.css` defines a `.dark` selector block with the inverted palette. Primitives read CSS vars, so dark-mode works automatically — test does NOT need to exercise both modes; the visual-review stage handles that.
-- **Version bump** — first successful primitive-shipping run bumps `package.json.version` from `0.1.0-tokens-only` to `0.2.0-primitives` (semver minor per "new primitive surface" per the versioning policy below).
-- **`data-kit-*` attribute pass-through (feat-028 visual-parity contract — LOAD-BEARING)** — every primitive's root element MUST emit:
-  - `data-kit-component="<Name>"` — hard-coded inside the primitive (e.g. `<button data-kit-component="Button" {...props}>`); never derived from a prop
-  - `data-kit-variant={variant}` — forwarded from the primitive's `variant` prop (when present)
-  - `data-kit-size={size}` — forwarded from the primitive's `size` prop (when present)
-  - `data-kit-props={JSON.stringify(otherKitProps)}` — optional; emit only when the primitive accepts a non-trivial structural prop (`AppShell`'s `sidebar` slot, `Tabs`'s `orientation`) that the verifier should compare. Keep payloads small (under 200 chars).
-
-  The visual-parity verifier (`/build-to-spec-verify`'s feat-028 stage) extracts these attributes from BOTH the mockup HTML and the rendered built page, then diffs the resulting kit-skeleton trees. Without the attributes, the differ has no structural signal and the verifier degrades to a no-op — every shipped project after feat-028 must preserve them.
-
-  Per-primitive test should assert presence:
-
-  ```tsx
-  test("forwards data-kit-* attributes", () => {
-    render(
-      <Button variant="primary" size="md">
-        Save
-      </Button>,
-    );
-    const btn = screen.getByRole("button");
-    expect(btn).toHaveAttribute("data-kit-component", "Button");
-    expect(btn).toHaveAttribute("data-kit-variant", "primary");
-    expect(btn).toHaveAttribute("data-kit-size", "md");
-  });
-  ```
-
-  When extending the kit (kit-bump or follow-on primitive), preserve this contract — `/skills-audit --scope=build` will warn if a new primitive ships without the three core attributes.
-
-#### 9f. Public barrel (`src/index.ts`)
-
-```ts
-// Primitives (12 mandatory + any shipped extended)
-export * from "./primitives/button";
-export * from "./primitives/input";
-// ... one line per primitive directory
-
-// Utilities
-export { cn } from "./lib/cn";
-export { cva, cx, type VariantProps } from "./lib/cva";
-
-// Runtime token access (the 022b-sanctioned escape hatch)
-export { default as tokens } from "./tokens/tokens.json";
-```
-
-If the TS/Node version rejects direct JSON import, create `src/tokens/index.ts` that reads tokens.json via `import` with `resolveJsonModule: true` in tsconfig, then re-export. Feat-013's hatch-2 kit uses this workaround.
-
-#### 9g. JSDOM gotchas (learned from feat-013)
-
-- **Avatar with `src`** — outer `<span role="img">` + inner `<img>` both match `getByRole("img")`. Tests must disambiguate via `getByAltText()` for the inner img.
-- **Select chevron data-URI** — JSDOM silently drops complex `style={{ backgroundImage: "url(data:image/svg+xml;...)" }}` values, which ALSO clears the entire inline style attribute. Don't test the URL directly; assert the companion `appearance-none` Tailwind class OR skip the test with a comment.
-- **React 19 + vitest** — ensure `esbuild.jsx: "automatic"` in `vitest.config.ts` or JSX transforms to the classic runtime and tests fail with `ReferenceError: React is not defined`.
-
-### 10. Generate patterns (minimum 12 canonical + N custom)
-
-**10a. Canonical patterns.** Each pattern composes primitives (never reinvents atomics). Required:
-
-Each pattern composes primitives (never reinvents atomics). Required:
-
-| Pattern          | Composes                                                            |
-| ---------------- | ------------------------------------------------------------------- |
-| `EmptyState`     | Illustration slot + title + description + action Button             |
-| `ErrorState`     | inline + full-page variants; recovery action required               |
-| `DataTable`      | Table primitive + sort + selection + row skeleton states            |
-| `FormField`      | Label + Input/Textarea/Select + helper + error; Zod schema optional |
-| `PageHeader`     | Title + description + actions slot; breadcrumb slot                 |
-| `Breadcrumbs`    | Separator-driven; accessible                                        |
-| `SearchCombobox` | Input + Popover + keyboard nav                                      |
-| `CommandPalette` | Keyboard-first overlay; inline actions; Cmd/Ctrl+K                  |
-| `FileUploader`   | Drag-drop + file list + progress                                    |
-| `FilterBar`      | Chip row + "Add filter" + active-filter summary                     |
-| `Pagination`     | numbered + prev/next; responsive                                    |
-| `Notification`   | Banner variant; actionable; dismissible                             |
-
-**10b. Custom patterns (project-specific, per `.components-plan.json.customPatternsGenerated[]`).**
-
-For each entry in the components plan's `customPatternsGenerated[]`, generate a custom pattern file tree at `src/patterns/custom/{name}/`:
-
-```
-src/patterns/custom/WalletBalance/
-├── WalletBalance.tsx           # composes primitives (Card, Badge, Skeleton) to render the custom composition
-├── WalletBalance.variants.ts   # CVA variants if the composition has multiple states
-├── WalletBalance.stories.tsx   # Storybook story — MUST include: default / empty / loading / error states
-└── index.ts
-```
-
-**Generation rules for custom patterns:**
-
-1. **Compose — don't atomize.** A custom pattern composes canonical primitives. `WalletBalance` might use `Card` + `Badge` + `Skeleton`. `VoteButton` extends `Button` with a count indicator. Never redefine atomics inside a custom pattern.
-2. **Infer from the analyst's component name + usage context.** `wallet-balance` implies a balance display — render with a monetary figure + token symbol + optional trend indicator. `chat-bubble` implies left/right message alignment with avatar. The generator uses the component name + brief context (§1 / §6 / §12) to choose the sensible composition. When ambiguous, produce a minimal working version and flag in `warnings[]` for human review at gate 3.
-3. **Screen-count drives priority + polish.** High-traffic (≥20 screens) patterns get full variants + all 5 interaction states + dark-mode verified. Low-traffic (<5 screens) patterns get minimum-viable implementations (default state + one-line story).
-4. **Match the selected style's characteristics.** If the style has a dark-mode-default (Style 3 Midnight Press pattern), custom patterns render correctly on that surface. If the dials say `visual_density: 8` (cockpit-dense), custom patterns use tight spacing defaults.
-
-### 11. Generate layouts (minimum 5)
-
-| Layout        | Shape                                                           |
-| ------------- | --------------------------------------------------------------- |
-| `AppShell`    | Sidebar + top bar + main; responsive (mobile: sidebar → drawer) |
-| `SplitView`   | Master-detail; resizable; mobile stacks                         |
-| `FocusedTask` | Single column, `max-w-prose`; centered reading surface          |
-| `Marketing`   | Hero + sections + footer; no chrome                             |
-| `Auth`        | Split-screen or centered card                                   |
+This skill jumps from step 8.5 directly to step 12.
 
 ### 12. `--nanobanana` step (optional, illustrations only)
+
+> _Note (feat-074): Steps 9, 10, 11 have moved to `/stylesheet-primitives`. This skill's flow is now 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 8.5 → 12 → 17 → 18-slimmed._
 
 The `--nanobanana` flag gates only the illustrations step — everything else is always code-gen and runs regardless of flag state.
 
@@ -667,63 +448,48 @@ The `--nanobanana` flag gates only the illustrations step — everything else is
 - **Flag off**: skip generation; provide a small unDraw vector set in `illustrations/` with file headers tokenized on the accent color. `EmptyState` pattern accepts an `illustration` prop that falls back gracefully when no matching illustration exists. Provenance → `vector`.
 - Record every illustration in `packages/ui-kit/src/illustrations/manifest.json` with `{ name, provenance, source, recoloredTo }`.
 
-### 13. Fill in 022b artifacts
+### Steps 13, 14, 16 — MOVED to `/stylesheet-primitives` (feat-074)
 
-Skeletons were already placed inside `packages/ui-kit/` at `/new-project` step 5b. This step replaces the stubs with real implementations:
+- **Step 13 (Fill in 022b artifacts — real eslint-plugin rules + validate-consumer.ts)** → `/stylesheet-primitives` step 4
+- **Step 14 (Generate `src/index.ts` public barrel)** → `/stylesheet-primitives` step 5
+- **Step 16 (Build Storybook)** → `/stylesheet-primitives` step 7
 
-- **`packages/ui-kit/eslint-plugin/rules/*.js`** — real rule implementations for the four rules (`no-deep-imports`, `no-hex-in-className`, `no-arbitrary-tailwind`, `no-inline-style-tokens`)
-- **`packages/ui-kit/scripts/validate-consumer.ts`** — real grep-validator replacing 027's exit-0 stub. Targets `apps/*/src/**/*.{ts,tsx,js,jsx}` (not the kit itself)
-- **`packages/ui-kit/tsconfig.consumer.json`** — path aliases exposing only the public barrel (`@repo/ui-kit` → `./packages/ui-kit/src/index.ts`). No subpath wildcards
-- **Do NOT touch** `packages/ui-kit/CONTRACT.md` — `/new-project` step 5b wrote it from the factory template; it's project-invariant and safe to leave alone across re-runs
+These steps depend on the React primitives, patterns, and layouts shipped by `/stylesheet-primitives`; they can't run pre-architect.
 
-### 14. Generate `src/index.ts` — the public barrel
+### 15. Write stub `package.json` (agnostic surface only)
 
-The ONLY import surface for consumers. Exports:
-
-- Every primitive (named export — `Button`, `Input`, `Textarea`, ...)
-- Every pattern (named export — `EmptyState`, `ErrorState`, `DataTable`, ...)
-- Every layout (named export — `AppShell`, `SplitView`, ...)
-- The `tokens` object (escape-hatch runtime read; from `tokens.ts`)
-- `cn`, `cva` utilities (from `lib/`)
-- Icon named exports from `icons/index.ts`
-- Nothing else — no internal paths re-exported, no wildcards beyond the icon barrel
-
-### 15. Write `package.json`
+This skill ships a **stub** `package.json` that exposes only the agnostic surface — tokens + CSS. The full `package.json` with React peerDeps + Storybook devDeps + `validate-consumer` script is authored by `/stylesheet-primitives` step 6 once the stack is known.
 
 ```json
 {
   "name": "@repo/ui-kit",
-  "version": "1.0.0",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "version": "0.1.0-tokens-only",
+  "main": "./src/tokens/tokens.json",
   "exports": {
-    ".": "./src/index.ts",
     "./styles/globals.css": "./src/styles/globals.css",
     "./styles/fonts.css": "./src/styles/fonts.css",
-    "./eslint-plugin": "./eslint-plugin/index.js"
-  },
-  "scripts": {
-    "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build -o storybook-static",
-    "validate-consumer": "tsx scripts/validate-consumer.ts 'apps/*/src/**/*.{ts,tsx,js,jsx}'"
+    "./styles/preview-bootstrap.html": "./src/styles/preview-bootstrap.html",
+    "./tokens/tokens.json": "./src/tokens/tokens.json",
+    "./tokens/tokens.css": "./src/tokens/tokens.css"
   },
   "dependencies": {
-    "clsx": "...",
-    "tailwind-merge": "...",
-    "class-variance-authority": "..."
-  },
-  "peerDependencies": { "react": ">=18", "react-dom": ">=18" },
-  "devDependencies": { "@storybook/react-vite": "...", "...": "..." }
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^2.5.5",
+    "class-variance-authority": "^0.7.1"
+  }
 }
 ```
 
-The `exports` field restricts subpath access to `./styles/*.css` + `./eslint-plugin`. No other subpaths resolvable. Deep imports will fail at the module-resolution layer — enforced BEFORE the ESLint plugin fires, double-layered defense per 022b.
+Rationale:
 
-### 16. Build Storybook
+- **No `"."` main export** yet — there's no public barrel (`src/index.ts`) at this stage. `/stylesheet-primitives` step 5 authors the barrel and step 6 rewrites this file to add the `"."` export.
+- **No React peerDeps** — that's stack-aware (`web_framework` might be `react-next`, future `solid-start`, future `svelte-kit`, etc.). `/stylesheet-primitives` adds the right peerDeps per architecture.
+- **No Storybook scripts/devDeps** — Storybook is React-bound and added in `/stylesheet-primitives` step 7.
+- **Subpath exports are agnostic** — `globals.css`, `fonts.css`, `preview-bootstrap.html`, `tokens.json`, `tokens.css` are all framework-free and CAN be consumed by `/screens` (HTML output) right now.
 
-Run `pnpm build-storybook` via Bash. Static output lives at `packages/ui-kit/storybook-static/`. This is the **visual contract** the HITL gate (036 gate 3) serves for review and downstream reviewers check.
+The version `0.1.0-tokens-only` is a sentinel: `/stylesheet-primitives` bumps it to `0.2.0-primitives` (or higher) after authoring the barrel.
 
-If Storybook build fails, capture the error, write `docs/design-system-gaps.md` with the failure details, and emit return JSON with `success: false` + the error.
+**Note on `exports` field as a 022b invariant**: The full `package.json` MUST restrict subpath access (no deep imports beyond `./styles/*` + `./eslint-plugin`). This stub satisfies that contract trivially (no React surface to import deeply yet); `/stylesheet-primitives` step 6 carries the full enforcement forward.
 
 ### 17. Generate `docs/design-system-preview.html`
 
@@ -847,45 +613,30 @@ The outline-on-hover + dashed rectangle is a universal affordance: hovering reve
 
 **Interaction smoke-check before emitting:** open the file in a headless browser (via the `chrome-devtools` MCP in the `ui-designer`-scoped set) and click each trigger (Open Dialog / Open Drawer / fire Toast). Confirm no JS errors in console. If the MCP isn't available at runtime, skip with a `warnings[]` note.
 
-### 18. Finalize + verify
+### 18. Finalize + verify (slimmed — agnostic outputs only; primitives gate moved to `/stylesheet-primitives` step 8)
 
-- Write `packages/ui-kit/CHANGELOG.md` entry — `1.0.0` release lists every primitive, pattern, layout, token scale, dial values
-- Write `packages/ui-kit/UI-KIT.md` — living consumption guide (import examples, dark-mode toggle, dial-change impact summary)
-- Write `packages/ui-kit/.input-fingerprint.json` — hash from step 2 + metadata (regeneration date, resolved-inputs summary)
-- **Retrofit `data-kit-component` safety net (bug-029 — Phase B, automatic):**
+This skill's verify covers ONLY the agnostic surface it ships. The ≥12-mandatory-primitive HARD GATE moves with the primitives — see `/stylesheet-primitives` step 8.
 
-  ```bash
-  node scripts/retrofit-ui-kit-data-attrs.mjs .
-  ```
-
-  Run from the project root. The codemod walks `packages/ui-kit/src/{primitives,layouts}/**/*.tsx`, finds every exported component, and inserts `data-kit-component="<Name>"` on its first DOM-rendering JSX root if absent. It is **idempotent** — running on a kit that already conforms is a no-op. Capture the script's summary line in the return JSON's `warnings[]` if any rows report `applied=` (it means the LLM authoring step in §9b.1 missed at least one primitive — log it so the contract drift is observable, not silent). Edge case the script cannot auto-fix: components that render via `React.createElement(...)` instead of JSX — those are flagged as `no-jsx` and need manual attribute injection (rare; ~1% of generated primitives).
-
-- Run `pnpm typecheck` in the monorepo
-- Run `pnpm lint` against the kit (the ESLint plugin is disabled on kit internals via `overrides` per 022b — it applies to `apps/*` only)
-- `validate-consumer` is NOT run against the kit itself — its purpose is to scan `apps/**`, which don't exist yet at this stage
-- **Primitives-shipped HARD GATE (refactor-006)** — count non-test `.tsx` files under `packages/ui-kit/src/primitives/`:
-
-  ```bash
-  node scripts/verify-024.mjs --primitives-count
-  # OR inline:
-  find packages/ui-kit/src/primitives -maxdepth 3 -name '*.tsx' -not -name '*.test.tsx' 2>/dev/null | wc -l
-  ```
-
-  **Threshold: ≥12 core primitives** (the mandatory roster from step 9c). If below threshold, the stage **fails** — return `success: false` with abort-reason:
-
-  ```
-  primitives-shipped-gate-failed: authored N of 12 mandatory core primitives.
-  Missing: [list-from-roster-minus-shipped].
-  gate-3 componentsApproved[] cannot be approved until the core roster ships —
-  downstream builders have no import surface. Re-author missing primitives then
-  re-run /stylesheet.
-  ```
-
-  Orchestrator (035) retries via Layer 5 stage-level retry (up to 3 attempts). After exhaustion, human review via normal failed-stage escalation.
-
-  **History (what this gate prevents):** before refactor-006, this was a soft warning. Six projects (hatch, gotribe-v1, mindapp, mindapp-v2, runclub, test-app) shipped tokens-only — hatch-2 surfaced the gap at build time when builders fell back to plain HTML + Tailwind. Bug-001 Layer B (feat-013) retro-shipped hatch-2's kit; refactor-006 closes the systemic hole.
-
-- Emit return JSON (include `primitivesShipped: string[]` — the kebab-names of every primitive directory under `src/primitives/`)
+- Write `packages/ui-kit/CHANGELOG.md` entry — `0.1.0-tokens-only` release lists the token scales + dial values + agnostic assets shipped (illustrations manifest, fonts, icons-deduped). `/stylesheet-primitives` appends its `0.2.0-primitives` entry on its successful run.
+- Write `packages/ui-kit/UI-KIT.md` — living consumption guide. At this stage: CSS-import examples (`@repo/ui-kit/styles/globals.css`, `/fonts.css`), Tailwind config import, preview-bootstrap consumption pattern, dial-change impact summary. `/stylesheet-primitives` appends primitive-import examples once the barrel exists.
+- Write `packages/ui-kit/.input-fingerprint.json` — hash from step 2 + metadata (regeneration date, resolved-inputs summary). The fingerprint covers only this skill's resolved inputs; `/stylesheet-primitives` writes its own complementary fingerprint.
+- Verify presence of every agnostic deliverable (abort with `success: false` if any are missing):
+  - `packages/ui-kit/src/tokens/tokens.json` (W3C DTCG)
+  - `packages/ui-kit/src/tokens/tokens.css` (with `.dark` block)
+  - `packages/ui-kit/src/tokens/tokens.ts`
+  - `packages/ui-kit/src/styles/globals.css` (starts with `@tailwind base/components/utilities` — bug-077 invariant)
+  - `packages/ui-kit/src/styles/fonts.css`
+  - `packages/ui-kit/src/styles/tailwind.config.ts`
+  - `packages/ui-kit/src/styles/preview-bootstrap.html`
+  - `packages/ui-kit/src/lib/cn.ts`, `cva.ts`, `motion.ts`
+  - `packages/ui-kit/.components-plan.json`
+  - `packages/ui-kit/package.json` (stub form per step 15)
+  - `docs/design-system-preview.html` (from step 17)
+- Run `pnpm typecheck` in the monorepo IF a tsconfig + node_modules already exist at project root. The agnostic surface has no React imports, so typecheck should pass with `noEmit`. If typecheck fails for reasons OUTSIDE this skill's outputs (e.g. an upstream package has TS errors), record as warning but don't fail.
+- `validate-consumer` is NOT run against the kit itself — its purpose is to scan `apps/**`, which don't exist yet at this stage. The real implementation lands via `/stylesheet-primitives` step 4.
+- **Bug-077 invariant check** — grep `packages/ui-kit/src/styles/globals.css` for `@tailwind base` `@tailwind components` `@tailwind utilities`. If any of the three directives is missing, fail with `globals-css-missing-tailwind-directives` — this is a load-bearing contract that production consumers' Tailwind utility classes depend on.
+- **No `data-kit-component` retrofit yet** — that codemod targets `packages/ui-kit/src/{primitives,layouts}/**/*.tsx` which don't exist at this stage. Moved to `/stylesheet-primitives` step 8.
+- Emit return JSON per the "Return JSON" section below.
 
 ## Full asset-download wave (second of two)
 
@@ -903,17 +654,17 @@ This is the SECOND MCP download wave — partial happened during `/mockups`; ful
 
 ## Versioning policy
 
-- First successful run locks `ui-kit@1.0.0`
-- Re-runs of `/stylesheet` bump according to what changed:
-  - Token value change (hex, font family, scale value) → **major** (e.g. `2.0.0`)
-  - New primitive / new pattern / new layout / new variant → **minor** (`1.1.0`)
-  - Bug fix / illustration swap / story addition → **patch** (`1.0.1`)
-- The skill writes a `packages/ui-kit/CHANGELOG.md` diff entry per re-run
-- Downstream apps pin a specific version in their `package.json`; a version bump requires deliberate consumer update, not a silent rebuild
+- First successful `/stylesheet` run locks `@repo/ui-kit@0.1.0-tokens-only` (sentinel — flags that primitives haven't shipped yet).
+- `/stylesheet-primitives` bumps to `0.2.0-primitives` on its first successful run. From there, semver applies normally per its versioning policy.
+- Re-runs of THIS skill (`/stylesheet`) bump according to what changed in the agnostic surface:
+  - Token value change (hex, font family, scale value) → **major-equivalent** prerelease (`0.1.0` → `0.1.1-tokens-only` if patch-level; `0.1.0` → `0.2.0-tokens-only` if dial change). The prerelease tag stays until `/stylesheet-primitives` runs.
+  - Illustration swap / preview-bootstrap shape change → **patch**.
+- The skill writes a `packages/ui-kit/CHANGELOG.md` diff entry per re-run; `/stylesheet-primitives` appends its own.
+- Downstream apps pin a specific version in their `package.json`; a version bump requires deliberate consumer update, not a silent rebuild.
 
 ## Re-run idempotency
 
-Running `/stylesheet` twice with the same `docs/selected-style.json` and unchanged inputs must produce byte-identical kit output (same token values, same component source, same Storybook build). Step 2's fingerprint check enforces this.
+Running `/stylesheet` twice with the same `docs/selected-style.json` and unchanged inputs must produce byte-identical agnostic-surface output (same token values, same globals.css, same preview-bootstrap fragment, same illustrations manifest, same design-system-preview.html). Step 2's fingerprint check enforces this.
 
 ## Return JSON
 
@@ -921,14 +672,8 @@ Running `/stylesheet` twice with the same `docs/selected-style.json` and unchang
 {
   "success": true,
   "styleId": "style-03",
-  "kitVersion": "1.0.0",
+  "kitVersion": "0.1.0-tokens-only",
   "tokenCount": 128,
-  "primitiveCount": 20,
-  "patternCount": 12,
-  "layoutCount": 5,
-  "primitivesList": ["button", "input", "textarea", "..."],
-  "patternsList": ["empty-state", "data-table", "..."],
-  "layoutsList": ["app-shell", "split-view", "..."],
   "iconCount": 86,
   "illustrationsCount": 5,
   "nanobananaUsed": false,
@@ -938,8 +683,9 @@ Running `/stylesheet` twice with the same `docs/selected-style.json` and unchang
   "assetsDownloaded": { "icons": 72, "fonts": 8, "images": 4 },
   "assetsDedupedFromMockups": 14,
   "tokensPackagePath": "packages/ui-kit/",
-  "storybookPath": "packages/ui-kit/storybook-static/index.html",
   "previewPath": "docs/design-system-preview.html",
+  "componentsPlanPath": "packages/ui-kit/.components-plan.json",
+  "previewBootstrapPath": "packages/ui-kit/src/styles/preview-bootstrap.html",
   "budgetExhausted": false,
   "gapsPath": null,
   "warnings": [],
@@ -947,115 +693,116 @@ Running `/stylesheet` twice with the same `docs/selected-style.json` and unchang
 }
 ```
 
-Matches `StylesheetOutput` in task 034b.
+Matches the agnostic-surface subset of `StylesheetOutput` in task 034b. The primitives/patterns/layouts/storybook fields are emitted by `/stylesheet-primitives` and merged downstream where consumers read both return JSONs.
 
 ## Output contract summary
 
-- `packages/ui-kit/` exists and `pnpm typecheck` passes
-- `packages/ui-kit/src/index.ts` exports every primitive, pattern, layout; no internal paths
-- `packages/ui-kit/storybook-static/` is built
+- `packages/ui-kit/` exists (agnostic-surface populated per step-18 invariants)
+- `packages/ui-kit/src/tokens/` + `src/styles/` + `src/lib/` + optional `src/illustrations/` + optional `src/icons/` present
+- `packages/ui-kit/src/styles/globals.css` starts with `@tailwind base/components/utilities` (bug-077)
+- `packages/ui-kit/src/styles/preview-bootstrap.html` present (refactor-007 contract for `/mockups` + `/screens`)
+- `packages/ui-kit/.components-plan.json` present (consumed by `/screens` AND `/stylesheet-primitives`)
+- `packages/ui-kit/package.json` is the stub form (no React peerDeps yet)
 - `packages/ui-kit/CHANGELOG.md` entry written
-- `docs/design-system-preview.html` covers every primitive × variant + pattern × state + layout × breakpoint
+- `docs/design-system-preview.html` is the gate-3 review artifact (HTML preview — no Storybook yet)
 - `docs/design-system-gaps.md` exists ONLY when budget was exhausted mid-run
-- Return JSON matches `StylesheetOutput` schema
+- Return JSON matches the agnostic subset of `StylesheetOutput` schema
 
 ## Post-stage verification
 
-Orchestrator invokes `/verify-html` (task 032b) against `docs/design-system-preview.html`. Layer 6 catches mechanical issues. HITL gate 3 (task 036) runs against the Storybook build — human previews the kit before `/screens` starts composing from it.
+Orchestrator invokes `/verify-html` (task 032b) against `docs/design-system-preview.html`. Layer 6 catches mechanical issues. HITL gate 3 (task 036) runs against the HTML preview ONLY — human previews tokens + chrome + composition density + illustrations. Storybook is no longer part of gate 3 (per feat-074); it ships post-architect via `/stylesheet-primitives` step 7 and is reviewed implicitly by builders at build time, not by an HITL gate.
 
 ## Error handling
 
 - `docs/selected-style.json` missing → abort: "`/stylesheet` requires `docs/selected-style.json`. Run `/mockups` first and complete gate 2."
 - `SelectedStyleSchema` fails → abort with Zod error path and exit non-zero
 - `packages/ui-kit/` skeleton missing → abort: "`packages/ui-kit/` skeleton not found. Run `/new-project <name> --force` to refresh scaffold."
-- `pnpm build-storybook` fails → write `docs/design-system-gaps.md`, emit `{ success: false, ...errors }`; do NOT advance the pipeline
 - `--nanobanana` budget exhausted mid-download → write partial kit + `docs/design-system-gaps.md`, emit `budgetExhausted: true` in return JSON; orchestrator decides whether to retry with higher budget or surface to human
 - `tokens.json` fails W3C DTCG schema validation → abort; either inputs were malformed or the generator has a bug
 - `node-vibrant` fallback invoked BUT styles.md + brand-extracted.yaml both have complete palettes → abort; indicates a resolution-order bug. Fix step 3 before rerunning
-- `pnpm typecheck` fails on the kit → abort; surface TypeScript errors in return JSON's `warnings[]` and set `success: false`
-- `package.json.exports` field missing or permissive (allows deep imports) → abort; the restricted exports are a load-bearing 022b invariant
+- `pnpm typecheck` fails on the kit's agnostic surface (TS errors in tokens.ts / lib/\*.ts) → abort; surface TypeScript errors in return JSON's `warnings[]` and set `success: false`
+- `globals.css` missing `@tailwind base/components/utilities` directives → abort with `globals-css-missing-tailwind-directives` (bug-077 invariant)
+- `preview-bootstrap.html` missing or its inline `tailwind.config` block drifts from `tailwind.config.ts` → abort with `preview-bootstrap-drift` (refactor-007 invariant)
 
 ## Integration Points
 
 - **Task 018** (`/scan-assets`): produces `docs/asset-inventory.json` — prerequisite (user assets have precedence)
 - **Task 019** (`/analyze`): produces `docs/analysis/shared/styles.md` + `assets.md` — authoritative for tokens
 - **Task 022** (ui-designer agent): invokes this skill with the winning style context
-- **Task 022b** (UI Kit contract): consumer-contract artifacts land inside `packages/ui-kit/` HERE (real implementations, not 027's stubs)
+- **Task 022b** (UI Kit contract): consumer-contract artifact SKELETONS land inside `packages/ui-kit/` via `/new-project` step 5b; real implementations land via `/stylesheet-primitives` step 4 (NOT this skill — they reference React semantics)
 - **Task 023** (`/mockups`): writes `docs/selected-style.json` (or gate 2 server does) + per-style manifest used for de-dup
-- **Task 025** (`/screens`): composes screens from this kit ONLY; must pin the exact kit version
-- **Task 025b** (`/visual-review`): LLM-critiques screens composed from this kit
+- **Task 025** (`/screens`): composes screens from THIS skill's outputs ONLY (tokens.json, globals.css, preview-bootstrap.html, .components-plan.json); writes pure HTML; does NOT need primitives. Pins the kit version emitted here.
+- **Task 025b** (`/visual-review`): LLM-critiques screens composed from this skill's tokens + chrome
 - **Task 026** (Turborepo + pnpm workspace): `/new-project` step 5b scaffolds the monorepo baseline that this kit lives inside
-- **Task 027** (shared packages skeleton): `/new-project` step 5b scaffolds empty `packages/ui-kit/` skeleton that this skill populates
+- **Task 027** (shared packages skeleton): `/new-project` step 5b scaffolds empty `packages/ui-kit/` skeleton that this skill populates (agnostic surface) and `/stylesheet-primitives` later populates (React surface)
 - **Task 032b** (`/verify-html`): validates `docs/design-system-preview.html`
-- **Task 034b** (schemas): `StylesheetOutput` must cover the return-JSON shape
-- **Task 035** (orchestrator): invokes this skill after mockup gate 2 closes; propagates `--nanobanana` state
-- **Task 036** (HITL gates): gate 3 serves the Storybook build for human design-system review
+- **Task 034b** (schemas): `StylesheetOutput` covers the union of this skill's + `/stylesheet-primitives`' return JSONs
+- **Task 035** (orchestrator): invokes this skill after mockup gate 2 closes; propagates `--nanobanana` state. Per feat-074, the orchestrator ALSO dispatches `/stylesheet-primitives` post-/architect in parallel with gate-5
+- **Task 036** (HITL gates): gate 3 serves the HTML preview (`docs/design-system-preview.html`) for human design-system review — Storybook moved out of gate 3 (feat-074)
 - **Task 041** (MCP registration): provisions `icons8`, `unsplash`, conditionally `image-generator` at `/new-project` step 5b
+- **feat-074** (factory): splits the original `/stylesheet` skill into pre-architect (this) + post-architect (`/stylesheet-primitives`); enables parallel project creation
 
 ## Related skills / files
 
-- `.claude/skills/stylesheet/SKILL.md` — this file
+- `.claude/skills/stylesheet/SKILL.md` — this file (agnostic core, pre-architect)
+- `.claude/skills/stylesheet-primitives/SKILL.md` — sibling skill (React primitives, post-architect)
 - `.claude/skills/mockups/SKILL.md` — preceding stage; de-dup partner
+- `.claude/skills/screens/SKILL.md` — downstream consumer of this skill's HTML preview-bootstrap + tokens + components-plan
 - `.claude/agents/ui-designer.md` — the agent whose identity this skill embodies
 - `.claude/templates/ui-kit-contract.md` — 022b factory template for `CONTRACT.md`
 - `.claude/templates/ui-kit-tsconfig-consumer.json` — 022b factory template for path aliases
 - `.claude/templates/ui-kit-validate-consumer.ts` — 022b factory template for the grep validator
-- `.claude/templates/ui-kit-eslint-plugin/` — 022b factory templates for the four ESLint rules
+- `.claude/templates/ui-kit-eslint-plugin/` — 022b factory templates for the four ESLint rules (rules filled in by `/stylesheet-primitives` step 4)
 - `scaffolding/09-034b-output-contract-zod-schemas.md` — defines `StylesheetOutput` + `SelectedStyleSchema`
-- `scaffolding/21-035-orchestrator-core.md` — invokes this skill; post-stage retry logic
-- `scaffolding/22-036-hitl-gates.md` — gate 3 (design-system review) serves Storybook
+- `scaffolding/21-035-orchestrator-core.md` — invokes this skill; post-stage retry logic; feat-074 added the `/stylesheet-primitives` auto-fire post-architect
+- `scaffolding/22-036-hitl-gates.md` — gate 3 (design-system review) serves the HTML preview (post-feat-074)
 - `scaffolding/11-041-mcp-server-registration.md` — `.mcp.json` provisioning
+- `plans/active/feat-074-stylesheet-split-and-parallelize.md` — the plan that split the skill
 
 ## HITL gate 3 backing-server contract (task 036 must honor)
 
-The Storybook build + `docs/design-system-preview.html` emitted here are the artifacts gate 3 reviews. The gate server:
+The artifact gate 3 reviews is **`docs/design-system-preview.html` ONLY** — the HTML preview generated by step 17. Storybook is no longer part of gate 3 (per feat-074); the React Storybook build moves to `/stylesheet-primitives` step 7, which runs post-architect outside the gate-3 review window. The user accepted this trade-off so the design-pipeline can finish without waiting for React-specific authoring (option 1 of 3 in investigate-028).
 
-1. Serves `storybook-static/` + `design-system-preview.html` over HTTP (port assigned dynamically)
+The gate server:
+
+1. Serves `docs/design-system-preview.html` (and its referenced `/assets/` + `packages/ui-kit/src/styles/preview-bootstrap.html` resources) over HTTP (port assigned dynamically)
 2. Surfaces a "Approve kit" / "Request changes" control
-3. On approve → write `docs/signoff-stylesheet-{timestamp}.json` with `{ kitVersion, approvedAt, approvedBy, inputFingerprint, componentsApproved: [...] }`. The `componentsApproved` array is the FULL list of component names (from `.components-plan.json`) rendered on the preview. This is the handshake `/screens` reads to enforce: **any screen whose `components[]` array contains a name NOT in `componentsApproved` is rejected**. Prevents unreviewed components leaking into composed screens.
-4. On "Request changes" → write `docs/design-system-feedback.md` with the reviewer's notes; orchestrator re-invokes this skill with the feedback as input context. If the reviewer objects to a specific component's look-and-feel, gate 3 can emit `componentsRejected: ["wallet-balance", ...]` which forces re-generation of only those patterns in the next `/stylesheet` run.
+3. On approve → write `docs/signoff-stylesheet-{timestamp}.json` with `{ kitVersion, approvedAt, approvedBy, inputFingerprint, componentsApproved: [...] }`. The `componentsApproved` array is the FULL list of component names (from `.components-plan.json`) rendered on the preview. This is the handshake `/screens` reads to enforce: **any screen whose `components[]` array contains a name NOT in `componentsApproved` is rejected**. Prevents unreviewed components leaking into composed screens. The same signoff is consumed by `/stylesheet-primitives` to decide which extended primitives to author (only those in `componentsApproved[]`).
+4. On "Request changes" → write `docs/design-system-feedback.md` with the reviewer's notes; orchestrator re-invokes this skill with the feedback as input context. If the reviewer objects to a specific component's look-and-feel, gate 3 can emit `componentsRejected: ["wallet-balance", ...]` which forces re-generation of only those entries in the next `/stylesheet` run.
 
 Server lifecycle: started when orchestrator enters gate 3, killed when signoff is written. Port assigned dynamically; orchestrator passes the base URL to the reviewer.
 
 ## Acceptance criteria
 
-- [ ] `.claude/skills/stylesheet/SKILL.md` exists with the frontmatter above
+- [ ] `.claude/skills/stylesheet/SKILL.md` exists with the frontmatter above (agnostic-core scope)
 - [ ] Reads `docs/selected-style.json` and validates against `SelectedStyleSchema`
-- [ ] Produces `packages/ui-kit/` matching the directory structure above
+- [ ] Produces `packages/ui-kit/` matching the agnostic-core directory structure above
 - [ ] `tokens.json` is W3C DTCG format with all required top-level keys (color / typography / spacing / radius / shadow / motion / zIndex)
-- [ ] `tokens.css` + `tokens.ts` + `tailwind.config.ts` are generated, not hand-authored
+- [ ] `tokens.css` + `tokens.ts` + `tailwind.config.ts` + `preview-bootstrap.html` are generated, not hand-authored
+- [ ] `globals.css` starts with `@tailwind base/components/utilities` (bug-077 invariant)
 - [ ] Dial → token mapping rules applied: `visual_density` drives spacing defaults, `motion_intensity` drives duration defaults, `design_variance` drives layout-template defaults
-- [ ] ≥20 primitives present, each with `.tsx` + `.variants.ts` + `.stories.tsx` + `index.ts`
-- [ ] Every primitive has the required variants from the table
-- [ ] ≥12 patterns present, composed from primitives (never reinvented)
-- [ ] ≥5 layouts present
-- [ ] Every component has all 5 interaction states + dark-mode via CSS variables
-- [ ] Accessibility: proper ARIA, keyboard navigation, focus management, contrast AA minimum; axe checks pass in Storybook
-- [ ] CVA used for every variant definition (not ad-hoc `className` switching)
+- [ ] `.components-plan.json` written with the full canonical + custom union (consumed by `/screens` AND `/stylesheet-primitives`)
 - [ ] `--nanobanana` gates only the `illustrations/` step; everything else is always code-gen
 - [ ] Illustrations fall back to unDraw vectors when `--nanobanana` is off
-- [ ] 022b artifacts (`CONTRACT.md`, `eslint-plugin/`, `scripts/validate-consumer.ts`, `tsconfig.consumer.json`) land inside `packages/ui-kit/` with real implementations
-- [ ] `src/index.ts` is the only public surface; no internal paths re-exported
-- [ ] `package.json` `exports` field restricts subpath access to `./styles/*.css` + `./eslint-plugin`
-- [ ] `package.json` version starts at `1.0.0` on first run; re-runs follow semver bump rules
-- [ ] Storybook build succeeds; `storybook-static/` populated
-- [ ] `docs/design-system-preview.html` covers every primitive × variant + pattern × state + layout × breakpoint
+- [ ] `package.json` stub form: version `0.1.0-tokens-only`, exports only `./styles/*` + `./tokens/*`; no React peerDeps, no Storybook scripts (those land via `/stylesheet-primitives`)
+- [ ] `docs/design-system-preview.html` covers every analyst-observed primitive + pattern + layout + custom component (verified by grep against `.components-plan.json`)
 - [ ] Full asset-download wave respects budget; on exhaustion writes `docs/design-system-gaps.md` + partial kit
 - [ ] De-duplicates against `docs/mockups/style-{K}/manifest.json.assets[]`
-- [ ] Re-run with unchanged inputs is a no-op (`noChange: true` in return JSON; byte-identical kit)
+- [ ] Re-run with unchanged inputs is a no-op (`noChange: true` in return JSON; byte-identical agnostic surface)
 - [ ] `packages/ui-kit/CHANGELOG.md` entry written per run
-- [ ] Return JSON matches `StylesheetOutput` in task 034b
+- [ ] Return JSON matches the agnostic subset of `StylesheetOutput` in task 034b
 - [ ] Dark-mode derivation rules documented in `packages/ui-kit/src/tokens/README.md`
 - [ ] Icon library resolution: `docs/selected-style.json.iconLibrary` is the single library the kit ships (refactor-003 — locked at gate 2, NOT from architect which runs later); user-supplied icons in `asset-inventory.json` still take precedence over library equivalents
-- [ ] `validate-consumer.ts` is NOT run against the kit itself in the verify step (glob targets `apps/*` only per 022b)
+- [ ] No primitives / patterns / layouts / barrel / Storybook authored here (those land in `/stylesheet-primitives`)
 - [ ] Post-stage `/verify-html` invocation wired via orchestrator
 - [ ] HITL gate 3 invariant: signoff binds `{ kitVersion, inputFingerprint }` — drift detection for downstream stages
+- [ ] HITL gate 3 reviews HTML preview ONLY (no Storybook); user trade-off per feat-074
 
 ## Gate 3 Handoff (post-stage HITL pause)
 
-When `/stylesheet` completes, the orchestrator pauses for human review of `packages/ui-kit/` (primitives + patterns + layouts + Storybook) + `docs/design-system-preview.html`. To resume, write ONE of the following directives to **`docs/gate-3-approved.txt`**:
+When `/stylesheet` completes, the orchestrator pauses for human review of `docs/design-system-preview.html` (HTML preview only — Storybook is reviewed implicitly post-architect when `/stylesheet-primitives` ships it). To resume, write ONE of the following directives to **`docs/gate-3-approved.txt`**:
 
-- **`proceed`** — design-system approved; pipeline continues to `/screens`. The kit version at `packages/ui-kit/package.json.version` becomes the binding `uiKitVersion` for gate 4 sign-off.
+- **`proceed`** — design-system approved; pipeline continues to `/screens`. The kit version at `packages/ui-kit/package.json.version` (`0.1.0-tokens-only` at this stage) becomes the binding `uiKitVersion` for gate 4 sign-off. `/stylesheet-primitives` later bumps it.
 - **`revise:<note>`** — reject with a note; pipeline halts. Hand-patch the kit OR re-run `/stylesheet` after editing inputs (e.g. `docs/selected-style.json` dials), then drop a fresh `proceed`.
 - **`abort`** — stop the pipeline entirely.
 

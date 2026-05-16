@@ -133,6 +133,7 @@ describe("runCli — dry-run stage walk", () => {
     addSkill("visual-review");
     addSkill("user-flows-generator");
     addSkill("architect");
+    addSkill("stylesheet-primitives"); // feat-074 — post-architect stack-binding
     addSkill("pm");
     addSkill("register-mcp-servers");
     addSkill("git-agent");
