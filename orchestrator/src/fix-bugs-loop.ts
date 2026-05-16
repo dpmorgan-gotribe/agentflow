@@ -816,6 +816,41 @@ export function openPerBugWorktree(args: {
     }
   }
 
+  // bug-115 (2026-05-16) — pre-flight check: tracked __pycache__/*.pyc files
+  // in apps/api/ break `git worktree add` on Windows. The .pyc files are
+  // held by lingering uvicorn / pytest processes; git tries to checkout them
+  // into the new worktree and Windows refuses the write with "unable to
+  // create file ... .pyc: File ...". First attempt fails partway, creating
+  // the branch; second attempt fails "branch already exists"; bug-073
+  // convergence-detector escalates without the bug-fixer ever running.
+  // Empirical motivator: gotribe-tribe-directory /fix-bugs round 3 2026-05-16
+  // — 24 of 28 dispatches died here.
+  //
+  // Detection (not fix): we list tracked __pycache__ files; if any exist,
+  // return a clear error pointing to the audit script. The fix is to UNTRACK
+  // the .pyc files (one-time operator action) + add them to project
+  // .gitignore. `scripts/audit-tracked-pycache.mjs --apply` automates that.
+  try {
+    const tracked = execSync(
+      `git ls-files "apps/api/**/__pycache__/*.pyc" "apps/api/**/__pycache__/*.pyo"`,
+      {
+        cwd: args.projectRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    ).trim();
+    if (tracked.length > 0) {
+      const count = tracked.split(/\r?\n/).filter(Boolean).length;
+      return {
+        ok: false,
+        reason: `bug-115: project tracks ${count} __pycache__/*.pyc file(s) under apps/api/ which block git worktree add on Windows. Operator action: run \`node scripts/audit-tracked-pycache.mjs ${args.projectRoot} --apply\` from factory root to untrack + gitignore + commit. Re-run /fix-bugs after.`,
+      };
+    }
+  } catch {
+    // git ls-files exits non-zero when no matches — that's the happy path;
+    // proceed to worktree add normally.
+  }
+
   // Create fresh worktree from current baseBranch HEAD. (bug-061: always
   // reach this path — bug-055 Phase A's else-branch reuse path is gone.)
   mkdirSync(dirname(worktreePath), { recursive: true });
