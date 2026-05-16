@@ -27,6 +27,11 @@ export const StageName = z.enum([
   "user-flows",
   // Post-design planning (refactor-003)
   "architect",
+  // Post-architect stylesheet translation (feat-074) — agnostic kit-core
+  // emitted by /stylesheet pre-architect gets bound to the stack chosen by
+  // /architect. PM waits on this so tasks.yaml references the right primitive
+  // set + builders import @repo/ui-kit primitives at code-gen time.
+  "stylesheet-primitives",
   "pm",
   "skills-audit-build",
   "register-mcp-build",

@@ -306,7 +306,7 @@ describe("runPipeline — stage failure short-circuits", () => {
 });
 
 describe("STAGES — refactor-003 + refactor-004 canonical order", () => {
-  it("has all 12 Mode-A stages in the documented order", () => {
+  it("has all 13 Mode-A stages in the documented order (feat-074 added stylesheet-primitives)", () => {
     expect(STAGES.map((s) => s.name)).toEqual([
       "analyze",
       "skills-audit-design",
@@ -316,6 +316,7 @@ describe("STAGES — refactor-003 + refactor-004 canonical order", () => {
       "visual-review",
       "user-flows",
       "architect",
+      "stylesheet-primitives",
       "pm",
       "skills-audit-build",
       "register-mcp-build",
@@ -347,9 +348,13 @@ describe("STAGES — refactor-003 + refactor-004 canonical order", () => {
     expect(screens.gateEnabled).toBe(false);
   });
 
-  it("git-agent-bootstrap is last; pm sits after architect", () => {
+  it("git-agent-bootstrap is last; pm sits after stylesheet-primitives (feat-074)", () => {
     expect(STAGES[STAGES.length - 1]!.name).toBe("git-agent-bootstrap");
     const pm = STAGES.find((s) => s.name === "pm")!;
-    expect(pm.dependsOn).toEqual(["architect"]);
+    expect(pm.dependsOn).toEqual(["stylesheet-primitives"]);
+    const stylesheetPrimitives = STAGES.find(
+      (s) => s.name === "stylesheet-primitives",
+    )!;
+    expect(stylesheetPrimitives.dependsOn).toEqual(["architect"]);
   });
 });

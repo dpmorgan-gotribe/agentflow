@@ -106,6 +106,28 @@ export const STAGES: readonly PipelineStage[] = [
     agent: "architect",
     dependsOn: ["user-flows"],
   },
+  // ─── STYLESHEET → STACK TRANSLATION (feat-074) ───
+  // Translates the framework-agnostic kit-core (tokens + styles + Tailwind +
+  // HTML preview) authored pre-architect by /stylesheet into the stack-aware
+  // React primitives + patterns + layouts + Storybook + 022b artifacts. Bound
+  // to architecture.yaml.tooling.stack.web_framework. Required by PM (which
+  // references the primitive set in tasks.yaml) + by builders (which import
+  // @repo/ui-kit's primitives at code-gen time).
+  //
+  // Runs SERIAL after architect (and after gate-5 credentials drop resolves).
+  // Parallel-with-gate-5 optimization is feat-074-followup; narrow ship is
+  // serial because STAGES walker is sequential. Operator parallelism comes
+  // cross-project (operator can /analyze project N+1 while project N is at
+  // /stylesheet-primitives).
+  {
+    name: "stylesheet-primitives",
+    slashCommand: "/stylesheet-primitives",
+    outputSchema: PlaceholderStageOutput,
+    gateEnabled: false,
+    budgetUsd: 5,
+    agent: "ui-designer",
+    dependsOn: ["architect"],
+  },
   {
     name: "pm",
     slashCommand: "/pm --mode=tasks",
@@ -113,7 +135,7 @@ export const STAGES: readonly PipelineStage[] = [
     gateEnabled: false,
     budgetUsd: 2,
     agent: "project-manager",
-    dependsOn: ["architect"],
+    dependsOn: ["stylesheet-primitives"],
   },
   {
     name: "skills-audit-build",

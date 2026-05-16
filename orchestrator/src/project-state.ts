@@ -62,6 +62,15 @@ function detectOne(stage: StageName, projectRoot: string): StageCompletion {
       ),
     architect: () =>
       checkFile(P(".claude/architecture.yaml"), ".claude/architecture.yaml"),
+    // feat-074 — /stylesheet-primitives complete when src/index.ts (the
+    // public barrel) exists. /stylesheet (slimmed, pre-architect) only
+    // emits tokens + styles + .components-plan.json + a stub package.json;
+    // the barrel + primitives appear only after /stylesheet-primitives runs.
+    "stylesheet-primitives": () =>
+      checkFile(
+        P("packages/ui-kit/src/index.ts"),
+        "packages/ui-kit/src/index.ts",
+      ),
     pm: () => checkFile(P("docs/tasks.yaml"), "docs/tasks.yaml"),
     "skills-audit-build": () => ({ complete: false }),
     "register-mcp-build": () => ({ complete: false }),
