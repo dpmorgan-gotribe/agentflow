@@ -311,6 +311,15 @@ coverage/
 *.lcov
 .nyc_output/
 .coverage
+# bug-115: Python bytecode artifacts. Tracked .pyc files break
+# `git worktree add` on Windows because they're held open by lingering
+# uvicorn / pytest processes — empirical motivator: gotribe-tribe-directory
+# /fix-bugs round 3 2026-05-16 (24 of 28 dispatches died at worktree add).
+# Legacy projects with already-tracked .pyc files: run
+# `node scripts/audit-tracked-pycache.mjs <projectDir> --apply` to untrack.
+**/__pycache__/
+*.pyc
+*.pyo
 ```
 
 **Additional exclusions by mode:**
