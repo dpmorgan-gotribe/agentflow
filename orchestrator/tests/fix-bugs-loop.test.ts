@@ -1736,6 +1736,34 @@ describe("bug-055 — orphan worktree + empty-merge guards", () => {
     }
   });
 
+  it("bug-117: openPerBugWorktree pre-deletes stale fix/bug-* branch from prior /fix-bugs round", () => {
+    const { repoRoot, cleanup } = setupRepo();
+    try {
+      // Simulate prior /fix-bugs round leaving a stale branch behind (worktree
+      // dir already cleaned up, branch persists). Empirical class from
+      // gotribe-tribe-directory round 4 2026-05-16.
+      git(repoRoot, "branch fix/bug-stale-from-prior-round fix/bugs-yaml-iter");
+      expect(
+        git(repoRoot, "branch --list fix/bug-stale-from-prior-round"),
+      ).toContain("fix/bug-stale-from-prior-round");
+
+      const result = openPerBugWorktree({
+        projectRoot: repoRoot,
+        bugId: "bug-stale-from-prior-round",
+        baseBranch: "fix/bugs-yaml-iter",
+      });
+
+      // Pre-bug-117: would fail "branch already exists". Post-bug-117: ok.
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(`unexpected ok:false: ${result.reason}`);
+      }
+      expect(isRegisteredGitWorktree(repoRoot, result.worktreePath)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("closePerBugWorktree returns ok:false when per-bug branch has 0 commits ahead (empty merge)", () => {
     const { repoRoot, fixupWorktreePath, cleanup } = setupRepo();
     try {
