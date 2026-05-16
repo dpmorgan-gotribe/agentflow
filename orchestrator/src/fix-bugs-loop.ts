@@ -315,6 +315,77 @@ function diffContainsSourceChange(paths: readonly string[]): boolean {
  *
  * Returns true when the dispatch's diff is acceptable as a real fix.
  */
+/**
+ * bug-116 (2026-05-16) — glob-pattern matcher for `affectsFiles[]` entries
+ * containing `**` or `*`. Empirical motivator: gotribe-tribe-directory
+ * /fix-bugs round 3 — `affectsFiles: ["apps/web/app/**\/page.tsx"]` failed
+ * to match committed file `apps/web/app/tribes/[slug]/page.tsx`. The
+ * pre-bug-116 check used only exact-match + literal-prefix, so the `**`
+ * was treated as a literal substring + no path matched.
+ *
+ * Conversion rules:
+ * - `**\/` → `.*` (any number of path segments including empty)
+ * - `**` → `.*` (any chars including `/`)
+ * - `*` → `[^/]*` (any chars except `/`)
+ * - `[` `]` → escaped (Next.js dynamic-route literals like `[slug]`/`[id]`
+ *   are PATH SEGMENTS, not character classes — escape so minimatch-style
+ *   bracket-as-charclass doesn't fire)
+ * - Other regex specials → escaped
+ *
+ * Returns true iff `path` matches `glob`.
+ */
+function globMatchesPath(path: string, glob: string): boolean {
+  // No glob chars → fast path: exact equality.
+  if (!glob.includes("*") && !glob.includes("?")) {
+    return path === glob;
+  }
+  // Build a regex. Escape regex metachars FIRST except * and ?.
+  let re = "";
+  let i = 0;
+  while (i < glob.length) {
+    const c = glob[i]!;
+    if (c === "*") {
+      if (glob[i + 1] === "*") {
+        // `**` — match across path separators.
+        re += ".*";
+        i += 2;
+        // Consume optional trailing slash so `**/x` matches `x` too.
+        if (glob[i] === "/") i += 1;
+        // Re-anchor the regex's "any-path-prefix" so x matches.
+        // The .* already covers including 0 segments; safe.
+      } else {
+        // `*` — match within a single path segment.
+        re += "[^/]*";
+        i += 1;
+      }
+    } else if (c === "?") {
+      re += "[^/]";
+      i += 1;
+    } else if (
+      c === "[" ||
+      c === "]" ||
+      c === "." ||
+      c === "(" ||
+      c === ")" ||
+      c === "+" ||
+      c === "^" ||
+      c === "$" ||
+      c === "{" ||
+      c === "}" ||
+      c === "|" ||
+      c === "\\"
+    ) {
+      // Escape every regex metachar AND treat Next.js `[seg]` as literal.
+      re += "\\" + c;
+      i += 1;
+    } else {
+      re += c;
+      i += 1;
+    }
+  }
+  return new RegExp(`^${re}$`).test(path);
+}
+
 function diffOverlapsBugScope(
   paths: readonly string[],
   affectsFiles: readonly string[],
@@ -326,6 +397,10 @@ function diffOverlapsBugScope(
   }
   return paths.some((p) =>
     affectsFiles.some((scoped) => {
+      // bug-116 — glob match takes precedence when the entry contains `*`.
+      if (scoped.includes("*")) {
+        return globMatchesPath(p, scoped);
+      }
       // Exact-path match: agent touched the bug's named file.
       if (p === scoped) return true;
       // Prefix match for directories. Both `apps/api/` and `apps/api`
