@@ -2507,6 +2507,83 @@ describe("dispatchAgentsForBug — bug-082 unverified-completion guard", () => {
     const result = await runFixBugsLoop(makeCtx(invoke, cleanVerify));
     expect(result.bugsResolved).toEqual(["bug-orphan-no-affects-files"]);
   });
+
+  // bug-116 (2026-05-16) — glob-pattern matcher for affectsFiles[] entries
+  // containing `**` or `*`. Empirical motivator: gotribe-tribe-directory
+  // /fix-bugs round 3 — affectsFiles ["apps/web/app/**/page.tsx"] failed
+  // to match committed path apps/web/app/tribes/[slug]/page.tsx because
+  // the pre-bug-116 check used only exact-match + literal-prefix.
+  it("bug-116: accepts commit to Next.js [slug] route when affectsFiles uses ** glob", async () => {
+    gitInit();
+    writeBugsYamlDoc([
+      makeBug({
+        id: "bug-parity-tribe-detail-glob",
+        agentSequence: ["web-frontend-builder"],
+        affectsFiles: [
+          "docs/screens/webapp/tribe-detail.html",
+          "apps/web/app/**/page.tsx",
+        ],
+      }),
+    ]);
+    let agentCallNum = 0;
+    const invoke: InvokeAgentFn = async (args) => {
+      agentCallNum++;
+      if (agentCallNum === 1) {
+        // Agent commits to the Next.js dynamic-route page that legitimately
+        // matches the `**/page.tsx` glob — but pre-bug-116 the literal-
+        // prefix check missed it. Empirical commit shape from gotribe.
+        makeRealCommit(
+          "apps/web/app/tribes/[slug]/page.tsx",
+          "export default function TribeDetailPage() { return null; }\n",
+        );
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+    const result = await runFixBugsLoop(makeCtx(invoke, cleanVerify));
+    expect(result.bugsResolved).toEqual(["bug-parity-tribe-detail-glob"]);
+  });
+
+  it("bug-116: accepts commit to [id] route + [...slug] catch-all + plain route via ** glob", async () => {
+    gitInit();
+    writeBugsYamlDoc([
+      makeBug({
+        id: "bug-parity-multi-route-glob",
+        agentSequence: ["web-frontend-builder"],
+        affectsFiles: ["apps/web/app/**/page.tsx"],
+      }),
+    ]);
+    let agentCallNum = 0;
+    const invoke: InvokeAgentFn = async (args) => {
+      agentCallNum++;
+      if (agentCallNum === 1) {
+        // [id] numeric-route variant.
+        makeRealCommit(
+          "apps/web/app/posts/[id]/page.tsx",
+          "export default function PostDetailPage() { return null; }\n",
+        );
+      }
+      return {
+        taskStatus: Object.fromEntries(
+          args.tasks.map((t) => [t.id, "completed"] as const),
+        ),
+        errors: {},
+        costUsd: 0.1,
+      };
+    };
+    const result = await runFixBugsLoop(makeCtx(invoke, cleanVerify));
+    expect(result.bugsResolved).toEqual(["bug-parity-multi-route-glob"]);
+  });
+
+  // bug-116 negative case (rejection of unrelated paths) is covered by the
+  // pre-existing "bug-093: rejects success when agent commits to unrelated
+  // source paths" test above — bug-116's glob extension preserves that path
+  // (glob fallback to literal-prefix when no `*` in scoped entry).
 });
 
 // feat-071 Phase B (2026-05-13) — cluster-bugs-pre-dispatch wiring tests.
