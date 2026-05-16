@@ -378,13 +378,39 @@ After all remaining screens are written, compute the canonical manifest:
     "admin": 77
   },
   "files": [
-    { "path": "docs/screens/webapp/home.html", "sha256": "a1b2c3..." },
-    { "path": "docs/screens/webapp/filter-tribes.html", "sha256": "..." }
+    {
+      "path": "docs/screens/webapp/home.html",
+      "platform": "webapp",
+      "screenId": "home",
+      "sha256": "a1b2c3...",
+      "routePattern": "/"
+    },
+    {
+      "path": "docs/screens/webapp/filter-tribes.html",
+      "platform": "webapp",
+      "screenId": "filter-tribes",
+      "sha256": "...",
+      "routePattern": "/?focus=:focus"
+    }
   ]
 }
 ```
 
 The `files[]` array is sorted by path. Each `sha256` is over that file's bytes. This manifest IS the input to the `screensManifestHash` that gate 4 binds — see §Screens manifest hash algorithm.
+
+**Every `files[]` entry MUST include `routePattern`** (bug-114). Downstream verifier stages — perceptual-review (Tier 4) + parity-verify (Tier 3) + walkthrough-review (Tier 5) — consume `routePattern` to navigate to the live build's matching URL. Without it, `orchestrator/src/parity-verify.ts resolveBuiltUrl` falls back to the `/{screenId}` heuristic (line 333-337), which produces non-existent URLs like `/tribe-directory-browse` → 404 → false-positive perceptual + parity findings. Empirical motivator: gotribe-tribe-directory 2026-05-15 — screens-manifest authored with no routePattern caused 4 of 11 bug-fix-loop failures (bug-011 perceptual page-not-found + 3 parity cascade findings, all from the verifier visiting non-existent URLs).
+
+**How to derive `routePattern`:**
+
+1. **First screen of each user flow (per `docs/user-flows-manifest.json`)** — typically `/` (the home / entry route). Look at `flow.steps[0].expectedScreenId`; for the FIRST screen of the FIRST flow, default to `/` unless the flow's manifest explicitly names another entry.
+2. **Screens with `<screen-id>` matching a noun-pattern like `<noun>-detail`, `<noun>-edit`, `<noun>-{verb}`** — likely a per-resource detail/action page; emit `/{noun}/:slug` or `/{noun}/:id` (use `:slug` when the project's URL semantics suggest slugs, `:id` for numeric IDs). The brief's §11 capabilities + `architecture.yaml.apps.web.routes` (if present) name the right shape.
+3. **Filter / subset views (`<noun>-filtered`, `<noun>-empty-state`)** — same path as the base list view but with a query param: `/?focus=:focus` for the gotribe `tribe-directory-empty-state` case. Empty-state is a DATA condition on a real route, not a separate route.
+4. **Auxiliary pages (`about`, `contact`, `pricing`, `404`)** — `/<kebab-screen-id>`.
+5. **When in doubt, populate with the heuristic `/{kebab-screen-id}` AND emit a manifest warning** — `tasks.yaml.warnings[]: "routePattern auto-defaulted for {screenId}; operator should review at gate 4"`. Better to ship a populated-but-imperfect routePattern than nothing.
+
+**Dynamic-segment syntax:** colon-prefixed (`:slug`, `:id`) is the framework-agnostic convention shipped by bug-025. Builders translate to their stack's syntax (Next.js `[slug]`, React Router `:slug`, etc.) at code-gen time. The manifest stays portable.
+
+**Self-verify before writing the manifest:** assert `files.every(f => typeof f.routePattern === "string" && f.routePattern.length > 0)`. If ANY entry lacks routePattern, do NOT write the manifest — instead emit a hard error explaining which screens are missing routePattern. The PM stage's §2c (bug-025) already emits a warning when routePattern is missing per-task, but the warning isn't load-bearing — by the time PM fires, the screens are already authored without the field. Failing in /screens is the cheapest detection layer (bug-114).
 
 ### 9. Report (batch mode)
 
