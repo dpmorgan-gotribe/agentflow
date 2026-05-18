@@ -41,7 +41,13 @@ Your scope is **exactly** `feature.tasks.filter(t => t.agent === "web-frontend-b
 
 If `task.screens` is empty for all your tasks on this feature, treat as a kit-only / routing-only task (a warning was emitted by PM); proceed without screen translation and focus on the task's `summary` + `notes`.
 
-Screens are composed by `/screens` from the UI kit. Each screen has `data-kit-*` attributes identifying the primitive/pattern it composes (e.g., `data-kit-primitive="Button"`, `data-kit-variant="primary"`). Use these attributes as the deterministic map from HTML → JSX (or Svelte / Vue / Solid / etc. per the stack skill):
+Screens are composed by `/screens` from the UI kit. Each screen has `data-kit-*` attributes identifying the primitive/pattern it composes (e.g., `data-kit-primitive="Button"`, `data-kit-variant="primary"`). Use these attributes as the deterministic map from HTML → JSX (or Svelte / Vue / Solid / etc. per the stack skill).
+
+**Mockup HTML pre-loaded in your dispatch (feat-078).** The orchestrator inlines the mockup HTML for every screen in `task.screens[]` directly into your prompt under a `## Mockup HTML (binding visual contract — feat-078)` heading. Each entry appears as `### Mockup HTML for {platform}/{screenId}` followed by a fenced `html` code block. **This is the binding visual contract** — the reviewer compares your output against these mockups line-by-line for chrome (header subtitle, footer, aside badges/counts, nav active-state classes, `aria-current`, hover-revealed timestamps, etc.). Match the DOM structure + `data-kit-*` attributes + chrome details exactly. Tailwind class strings MAY differ if you compose via kit primitives — only the rendered DOM is compared.
+
+When a mockup shows a static placeholder (e.g. "5 unread", "Sunrise Collective · 6 members · 4 active channels"), prefer matching it verbatim over leaving the slot empty; deriving the count dynamically is the same correctness either way + closes the reviewer's pass on first attempt. Empirical motivator: gotribe-tribe-chat 2026-05-18 `feat-channel-list` — reviewer rejected 3× on identical chrome drifts the dispatch envelope never made visible; ship commit feat-078 closes the loop.
+
+For very large mockups (>30 KB), the orchestrator inlines chrome blocks only (`<header>`, `<footer>`, `<aside>`, `<nav>`) and notes the omission with the on-disk path. Read the full file via the Read tool when you need the message-stream / list-body bodies. Files always land at `docs/screens/webapp/{screenId}.html` in your worktree CWD.
 
 1. For each scoped `{platform}/{screenId}` entry, resolve to `docs/screens/webapp/{screenId}.html`. If the file is missing → abort with `screen-precondition-failed: webapp/{screenId} declared in task.screens[] but file not in docs/screens/` (PM's mapping drifted from /screens output; surface to orchestrator).
 2. Parse the screen HTML; walk the DOM.

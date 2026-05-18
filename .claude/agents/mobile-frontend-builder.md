@@ -40,7 +40,11 @@ Your scope is **exactly** `feature.tasks.filter(t => t.agent === "mobile-fronten
 
 If `task.screens` is empty for all your tasks on this feature, treat as a native-module / navigation-only task (a warning was emitted by PM); proceed without screen translation and focus on the task's `summary` + `notes`.
 
-Screens are composed by `/screens` from the UI kit with mobile viewport. `data-kit-*` attributes drive the deterministic translation same as web (HTML → React Native or Flutter widgets per the stack skill). For each scoped `mobile/{screenId}`, resolve to `docs/screens/mobile/{screenId}.html`; if the file is missing → abort with `screen-precondition-failed: mobile/{screenId} declared in task.screens[] but file not in docs/screens/` (PM's mapping drifted from /screens output; surface to orchestrator).
+Screens are composed by `/screens` from the UI kit with mobile viewport. `data-kit-*` attributes drive the deterministic translation same as web (HTML → React Native or Flutter widgets per the stack skill).
+
+**Mockup HTML pre-loaded in your dispatch (feat-078).** The orchestrator inlines the mockup HTML for every screen in `task.screens[]` directly into your prompt under a `## Mockup HTML (binding visual contract — feat-078)` heading. Each entry appears as `### Mockup HTML for {platform}/{screenId}` followed by a fenced `html` code block. **This is the binding visual contract** — the reviewer compares your output against these mockups line-by-line for chrome (header subtitle, tab-bar active state, drawer slot contents, status-bar styling, etc.). Match the DOM structure + `data-kit-*` attributes + chrome details exactly. Stack-specific class/style API MAY differ (React Native uses StyleSheet objects; Flutter uses widget constructors) — only the rendered hierarchy + attribute equivalents are compared. For very large mockups (>30 KB), the orchestrator inlines chrome blocks only and notes the omission; read the full file via the Read tool when needed. Files always land at `docs/screens/mobile/{screenId}.html` in your worktree CWD.
+
+For each scoped `mobile/{screenId}`, resolve to `docs/screens/mobile/{screenId}.html`; if the file is missing → abort with `screen-precondition-failed: mobile/{screenId} declared in task.screens[] but file not in docs/screens/` (PM's mapping drifted from /screens output; surface to orchestrator).
 
 ## Worktree CWD awareness
 

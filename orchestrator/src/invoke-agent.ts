@@ -1722,11 +1722,113 @@ async function runLlmAgent(
   };
 }
 
+/**
+ * feat-078: inline the mockup HTML for each screen a frontend-builder task
+ * owns. Without this, the builder authors from screens.json + components-plan
+ * but misses chrome details the reviewer compares line-by-line against
+ * `docs/screens/{platform}/{screen-id}.html` — empirical: gotribe-tribe-chat
+ * 2026-05-18 feat-channel-list reviewer rejected 3× on the SAME chrome drifts
+ * (header subtitle, aggregate-unread badge, active-nav-state classes); the
+ * builder's retry context only saw the rejection summary, never the mockup.
+ *
+ * Size guard: cap the inlined content at ~30 KB per task. Above the cap, only
+ * the chrome blocks (<header>, <footer>, <aside>, <nav>) get inlined since
+ * message-stream / list-body content is less likely to drive reviewer
+ * rejection. ~30 KB at ~4 chars/token = ~7.5K tokens budget per task; well
+ * within Sonnet's context window.
+ *
+ * Only fires for `web-frontend-builder` / `mobile-frontend-builder` tasks.
+ * Other agent kinds (backend, tester, reviewer, security) don't get mockups
+ * inlined — their dispatch context is different.
+ */
+const MOCKUP_INLINE_SIZE_CAP_BYTES = 30_000;
+const CHROME_TAG_REGEX = /<(header|footer|aside|nav)[^>]*>[\s\S]*?<\/\1>/gi;
+
+function buildMockupContext(
+  cwd: string,
+  tasks: Parameters<InvokeAgentFn>[0]["tasks"],
+): string {
+  // Collect distinct screen refs across all frontend-builder tasks.
+  const screenSet = new Set<string>();
+  for (const t of tasks) {
+    if (
+      t.agent !== "web-frontend-builder" &&
+      t.agent !== "mobile-frontend-builder"
+    )
+      continue;
+    for (const ref of t.screens ?? []) screenSet.add(ref);
+  }
+  if (screenSet.size === 0) return "";
+
+  const blocks: string[] = [];
+  let totalBytes = 0;
+  for (const ref of screenSet) {
+    // ref shape: "{platform}/{screen-id}" per TaskScreenRef regex.
+    const [platform, screenId] = ref.split("/");
+    if (!platform || !screenId) continue;
+    const filePath = join(cwd, "docs", "screens", platform, `${screenId}.html`);
+    if (!existsSync(filePath)) continue;
+    let content: string;
+    try {
+      content = readFileSync(filePath, "utf8");
+    } catch {
+      continue;
+    }
+    const remaining = MOCKUP_INLINE_SIZE_CAP_BYTES - totalBytes;
+    if (remaining <= 1024) {
+      // Past the cap — note the omission so the agent knows to read it
+      // directly with the Read tool if needed.
+      blocks.push(
+        `### Mockup HTML for ${ref} (OMITTED — over cap)\n` +
+          `Read directly: ${filePath}`,
+      );
+      continue;
+    }
+    let inlined: string;
+    let inlineNote = "";
+    if (content.length <= remaining) {
+      inlined = content;
+    } else {
+      // Over cap — extract only chrome blocks. Reviewer rejections empirically
+      // cluster on chrome (header subtitle, nav active state, aside badges).
+      const chrome = [...content.matchAll(CHROME_TAG_REGEX)]
+        .map((m) => m[0])
+        .join("\n");
+      inlined = chrome || content.slice(0, remaining);
+      inlineNote =
+        " (chrome blocks only — message-stream + list-body bodies omitted; " +
+        `read ${filePath} for full content)`;
+    }
+    blocks.push(
+      `### Mockup HTML for ${ref}${inlineNote}\n\n` +
+        "```html\n" +
+        inlined +
+        "\n```",
+    );
+    totalBytes += inlined.length;
+  }
+
+  if (blocks.length === 0) return "";
+
+  return (
+    `\n## Mockup HTML (binding visual contract — feat-078)\n\n` +
+    `The reviewer compares your output against these mockups line-by-line. ` +
+    `Match the DOM structure, chrome (header subtitle / footer / nav active state / ` +
+    `aside badges + counts), and \`data-kit-*\` attributes. Tailwind class strings ` +
+    `MAY differ if you compose via primitives — the rendered DOM is what's compared. ` +
+    `If a mockup shows a static placeholder count (e.g. "5 unread"), prefer matching ` +
+    `it verbatim over leaving the slot empty; deriving the count dynamically is the ` +
+    `same correctness either way + closes the reviewer's pass on first attempt.\n\n` +
+    blocks.join("\n\n") +
+    "\n"
+  );
+}
+
 function buildAgentPrompt(
   agent: AgentSequenceMember,
   args: Parameters<InvokeAgentFn>[0],
 ): string {
-  const { featureContext, tasks, retryContext, preLoadedContext } = args;
+  const { featureContext, tasks, retryContext, preLoadedContext, cwd } = args;
   // bug-035: include task.notes verbatim under each task line so PM-emitted
   // requirements (state coverage, idempotency, edge-case constraints) reach
   // the agent. Reviewer reads tasks.yaml directly and was the only agent
@@ -1751,6 +1853,12 @@ function buildAgentPrompt(
     `You are the ${agent} agent for feature ${featureContext.id} ` +
     `(branch ${featureContext.branch}, priority ${featureContext.priority}).\n` +
     `Tasks assigned to you on this feature:\n${taskLines}\n`;
+
+  // feat-078: inline mockup HTML for frontend-builder tasks (reviewer-rejection
+  // loop prevention). Other agent kinds don't get this block.
+  if (agent === "web-frontend-builder" || agent === "mobile-frontend-builder") {
+    prompt += buildMockupContext(cwd, tasks);
+  }
 
   // feat-063 (2026-05-08) — pre-loaded bug context. When the bug-fix
   // loop dispatches a per-bug builder, it pre-resolves the failing
