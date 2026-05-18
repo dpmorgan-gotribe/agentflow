@@ -1,13 +1,14 @@
 ---
 id: bug-127-tester-diff-audit-skipped-on-stall-timeout
 type: bug
-status: draft
+status: blocked
 author-agent: claude-opus-4-7
 created: 2026-05-18
 updated: 2026-05-18
-parent-plan: null
+parent-plan: investigate-023-tester-prefers-spec-fixes-over-flagging-product-bugs
 supersedes: null
 superseded-by: null
+blocked-by: investigate-023 M-D
 branch: fix/tester-diff-audit-stall-timeout
 affected-files:
   - orchestrator/src/tester-diff-audit.ts
@@ -23,6 +24,8 @@ error-message: |
   These are bug-024 forbidden source-file mods. No genuineProductBugs[] flagged.
   Audit was skipped because dispatch never returned a normal completion JSON.
 ---
+
+> **Discovery (2026-05-18 during ship-pass):** `orchestrator/src/tester-diff-audit.ts` **does not exist on disk**. `.claude/rules/testing-policy.md` lines 160 + 213 reference the module as "M-D, shipped" but a `find . -name 'tester-diff-audit*'` returns nothing under `orchestrator/src/`. The audit was never authored — `investigate-023`'s M-D mitigation is still pending. This bug's scope therefore needs to expand to _ship the audit module from scratch_ before the stall-timeout extension can land. Status changed `draft → blocked` until investigate-023 M-D is implemented OR this plan absorbs the M-D scope. See investigate-023 §"Mitigations" for the 6-anti-pattern checklist that the audit needs to mechanically detect.
 
 # bug-127 — tester-diff-audit doesn't fire on stall-timeout abort, letting bug-024 source-file mods slip through
 
