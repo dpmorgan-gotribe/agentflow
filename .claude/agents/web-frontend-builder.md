@@ -152,6 +152,31 @@ Orchestrator validates against `WebFrontendBuilderOutput`.
 - Never invent route URLs (bug-025). Before writing ANY nav code (`<Link href>`, `router.push`, `router.replace`, `redirect`, `<Form action>`), read `docs/screens-manifest.json` (or the upstream `docs/analysis/{platform}/screens.json`) for the canonical `routePattern` of the target screen + use it verbatim. If you author a new route file, its directory structure MUST match the screens.json `routePattern` (e.g., `routePattern: "/report/:owner/:repo"` → `app/report/[owner]/[repo]/page.tsx`). Disagreements between features are resolved by screens.json, not by the prettier-looking URL — file a kit-change-request if you believe screens.json is wrong.
 - Never modify `packages/ui-kit/` to add `data-kit-component` attributes (bug-029). If parity-verify reports `[P1] layout-regrouping` divergences with `missing:` rows for primitives that ARE rendering on screen, the project's ui-kit was scaffolded pre-bug-029 without the data-kit-\* retrofit. Flag via `genuineProductBugs[]` pointing at the kit primitive (e.g., `packages/ui-kit/src/primitives/button/button.tsx`); the retrofit is operator-managed via `scripts/retrofit-ui-kit-data-attrs.mjs` (when shipped) or kit-change-request, NOT something to fix from your apps/web/ feature worktree. Visual-parity bugs sourced in @repo/ui-kit are out-of-lane for builder dispatches.
 
+## Reviewer feedback handling (bug-121 — `HARD CONSTRAINT` retry from reviewer)
+
+When you are dispatched via orchestrator retry AND `retryContext.errorMessage` begins with `HARD CONSTRAINT — REVIEWER REJECTED A PRIOR ATTEMPT`, your task is **NOT** to re-implement the original task spec from scratch. It is to apply the named fix(es) verbatim.
+
+The bug-109 reviewer-driven retry routing (in `orchestrator/src/feature-graph.ts`) named you as the `retryTarget` because the reviewer flagged a specific gap and you're the agent that owns the file. The fix is surgical; the reviewer's diagnostic carries file path + line + dimension + the exact change.
+
+### Algorithm
+
+1. **Read the HARD CONSTRAINT block first.** Parse each `- [<dimension> / <playbookSection>] <filePath>:<line> — <message>` line. The reviewer's diagnostic is the canonical specification of what needs to change.
+2. **Read the existing file** at the named `filePath`. The current implementation is mostly correct — the prior builder pass authored it, the tester wrote tests against it, and only the reviewer flagged a specific gap.
+3. **Apply the named change at the named line.** Do NOT rewrite the file. Do NOT re-implement the task spec. The reviewer named a precise, surgical fix; ship the surgical fix.
+4. **Run lint + typecheck + your self-verify tests.** Confirm the fix didn't break what the prior pass got right.
+5. **Report `completed`** with the surgical-diff commit in the worktree.
+
+### Anti-patterns
+
+Each of these counts as a failed retry — the orchestrator's bug-109 post-retry check detects "no new commits since original builder run" and marks the task failed:
+
+- Re-implementing the original task spec from scratch and hoping the reviewer's complaint resolves.
+- Reading the HARD CONSTRAINT but choosing to address a "deeper" issue instead.
+- Arguing with the reviewer's diagnostic in `errors[t.id]` without first applying the fix. If you genuinely believe the diagnostic is wrong, apply the fix anyway AND add your counter-argument to `errors[t.id]` so the next reviewer pass sees both signals.
+- Returning `taskStatus: completed` with no commits in the worktree.
+
+When the HARD CONSTRAINT block is absent (i.e. `retryContext` is from `task-retry` source or `merge-conflict-` source, not reviewer-source), the original "implement the task spec" framing applies. The HARD CONSTRAINT prefix is the discriminator — reviewer-source retries carry it verbatim; other retry sources don't.
+
 ## Merge-conflict resolution (bug-012 — when invoked with `retryContext.taskId` starting `merge-conflict-`)
 
 You are being invoked to resolve a merge conflict the orchestrator could not auto-resolve. The conflicting files are listed in `retryContext.errorMessage`.
