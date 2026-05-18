@@ -950,6 +950,67 @@ describe("runCheckoutFeature (bug-016 pre-flight snapshot race)", () => {
     expect(detail).toContain("bug-009 pre-worktree snapshot failed");
     expect(detail).toContain("GPG signing failed");
   });
+
+  // bug-126: Windows + pnpm + Storybook deep node_modules (paths > MAX_PATH=260)
+  // cause git status to emit "Filename too long" warnings + git add may
+  // silently skip subtrees + git commit fails with EMPTY stderr (no
+  // "nothing to commit" text). Pre-bug-126: bug-016 race-pattern match
+  // didn't fire (empty stderr ≠ any pattern) → surfaced as worktree-seed-
+  // failed. Post-bug-126: ANY commit failure triggers a recheck. If the
+  // tree is now clean (path-length truncation effectively was a no-op),
+  // falls through to worktree add — symmetric with the bug-016 race-loss
+  // path.
+  it("bug-126: commit fails with empty stderr but tree is clean → falls through to worktree add", async () => {
+    let statusCallCount = 0;
+    const calls: string[] = [];
+    const execGit: ExecGitFn = async (cmd) => {
+      calls.push(cmd);
+      if (/git status --porcelain/.test(cmd)) {
+        statusCallCount++;
+        // T1: dirty (windows long-path warnings made git think tree dirty)
+        // T_recheck: CLEAN (add+commit silently no-op'd the long-path entries
+        // and there was nothing real to commit anyway)
+        if (statusCallCount === 1)
+          return { stdout: " M apps/web/src/foo.ts\n", stderr: "", code: 0 };
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      if (/git add -A/.test(cmd)) return { stdout: "", stderr: "", code: 0 };
+      if (/git commit -F/.test(cmd))
+        // bug-126: empty stderr — Win32 path-length quirk doesn't emit the
+        // standard "nothing to commit" text that bug-016 race detection
+        // catches. Without bug-126 the post-failure recheck never fires.
+        throw Object.assign(new Error("git command failed"), {
+          stderr: "",
+          code: 1,
+        });
+      if (/git worktree add/.test(cmd))
+        return { stdout: "Preparing worktree\n", stderr: "", code: 0 };
+      throw new Error(`unexpected: ${cmd}`);
+    };
+    const invoke = createInvokeAgent({
+      projectRoot,
+      budget: mkBudget(),
+      flags: [],
+      execGit,
+    });
+    const result = await invoke({
+      agent: "git-agent",
+      cwd: projectRoot,
+      featureContext,
+      tasks: [],
+      gitOp: {
+        op: "checkout-feature",
+        worktree: "feat-auth",
+        branch: "feat/auth",
+        featureId: "feat-auth",
+      },
+    });
+    expect(result.gitAgentOutput).toMatchObject({
+      op: "checkout-feature",
+      success: true,
+    });
+    expect(calls.some((c) => /git worktree add/.test(c))).toBe(true);
+  });
 });
 
 describe("invokeAgent — checkout-feature seeds worktree (bug-002)", () => {
