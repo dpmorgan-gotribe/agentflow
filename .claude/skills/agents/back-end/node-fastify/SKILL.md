@@ -279,6 +279,67 @@ Tester responsibilities (when authoring E2E specs that consume `seedFixtures`):
 2. Mutation-tier flows (`seedingTier === "mutation"` in `docs/user-flows-manifest.json`) author `test.beforeAll: seedFixtures(...)` + `test.afterAll: cleanupFixtures(...)` inside their describe block. The synthesizer emits this skeleton automatically — fill in the fixture map.
 3. The dev server for E2E runs MUST set `ENABLE_TEST_SEED=1` (typically via `apps/api/.env.test`); operator `node scripts/dev.mjs --test-seed` or equivalent.
 
+### E2E for WebSocket flows — server-side contract (feat-076)
+
+When the project uses `@fastify/websocket` for real-time flows (channel chat, presence, live message streams), the backend MUST expose `POST /test/ws-event` as a fourth `/test/*` endpoint (alongside `/seed`, `/cleanup`, `/seed-baseline`). It fires a synthetic event onto a channel's in-process subscriber set so the web tier's Playwright specs can assert client-side reaction without orchestrating two browser contexts (Pattern A in `.claude/skills/agents/front-end/react-next/SKILL.md §"E2E for WebSocket flows"`).
+
+Canonical implementation:
+
+```ts
+// apps/api/src/routes/test-seed.ts — extend the /test/* routes
+import { eq } from "drizzle-orm";
+import { channels } from "../db/schema.js";
+import { broadcast } from "../ws/broadcast.js";
+import { AppError } from "../common/errors.js";
+import type { WsServerEvent } from "@repo/types";
+
+const WsEventRequest = z.object({
+  channel: z.number().int().positive(),
+  event: z.enum([
+    "message:new",
+    "message:deleted",
+    "presence:join",
+    "presence:leave",
+    "presence:snapshot",
+    "typing:start",
+    "typing:stop",
+    "error",
+  ] as const),
+  payload: z.unknown(),
+});
+
+// Inside `testSeedRoutes` plugin, alongside /seed + /cleanup + /seed-baseline:
+app.post("/ws-event", async (req, reply) => {
+  const { channel, event, payload } = WsEventRequest.parse(req.body);
+
+  // bug-126-style channel-existence guard — unknown channel → 404.
+  // Without this guard, broadcast() no-ops silently against an empty
+  // subscriber map + the endpoint returns 204, which the tester correctly
+  // flags as a genuineProductBugs[] class. Empirical: gotribe-tribe-chat
+  // 2026-05-18 feat-test-seed-ws.
+  const [row] = await app.db
+    .select()
+    .from(channels)
+    .where(eq(channels.id, channel))
+    .limit(1);
+
+  if (!row) {
+    throw new AppError(
+      "CHANNEL_NOT_FOUND",
+      404,
+      `Channel ${channel} not found`,
+    );
+  }
+
+  broadcast(channel, event as WsServerEvent["type"], payload);
+  return reply.code(204).send();
+});
+```
+
+Same `ENABLE_TEST_SEED=1` gate as the other `/test/*` endpoints — runtime guard in `apps/api/src/app.ts`. Empirical motivator (the curriculum signal brief 09 §20 predicted): gotribe-tribe-chat `feat-channel-view` tester hit 30-min wall-clock trying to author Pattern B from scratch on the FIRST WebSocket project the factory built. With this server contract documented + the front-end Pattern A reference, future WS projects copy the shape instead of reinventing it.
+
+Security note: `/test/ws-event` is HIGH-RISK in production (operator can inject arbitrary events onto any subscriber). The runtime gate + Security agent review on the env-flag check are the canonical defenses. NEVER expose this endpoint with the flag set in a deployed environment.
+
 ## 4. Commands
 
 ```

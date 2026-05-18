@@ -268,6 +268,26 @@ When the synthesizer (`scripts/synthesize-flow-e2e.mjs`) deepens beyond the curr
 - `.claude/skills/agents/back-end/python-fastapi/SKILL.md §Testing` — strategy declaration for FastAPI consumers (C when DB-backed, D when proxy/cache only).
 - `plans/active/feat-038-deepen-synthesize-flow-e2e-and-data-seeding.md §Phase 0 — Decision` — the full reasoning + benchmark expectations.
 
+## WebSocket flows (feat-076)
+
+Projects with real-time WS surfaces (channel chat, presence rails, live message streams) extend Strategy C with a fourth gated endpoint — `POST /test/ws-event` — that injects synthetic frames onto a channel's in-process subscriber set. Lets E2E specs assert client-side reaction WITHOUT orchestrating two browser contexts (which is the canonical flake-source). Two patterns are canonical:
+
+- **Pattern A** — single-context Playwright + `request.post("/test/ws-event", ...)` for deterministic asserts. ~80% of WS specs.
+- **Pattern B** — two-browser-context broadcast (`browser.newContext()` × 2) for the canonical happy-path "send/receive actually works" assertion. ~20% of WS specs.
+
+Both patterns require `ENABLE_TEST_SEED=1` on the running dev server (same gate as the other `/test/*` endpoints).
+
+### Cross-references
+
+- `.claude/skills/agents/front-end/react-next/SKILL.md §"E2E for WebSocket flows"` — Pattern A + B Playwright reference shapes
+- `.claude/skills/agents/back-end/node-fastify/SKILL.md §"E2E for WebSocket flows — server-side contract"` — `/test/ws-event` Fastify handler + channel-existence guard
+- `plans/archive/feat-076-ws-aware-e2e-stack-skill-blocks.md` — empirical motivator (gotribe-tribe-chat `feat-channel-view` tester wall-clock stall 2026-05-18)
+- `gotribe-briefs/tier-1-atomic.md` §09 — curriculum brief that surfaced the gap
+
+**Anti-pattern**: connecting a raw `ws` client inside Playwright's test body and orchestrating frames against the running app's WS endpoint. Couples the test to the wire protocol + requires reimplementing the kit's WS-client reducer. Use Patterns A + B above instead.
+
+**Tester stall-class**: WS testing without a canonical pattern reliably triggers `error_stall_timeout`. If a tester dispatch is in flight on a WS feature and silent > 5 min, the orchestrator's wall-clock cap is justified — abort + force-merge the builder's committed work + file the lost-edge-cases as follow-up tests.
+
 ## Stack-skill integration
 
 Every shipped stack skill (`.claude/skills/agents/{tier}/{stack-slug}/SKILL.md`) has a §Testing section documenting:

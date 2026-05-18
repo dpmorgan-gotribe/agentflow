@@ -428,6 +428,79 @@ Tester responsibilities (when authoring E2E specs alongside the synthesized ones
 
   Same comment header on `vitest.setup.ts` and `tsconfig.json` (with appropriate phrasing). This is in addition to the §6.5 Files NOT to modify section that documents the contract for builders/testers.
 
+### E2E for WebSocket flows (feat-076)
+
+When a project uses WebSocket flows (real-time channel chat, presence rails, live message streams) the tester has **two canonical Playwright patterns** to choose from. Without picking one explicitly and copying its shape, vitest/Playwright + WebSocket sessions stall (open sockets across tests, async-event races on connection lifecycle, etc.) and the dispatch hits `error_stall_timeout`. Empirical: gotribe-tribe-chat 2026-05-18 `feat-channel-view` tester hit the 30-min wall-clock on BOTH attempts trying to author WS specs from scratch — exactly the curriculum signal brief §20 flagged.
+
+**Pattern A — `/test/ws-event` injection (single-context, deterministic):**
+
+The fastify backend exposes `POST /test/ws-event` (gated on `ENABLE_TEST_SEED=1` — see `.claude/skills/agents/back-end/node-fastify/SKILL.md §3 → /test/ws-event`) which fires a synthetic event onto a channel's in-process subscriber set. Spec uses it to assert client-side reaction without orchestrating two browser contexts:
+
+```ts
+// apps/web/e2e/channel-view.spec.ts
+import { test, expect, request } from "@playwright/test";
+
+test("incoming message:new updates the stream", async ({ page, baseURL }) => {
+  await page.goto("/c/general");
+  await expect(page.getByText("Connected")).toBeVisible();
+
+  const ctx = await request.newContext();
+  await ctx.post(`${baseURL}/test/ws-event`, {
+    data: {
+      channel: 1,
+      event: "message:new",
+      payload: {
+        id: "999",
+        channelId: 1,
+        body: "hello from test",
+        authorId: 1,
+        authorName: "Test User",
+        sentAt: new Date().toISOString(),
+        deleted: false,
+      },
+    },
+  });
+
+  await expect(page.getByText("hello from test")).toBeVisible({
+    timeout: 5000,
+  });
+  await ctx.dispose();
+});
+```
+
+**Pattern B — Two-browser-context broadcast (end-to-end lifecycle, higher fidelity):**
+
+Use when the test needs to assert that the SERVER-SIDE broadcast path works (compose-in-A → server-roundtrip → render-in-B). Higher flake potential because both contexts race on WS-state transitions:
+
+```ts
+test("send-from-A appears in B", async ({ browser }) => {
+  const ctxA = await browser.newContext();
+  const ctxB = await browser.newContext();
+  const pageA = await ctxA.newPage();
+  const pageB = await ctxB.newPage();
+  await Promise.all([pageA.goto("/c/general"), pageB.goto("/c/general")]);
+  await expect(pageA.getByText("Connected")).toBeVisible();
+  await expect(pageB.getByText("Connected")).toBeVisible();
+
+  await pageA.getByRole("textbox", { name: /message/i }).fill("hello");
+  await pageA.getByRole("button", { name: /send/i }).click();
+
+  await expect(pageB.getByText("hello")).toBeVisible({ timeout: 5000 });
+  await ctxA.close();
+  await ctxB.close();
+});
+```
+
+**Choosing between them.** Pattern A skips the server-side broadcast path but is deterministic — ideal for edge-cases (rate-limited frames, malformed payloads, presence-leave timeouts) where the focus is client-side rendering logic. Pattern B exercises the real lifecycle — ideal for one happy-path "send/receive actually works" assertion per WS feature. Most projects use **A for ~80% of specs + B for the canonical happy-path**.
+
+**Hard requirements** for either pattern:
+
+- `ENABLE_TEST_SEED=1` MUST be set on the running dev server (the orchestrator's `scripts/dev.mjs` template handles this for E2E mode). Without it, `/test/ws-event` returns 404 + Pattern B's connection still works but Pattern A is unusable.
+- The tester MUST NOT modify source files trying to make specs compile (bug-024 forbidden — empirical: gotribe-tribe-chat tester stripped `.js` extensions from `packages/types` trying to debug Pattern B selector issues, hit the stall, lost the work). When a spec doesn't compile, the fix is in the spec OR a kit-change-request — never inline edits to packages/types/ or packages/ui-kit/.
+- For unit-level WS-client reducer tests, use `vi.spyOn(global, "WebSocket", ...)` returning a fake event-emitting object. Do NOT mix unit-test WS mocking with E2E (the boundaries blur fast).
+
+**Anti-pattern**: connecting a raw `ws` client inside Playwright's test body and orchestrating frames against the running app's WS endpoint. This couples the test to the wire protocol + requires reimplementing the kit's WS-client reducer. Use the two patterns above instead.
+
 ### 3a. Playwright runtime self-verify (feat-025 install-discipline)
 
 Authoring `*.spec.ts` files without the runtime installed produces **unrunnable specs that silently fool downstream verification** (the post-Mode-B `/build-to-spec-verify` flow-execution stage will skip them, no failures surface, the builder thinks it's green). Discovery: kanban-webapp-10 shipped with 5+ `e2e/*.spec.ts` files but no `@playwright/test` in devDependencies — the project literally couldn't run any of them.
