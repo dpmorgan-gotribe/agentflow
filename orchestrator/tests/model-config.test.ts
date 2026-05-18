@@ -452,7 +452,7 @@ describe("readModelConfig — Strategy-D web tester wall-clock cap (bug-107)", (
     expect(cfg.stallTimeoutMs).toBe(20 * 60 * 1000);
   });
 
-  it("Strategy-C real-db web tester keeps 20-min default", () => {
+  it("Strategy-C real-db web tester gets 30-min cap (bug-122 extension)", () => {
     writeFileSync(
       globalPath,
       `defaults:\n  build: claude-sonnet-4-6\nagents:\n  tester: { tier: build }\n`,
@@ -460,6 +460,32 @@ describe("readModelConfig — Strategy-D web tester wall-clock cap (bug-107)", (
     writeArchitectureYaml({
       persistence_layer: "real-db",
       web_framework: "react-next",
+    });
+    const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
+    expect(cfg.stallTimeoutMs).toBe(30 * 60 * 1000);
+  });
+
+  it("Strategy-A localStorage web tester keeps 20-min default (synthesizer not in scope)", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  tester: { tier: build }\n`,
+    );
+    writeArchitectureYaml({
+      persistence_layer: "localStorage",
+      web_framework: "react-next",
+    });
+    const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
+    expect(cfg.stallTimeoutMs).toBe(20 * 60 * 1000);
+  });
+
+  it("backend-only Strategy-C (no web_framework) keeps 20-min default", () => {
+    writeFileSync(
+      globalPath,
+      `defaults:\n  build: claude-sonnet-4-6\nagents:\n  tester: { tier: build }\n`,
+    );
+    writeArchitectureYaml({
+      persistence_layer: "real-db",
+      web_framework: null,
     });
     const cfg = readModelConfig("tester", tmpDir, { globalPath, projectPath });
     expect(cfg.stallTimeoutMs).toBe(20 * 60 * 1000);

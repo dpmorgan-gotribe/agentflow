@@ -226,11 +226,22 @@ function resolveDefaultStallTimeout(
 ): number | null {
   if (agentName === "tester") {
     const arch = readArchStackContext(projectRoot);
-    if (
+    // bug-122 (2026-05-18): Strategy-C (real-db) web testers run the same
+    // synthesize-flow-e2e + Playwright + coverage workload as Strategy-D
+    // (external-api-only) web testers. The 20-min default is structurally
+    // too tight for both. Empirical anchor: gotribe-member-profile
+    // feat-scaffold tester 2026-05-17 — Strategy-C web, hit wall-clock cap
+    // at $3.01 burn. bug-107 originally scoped to Strategy-D only because
+    // its empirical case (gotribe-tribe-directory) was Strategy-D; the
+    // structural diagnosis applies to both layers that involve the
+    // synthesizer. Strategy-A (localStorage) is excluded — kanban-class
+    // web testers don't dispatch the synthesizer + Playwright chain and
+    // do fit in 20min.
+    const isSynthesizerWorkloadLayer =
       arch &&
-      arch.persistenceLayer === "external-api-only" &&
-      arch.webFramework !== null
-    ) {
+      (arch.persistenceLayer === "external-api-only" ||
+        arch.persistenceLayer === "real-db");
+    if (isSynthesizerWorkloadLayer && arch.webFramework !== null) {
       return STRATEGY_D_WEB_TESTER_STALL_TIMEOUT;
     }
   }
