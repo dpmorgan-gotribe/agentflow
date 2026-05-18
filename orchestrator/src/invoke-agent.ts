@@ -100,7 +100,9 @@ export interface CreateInvokeAgentConfig {
    * feat-024 Phase B — keepalive gap thresholds.
    *  - `warnMs`: log a warning when no message has arrived for this long
    *  - `abortMs`: abort the SDK query when no message has arrived for this long
-   * Defaults: 90_000 / 300_000 per investigate-007 §F4-#2.
+   * Defaults: 90_000 / 600_000 (warnMs / abortMs). Original 300_000 abortMs
+   * (investigate-007 §F4-#2) bumped per bug-123 — too tight for
+   * cold-pnpm-install Bash tool calls on Windows monorepos.
    */
   keepaliveWarnMs?: number;
   keepaliveAbortMs?: number;
@@ -1339,7 +1341,16 @@ async function runLlmAgent(
 
   const checkIntervalMs = cfg.keepaliveCheckIntervalMs ?? 30_000;
   const warnMs = cfg.keepaliveWarnMs ?? 90_000;
-  const abortMs = cfg.keepaliveAbortMs ?? 300_000;
+  // bug-123 (2026-05-18): bumped from 300_000 (5min) → 600_000 (10min).
+  // The 300s threshold was calibrated against agent reasoning + lightweight
+  // tool calls and didn't account for the long Bash tool calls builders
+  // routinely make (`pnpm install` on cold worktree, `pnpm build`,
+  // `pnpm test --coverage`, `tsc --noEmit` on large monorepos). 10min still
+  // catches truly hung agents; the 5min false-positive class surfaced on
+  // gotribe-member-profile 2026-05-18 (keepalive-gap-308070ms during cold
+  // pnpm install). Per-agent + per-project overrides via keepaliveAbortMs
+  // option remain available; this is just the default.
+  const abortMs = cfg.keepaliveAbortMs ?? 600_000;
   let warnedAt = 0;
 
   // bug-059 Phase B (2026-05-06): both wall-clock + keepalive checks live
