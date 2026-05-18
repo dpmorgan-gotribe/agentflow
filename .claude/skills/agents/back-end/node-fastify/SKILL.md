@@ -24,7 +24,7 @@ apps/api/
 │   ├── plugins/
 │   │   ├── db.ts                       # better-sqlite3 connection plugin (decorates app.db)
 │   │   ├── env.ts                      # dotenv-flow + Zod-validated config decorator
-│   │   ├── error-handler.ts            # global setErrorHandler + Zod → 422 mapping
+│   │   ├── error-handler.ts            # global setErrorHandler + AppError/ZodError/SyntaxError → 400, default → 500 (feat-077 canonical 4-branch shape)
 │   │   └── cors.ts                     # @fastify/cors registration with allowlist
 │   ├── routes/
 │   │   ├── auth/
@@ -77,7 +77,48 @@ packages/api-client/
 - **Zod schemas from `@repo/types`.** Never re-declare. Routes import `UserCreateSchema`, register it as the route body schema. Same schemas the web tier consumes via `@repo/api-client`.
 - **better-sqlite3 is synchronous.** Statements are prepared once at app-init via `app.db.prepare("...")` — pin them to a `Statements` object decorated on the app for reuse. Calling `.run()` / `.get()` / `.all()` on a prepared statement is sub-millisecond and synchronous.
 - **Transactions via `db.transaction(fn)()`.** `db.transaction(insertUserAndProfile)(input)` wraps a sync callback in a SAVEPOINT. For multi-step ops (create user + create session) this keeps the SQL atomic. Async work (hashing password, calling external API) MUST happen OUTSIDE the transaction — better-sqlite3's transaction is sync-only.
-- **AppError + global handler.** Throw `new AppError("USER_EXISTS", 409, "email already in use")` — the `error-handler.ts` plugin maps these to JSON `{ error: { code, message } }`. Never `throw new Error()` — clients get an unstructured 500.
+- **AppError + global handler.** Throw `new AppError("USER_EXISTS", 409, "email already in use")` — the `error-handler.ts` plugin maps these to JSON `{ error: { code, message } }`. Never `throw new Error()` — clients get an unstructured 500. **The canonical handler MUST cover four classes** (feat-077): `AppError → its statusCode`, `ZodError → 400` (with `issues` in the response body for actionable client feedback), `SyntaxError → 400` (catches malformed JSON bodies + BigInt-from-non-numeric-string + URL parse failures), and `default → 500` (logged via `app.log.error`). Shipping only the AppError branch leaves every Zod-validated route returning 500 on invalid input — testers correctly flag this as a `genuineProductBugs[]` class, and builders frequently fail to converge on the fix without the canonical reference. Canonical shape:
+
+  ```ts
+  // apps/api/src/plugins/error-handler.ts
+  import fp from "fastify-plugin";
+  import { ZodError } from "zod";
+  import { AppError } from "../common/errors.js";
+
+  export default fp(async (app) => {
+    app.setErrorHandler((error, _req, reply) => {
+      if (error instanceof AppError) {
+        return reply.status(error.statusCode).send({
+          error: { code: error.code, message: error.message },
+        });
+      }
+      if (error instanceof ZodError) {
+        return reply.status(400).send({
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "Request validation failed",
+            issues: error.issues,
+          },
+        });
+      }
+      if (error instanceof SyntaxError) {
+        return reply.status(400).send({
+          error: { code: "VALIDATION_ERROR", message: error.message },
+        });
+      }
+      app.log.error(error);
+      return reply.status(500).send({
+        error: {
+          code: "INTERNAL_ERROR",
+          message: "An unexpected error occurred",
+        },
+      });
+    });
+  });
+  ```
+
+  Empirical motivator: gotribe-tribe-chat 2026-05-18 `feat-rest-channels` — 5 tester-flagged `genuineProductBugs[]` all root-caused in this scaffold gap (limit > 100, limit < 1, limit < 0, BigInt parse fail, ZodError throw all returned 500 instead of 400). The 4-branch handler closes the entire class.
+
 - **Migrations forward-only, file-system-driven.** `db/migrations/001_users.sql` runs once at app-init via `migrate.ts` (records applied versions in a `_migrations` table). Rollback is forbidden; bad migrations get a fix-forward `002_undo_users.sql`.
 - **Idempotency keys** on mutations that may retry (webhook handlers, payment flows). Persist a hash of input to a unique-indexed table + check before processing.
 
