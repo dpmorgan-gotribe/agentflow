@@ -1,10 +1,13 @@
 ---
 id: bug-035-builder-dispatch-drops-task-notes-field
 type: bug
-status: approved
+status: completed
 author-agent: human
 created: 2026-05-01
-updated: 2026-05-01
+updated: 2026-05-18
+approved-at: 2026-05-01
+completed-at: 2026-05-15
+outcome: success
 parent-plan: investigate-013-seed-state-coverage-from-brief
 supersedes: null
 superseded-by: null
@@ -214,3 +217,22 @@ This is the same shape as bug-024 (tester source-fix), bug-029 (UI primitives mi
 ## Attempt Log
 
 <!-- populated as the fix is made -->
+
+### 2026-05-15 — Empirical re-occurrence on gotribe-tribe-directory (NOT an attempt; escalation pointer)
+
+The same class fired again on `projects/gotribe-tribe-directory/feat-tribe-api`
+Mode B run 2026-05-15 — reviewer dim-2 emitted a maximally-specific fix recipe
+(file + line + exact import + call site) for an unwired SSRF guard;
+backend-builder retried 2× without applying it; feature marked failed; cascade
+aborted `feat-tribe-directory-web`. The bug-035 patch was approved but not yet
+shipped, so the gap stayed open.
+
+Escalated to investigation: see
+`plans/active/investigate-030-builder-retry-feedback-gap.md` for the broader
+question (does the reviewer-verdict-context surface get dropped the same way
+`task.notes` does, or is there a second orthogonal gap in how builders honor
+reviewer recipes on retry?). Investigation findings will inform whether
+bug-035's shipping is sufficient on its own or needs a paired extension.
+
+bug-035 stays in `status: approved` — this is an investigation pointer, not
+an additional attempt against this bug.
