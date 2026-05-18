@@ -416,12 +416,21 @@ async function preFlightSnapshot(opts: {
       /working tree clean/i.test(stderr) ||
       /no changes added to commit/i.test(stderr);
 
-    if (!isNothingToCommit) {
-      return { status: "fail", errorMessage };
-    }
-
-    // Re-check: if the working tree is now clean, the race winner committed
-    // for us. Proceed as if pre-flight succeeded.
+    // bug-126: Windows + pnpm + Storybook deep node_modules (paths >
+    // MAX_PATH=260) make `git status` emit "Filename too long" warnings
+    // and silently exclude those subtrees. Subsequent `git add -A` may
+    // stage nothing useful + `git commit` then fails with empty stderr
+    // (no "nothing to commit" text, because git on Windows sometimes
+    // swallows it when the failure mode is a Win32 file-system error
+    // rather than the standard "nothing to commit" condition).
+    //
+    // The bug-016 race-loss detection above only fires on the standard
+    // patterns. Without bug-126, a Windows commit failure with empty
+    // stderr falls through as a hard "fail" even though the tree is
+    // actually clean. Recheck `git status --porcelain` ALWAYS after a
+    // commit failure — if the tree is clean, the commit was a no-op
+    // either way (bug-016 race-winner cleaned for us OR bug-126 Win32
+    // path-length silently truncated the stage), so we can proceed.
     let recheckStdout = "";
     try {
       const recheck = await execGit("git status --porcelain", projectRoot);
@@ -433,17 +442,20 @@ async function preFlightSnapshot(opts: {
     }
 
     if (recheckStdout.trim() === "") {
+      // Working tree is clean. Either bug-016 (race-winner committed)
+      // or bug-126 (Win32 long-path no-op). Either way, proceed.
       // eslint-disable-next-line no-console
       console.warn(
-        `[${callerLabel}] feature ${featureId}: pre-merge snapshot ` +
-          `race-lost to a concurrent close-feature; working tree now clean — ` +
-          `proceeding with merge.`,
+        `[${callerLabel}] feature ${featureId}: pre-flight snapshot ` +
+          `commit failed but working tree is clean — proceeding ` +
+          `(${isNothingToCommit ? "bug-016 race-loss" : "bug-126 win32-path-length"}).`,
       );
       return { status: "race-loss-clean" };
     }
 
-    // Status STILL dirty after the failed commit — this isn't just a race;
-    // something else is going on. Surface as a real failure.
+    // Status STILL dirty after the failed commit — this isn't just a race
+    // or a path-length quirk; something else is going on. Surface as a
+    // real failure.
     return { status: "fail", errorMessage };
   }
 }
@@ -2560,12 +2572,35 @@ function lockfileRegenCommand(pm: "pnpm" | "npm" | "yarn"): string {
   }
 }
 
+/**
+ * bug-126: inject `-c core.longpaths=true` into every Windows git invocation.
+ * Workspace projects accumulate sibling worktrees whose
+ * `node_modules/.pnpm/...` paths exceed Windows MAX_PATH (260 chars) as soon
+ * as Storybook devDeps land in `packages/ui-kit/`. Without longpaths, git
+ * emits "Filename too long" warnings + may silently skip subtrees during
+ * `add -A`, breaking the bug-009 pre-worktree snapshot path. Per-invocation
+ * `-c` config beats per-repo because the orchestrator doesn't always own
+ * the repo's local config (it can be unset between fix-loop dispatches).
+ *
+ * Match insertion point: between `git` and the subcommand (so flags after
+ * the subcommand stay intact). Non-`git` commands pass through unchanged.
+ */
+function injectLongpathsConfig(cmd: string): string {
+  if (process.platform !== "win32") return cmd;
+  const m = cmd.match(/^(\s*)git(\s+)(.*)$/s);
+  if (!m) return cmd;
+  // Idempotent: skip if already present.
+  if (/-c\s+core\.longpaths=true/.test(cmd)) return cmd;
+  return `${m[1]}git -c core.longpaths=true${m[2]}${m[3]}`;
+}
+
 async function defaultExecGit(
   cmd: string,
   cwd: string,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
+  const wrappedCmd = injectLongpathsConfig(cmd);
   try {
-    const { stdout, stderr } = await execAsync(cmd, { cwd });
+    const { stdout, stderr } = await execAsync(wrappedCmd, { cwd });
     return { stdout, stderr, code: 0 };
   } catch (err) {
     const e = err as NodeJS.ErrnoException & {
@@ -2577,6 +2612,8 @@ async function defaultExecGit(
     const stdout = e.stdout ?? "";
     const stderr = e.stderr ?? e.message ?? "";
     // Re-throw so the caller's try/catch fires — matches prior expectations.
+    // Note: the message still shows the ORIGINAL cmd (not the long-paths
+    // wrapped one) so error messages stay readable + match existing patterns.
     const wrapped = new Error(
       `git command failed: ${cmd}\n${stderr}`,
     ) as Error & { stdout?: string; stderr?: string; code?: number };
