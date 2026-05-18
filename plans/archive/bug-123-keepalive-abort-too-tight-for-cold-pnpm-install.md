@@ -1,11 +1,13 @@
 ---
 id: bug-123-keepalive-abort-too-tight-for-cold-pnpm-install
 type: bug
-status: approved
+status: completed
 author-agent: human
 created: 2026-05-18
 updated: 2026-05-18
 approved-at: 2026-05-18
+completed-at: 2026-05-18
+outcome: success
 parent-plan: null
 supersedes: null
 superseded-by: null
