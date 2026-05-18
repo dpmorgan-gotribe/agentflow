@@ -615,6 +615,7 @@ Builder self-verify gate: `pnpm --filter @repo/web lint && pnpm --filter @repo/w
 - **Hydration mismatch.** Never use `Date.now()`, `Math.random()`, or `new Date()` inline in a component that renders on both server + client. Hoist into `useEffect` or pass as a server prop.
 - **`"use client"` contagion.** The directive marks the file's component tree as client-side — importing a client component from a server component is fine, but importing a server component from a client component is NOT. If you need server-only code inside client boundary, import via `<Suspense>` + a server component prop.
 - **Workspace transpilation.** `next.config.ts` must include `transpilePackages: ["@repo/ui-kit", "@repo/types", "@repo/api-client", "@repo/utils"]` — without it Next won't transform TypeScript from monorepo packages.
+- **Webpack `resolve.extensionAlias` for NodeNext `.js` imports** (feat-075). Workspace packages use NodeNext-style `.js` extensions on `.ts` import paths (e.g. `export * from "./message.js"` inside `packages/types/src/index.ts`) because apps/api consumes them via Node ESM, which requires the explicit extension. Next.js's webpack does NOT auto-rewrite `.js` → `.ts` and fails the production build with "Module not found: Can't resolve './message.js'". The fix is a one-time `next.config.ts` webpack hook adding `resolve.extensionAlias: { ".js": [".ts", ".tsx", ".js"], ".mjs": [".mts", ".mjs"], ".cjs": [".cts", ".cjs"] }`. Vitest tolerates `.js` extensions via esbuild so unit tests pass without this fix — only the webpack production build needs it. **Empirical motivator**: gotribe-tribe-chat 2026-05-18 — every multi-tier project hits this without the canonical scaffold. See the canonical `next.config.ts` template below for the exact shape.
 - **Env vars in client bundle.** Only `NEXT_PUBLIC_*` prefixed vars are exposed to client components. Sensitive keys (`STRIPE_SECRET_KEY`, `DATABASE_URL`) must stay server-only — accessing them from a client component leaks at build time.
 - **`loading.tsx` suspense boundaries.** A `loading.tsx` file doesn't wrap a single page — it wraps the entire route segment. If you want finer-grained loading UI, use `<Suspense>` manually.
 - **Cookie access in server components.** Use `cookies()` from `next/headers` (async in Next 15). Do NOT reach for `document.cookie` in a server component — it doesn't exist.
@@ -628,6 +629,25 @@ import type { NextConfig } from "next";
 
 const config: NextConfig = {
   transpilePackages: ["@repo/ui-kit", "@repo/types", "@repo/api-client"],
+
+  // Workspace packages use NodeNext-style `.js` extensions on `.ts` imports
+  // (required for Node ESM consumption by apps/api). Webpack does NOT
+  // auto-rewrite `.js` → `.ts`, so the production build fails with
+  // "Module not found: Can't resolve './message.js'" without this alias.
+  // feat-075 — required for every multi-tier project (web + node backend
+  // sharing workspace packages). Vitest tolerates the convention via
+  // esbuild; only the Next.js webpack build needs this hook.
+  webpack: (config) => {
+    config.resolve = config.resolve ?? {};
+    config.resolve.extensionAlias = {
+      ...(config.resolve.extensionAlias ?? {}),
+      ".js": [".ts", ".tsx", ".js"],
+      ".mjs": [".mts", ".mjs"],
+      ".cjs": [".cts", ".cjs"],
+    };
+    return config;
+  },
+
   // NEVER add `output: "export"` here — see Gotchas in this skill. The
   // brief may use "SPA" / "static-export" phrasing; that's *deployment*
   // intent ("no SSR server runtime"), NOT a Next config flag. Next App
