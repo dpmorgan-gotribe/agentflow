@@ -1,10 +1,12 @@
 ---
 id: investigate-023-tester-prefers-spec-fixes-over-flagging-product-bugs
 type: investigation
-status: draft
+status: in-progress
 author-agent: human
 created: 2026-05-07
-updated: 2026-05-07
+updated: 2026-05-18
+mitigations-shipped: ["M-A", "M-D"]
+mitigations-pending: ["M-B", "M-C", "M-E"]
 parent-plan: investigate-022-factory-verifier-missed-8-review-bugs-on-reading-log-01
 supersedes: null
 superseded-by: null
@@ -13,6 +15,8 @@ affected-files:
   - .claude/agents/tester.md
   - .claude/rules/testing-policy.md
   - .claude/skills/tester/SKILL.md
+  - orchestrator/src/tester-diff-audit.ts
+  - orchestrator/src/invoke-agent.ts
 feature-area: orchestrator/tester-judgment
 priority: P0
 attempt-count: 0

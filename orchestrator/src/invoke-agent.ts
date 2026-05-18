@@ -1,5 +1,10 @@
 import { exec } from "node:child_process";
 import {
+  auditTesterDiff,
+  formatViolations,
+  type AuditViolation,
+} from "./tester-diff-audit.js";
+import {
   appendFileSync,
   cpSync,
   existsSync,
@@ -1614,6 +1619,18 @@ async function runLlmAgent(
       failed[t.id] = "failed";
       errors[t.id] = `error_stall_timeout: ${reason}`;
     }
+
+    // bug-127: even on stall-timeout, run the tester-diff audit to catch
+    // uncommitted bug-024 mods + suspicious test mutations that would
+    // otherwise slip through. baseRef=HEAD → diffs the worktree's
+    // uncommitted state against the last commit (covers the partial-output
+    // case the empirical motivator hit — gotribe-tribe-chat 2026-05-18
+    // feat-channel-view tester stalled with packages/types + packages/ui-kit
+    // .js-extension strips uncommitted).
+    if (agent === "tester") {
+      injectAuditViolations(args.cwd, "HEAD", false, errors);
+    }
+
     return {
       taskStatus: failed,
       errors,
@@ -1713,6 +1730,31 @@ async function runLlmAgent(
     if (parsed.success) reviewerOutput = parsed.data;
   }
 
+  // investigate-023 M-D: run the tester-diff audit on the normal-completion
+  // path. baseRef=HEAD~5 → diffs the last 5 commits + uncommitted state
+  // (typical tester emits 1-3 commits; 5 gives headroom without picking up
+  // prior builder noise). genuineProductBugsFlagged = true when the tester's
+  // outcome JSON has populated `genuineProductBugs` array (per TesterOutput
+  // contract) — in that case violations downgrade to warnings since the
+  // tester acknowledged the product bug. Otherwise violations are blocking
+  // and mark every task failed so the dispatch routes back to the builder
+  // OR forces the tester to acknowledge.
+  if (agent === "tester") {
+    const flagged = hasGenuineProductBugsFlagged(extracted.parsed);
+    const audited = injectAuditViolations(
+      args.cwd,
+      "HEAD~5",
+      flagged,
+      translated.errors,
+    );
+    if (audited > 0 && !flagged) {
+      // Mark every task failed so the dispatch propagates the violations.
+      for (const t of args.tasks) {
+        translated.taskStatus[t.id] = "failed";
+      }
+    }
+  }
+
   return {
     taskStatus: translated.taskStatus,
     errors: translated.errors,
@@ -1720,6 +1762,70 @@ async function runLlmAgent(
     ...(reviewerOutput !== undefined ? { reviewerOutput } : {}),
     ...(isBuildAgent(agent) ? { lastWritingAgent: agent } : {}),
   };
+}
+
+/**
+ * investigate-023 M-D + bug-127 — shared helper that runs the tester-diff
+ * audit + augments the dispatch's errors map with one entry per blocking
+ * violation. Returns the count of violations injected (0 means no audit
+ * findings; > 0 means the dispatch should be marked failed when not flagged
+ * via genuineProductBugs[]).
+ *
+ * The audit is best-effort: any internal exception (git not found, baseRef
+ * doesn't exist, etc.) catches + returns 0 rather than blowing up the
+ * dispatch result. Audit findings are noise-reducing; absence-of-audit is
+ * not a fail-safe.
+ */
+function injectAuditViolations(
+  cwd: string,
+  baseRef: string,
+  flagged: boolean,
+  errors: Record<string, string>,
+): number {
+  let violations: AuditViolation[] = [];
+  try {
+    const result = auditTesterDiff({
+      worktreePath: cwd,
+      baseRef,
+      genuineProductBugsFlagged: flagged,
+    });
+    violations = result.blocking;
+  } catch (err) {
+    void err;
+    return 0;
+  }
+  if (violations.length === 0) return 0;
+  const summary =
+    `tester-diff-audit (investigate-023 M-D) caught ${violations.length} ` +
+    `blocking violation(s) — either flag as genuineProductBugs[] or remove ` +
+    `the suspicious test mutation:\n${formatViolations(violations)}`;
+  // Stamp the audit summary onto every task's error entry. Per-task spreading
+  // is intentional: the audit operates at the diff level (not per-task), so
+  // any one suspicious commit could trace to any of the tester's tasks.
+  for (const k of Object.keys(errors)) {
+    const existing = errors[k] ?? "";
+    errors[k] = existing
+      ? `${existing}\n[audit] ${violations.length} violation(s) — see dispatch log`
+      : summary;
+  }
+  if (Object.keys(errors).length === 0) {
+    // No prior errors map entries (e.g. stall-timeout path before this
+    // helper populated tasks). Add a sentinel key so the summary surfaces.
+    errors["_audit"] = summary;
+  }
+  return violations.length;
+}
+
+/**
+ * Read the tester's outcome JSON for a populated `genuineProductBugs[]`
+ * field. Best-effort — falls through to `false` on any shape mismatch
+ * since the audit's policy is to BLOCK when uncertain.
+ */
+function hasGenuineProductBugsFlagged(parsed: unknown): boolean {
+  if (typeof parsed !== "object" || parsed === null) return false;
+  const obj = parsed as Record<string, unknown>;
+  const bugs = obj.genuineProductBugs;
+  return Array.isArray(bugs) && bugs.length > 0;
 }
 
 /**
