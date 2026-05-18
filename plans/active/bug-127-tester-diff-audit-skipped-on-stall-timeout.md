@@ -1,21 +1,25 @@
 ---
 id: bug-127-tester-diff-audit-skipped-on-stall-timeout
 type: bug
-status: blocked
+status: archived
 author-agent: claude-opus-4-7
 created: 2026-05-18
 updated: 2026-05-18
+completed-at: 2026-05-18
+outcome: success-bundled
+shipped-scope: "Both investigate-023 M-D (audit module) AND bug-127 (stall-timeout extension) shipped together in commit 1d79e10."
+ship-commits: ["1d79e10"]
 parent-plan: investigate-023-tester-prefers-spec-fixes-over-flagging-product-bugs
 supersedes: null
 superseded-by: null
-blocked-by: investigate-023 M-D
-branch: fix/tester-diff-audit-stall-timeout
+branch: feat/m-d-tester-diff-audit-with-bug-127
 affected-files:
   - orchestrator/src/tester-diff-audit.ts
-  - orchestrator/src/dispatch/tester-dispatch.ts
+  - orchestrator/src/invoke-agent.ts
+  - orchestrator/tests/tester-diff-audit.test.ts
 feature-area: factory/orchestrator/tester-audit
 priority: P2
-attempt-count: 0
+attempt-count: 1
 max-attempts: 5
 error-message: |
   Tester dispatch hits error_stall_timeout: wall-clock-1800000ms.
@@ -25,7 +29,7 @@ error-message: |
   Audit was skipped because dispatch never returned a normal completion JSON.
 ---
 
-> **Discovery (2026-05-18 during ship-pass):** `orchestrator/src/tester-diff-audit.ts` **does not exist on disk**. `.claude/rules/testing-policy.md` lines 160 + 213 reference the module as "M-D, shipped" but a `find . -name 'tester-diff-audit*'` returns nothing under `orchestrator/src/`. The audit was never authored — `investigate-023`'s M-D mitigation is still pending. This bug's scope therefore needs to expand to _ship the audit module from scratch_ before the stall-timeout extension can land. Status changed `draft → blocked` until investigate-023 M-D is implemented OR this plan absorbs the M-D scope. See investigate-023 §"Mitigations" for the 6-anti-pattern checklist that the audit needs to mechanically detect.
+> **Discovery (2026-05-18 during ship-pass):** `orchestrator/src/tester-diff-audit.ts` did not exist on disk; `.claude/rules/testing-policy.md` references the module as "M-D, shipped" but the file was never authored. **Resolution (2026-05-18):** scope absorbed the M-D shipping work — authored the audit module (404 LOC + 22 unit tests covering all 6 anti-pattern detectors) AND wired it into `runLlmAgent`'s tester dispatch lifecycle (both normal-completion + stall-timeout paths via `injectAuditViolations()` helper). Ship commit `1d79e10` on `feat/m-d-tester-diff-audit-with-bug-127`. Investigate-023 remains active for M-B / M-C / M-E mitigations.
 
 # bug-127 — tester-diff-audit doesn't fire on stall-timeout abort, letting bug-024 source-file mods slip through
 
