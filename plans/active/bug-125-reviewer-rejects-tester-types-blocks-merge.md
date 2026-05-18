@@ -1,7 +1,9 @@
 ---
 id: bug-125-reviewer-rejects-tester-types-blocks-merge
 type: bug
-status: draft
+status: approved
+approved-at: 2026-05-18
+approved-by: human
 author-agent: claude-opus-4-7
 created: 2026-05-18
 updated: 2026-05-18
